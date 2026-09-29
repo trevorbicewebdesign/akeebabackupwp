@@ -1,0 +1,54 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+/**
+ * Backup progress
+ */
+#backup-steps {
+  div[class*=akeeba-label] {
+    display: block;
+    /*width: 100%;*/
+    margin-top: 1px;
+  }
+}
+
+div.backup-steps-container {
+  clear: both;
+  display: block;
+  margin-top: 1em;
+  padding: 0.5em 1em;
+  background: $light-grey;
+  border-radius: 0.5em;
+  border: thin solid $grey;
+
+  #backup-step {
+    font-weight: bold;
+    border-bottom: thin dotted $grey;
+  }
+
+  #backup-substep {
+    font-style: italic;
+    color: $teal !important;
+  }
+}
+
+#warnings-list {
+  height: 180px;
+  overflow-y: scroll;
+
+  div {
+    border-bottom: thin dotted $grey;
+    padding: 2px 0;
+  }
+}
+
+#error-panel-troubleshooting a {
+  text-decoration: underline;
+  font-weight: bold;
+  color: color.scale($teal, $lightness: -10%);
+}

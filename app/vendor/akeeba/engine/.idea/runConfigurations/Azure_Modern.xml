@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Azure Modern" type="PhpLocalRunConfigurationType" factoryName="PHP Console" folderName="Connector" path="$PROJECT_DIR$/connector_development/run.php" scriptParameters="azureModern">
+    <method v="2" />
+  </configuration>
+</component>

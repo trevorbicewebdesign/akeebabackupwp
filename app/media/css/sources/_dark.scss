@@ -1,0 +1,275 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+// region Footer
+#akeeba-footer {
+  background-color: darken($grey, 10%);
+  color: $light-grey;
+}
+// endregion
+
+// region Global Dark Mode override
+/**
+ * Third party dark themes invariably change the anchor hover color. While FEF sets the anchor color it does not change
+ * its hover color. This makes things look a bit weird. By overriding the hover color we restore a bit of color harmony.
+ */
+.akeeba-renderer-fef {
+  a:hover {
+    color: $teal;
+  }
+
+  a[class*="akeeba-action"] {
+    color: $light-grey;
+  }
+
+  a[class*="akeeba-btn"] {
+    &:hover {
+      color: $light-grey !important;
+    }
+
+    &[class*="--grey"] {
+      &:hover {
+        color: $grey !important;
+      }
+    }
+  }
+}
+// endregion
+
+// region FEF Backports -- Breadcrumbs
+ul.akeeba-breadcrumb {
+  color: darken($light-grey, 20%);
+
+  li {
+    a {
+      color: $light-grey;
+
+      &:hover {
+        color: $teal;
+      }
+    }
+
+    span.divider {
+      color: darken($light-grey, 20%);
+    }
+  }
+}
+
+// endregion
+
+// region Modal dialogs
+#akeeba-modal-container {
+  background-color: $grey;
+  border: 1px solid lighten($grey, 20%);
+  box-shadow: 0px 4px 16px darken($grey, 20%);
+}
+
+#akeeba-modal-container.modal-loading {
+  background: $grey url('../image/loading_dark.gif') no-repeat center center;
+}
+
+// Changelog
+ul.akeeba-changelog {
+  border: thin solid lighten($grey, 20%);
+  background-color: transparent;
+
+  li {
+    &.akeeba-changelog-changed {
+      color: $light-grey;
+    }
+  }
+}
+
+// endregion
+
+// region Popovers
+.akeeba-popover {
+  background-color: $grey;
+  color: $light-grey;
+}
+
+.akeeba-popover-title {
+  background-color: color.scale($grey, $lightness: 10%);
+  color: $light-grey;
+}
+
+.akeeba-popover-content {
+  color: $light-grey;
+}
+
+// endregion
+
+// region Backup Now
+div.backup-steps-container {
+  background: lighten($grey, 10%);
+  border: thin solid darken($grey, 10%);
+
+  #backup-step {
+    border-bottom: thin dotted $light-grey;
+  }
+
+  #backup-substep {
+    color: $teal !important;
+  }
+}
+
+#warnings-list {
+  div {
+    border-bottom: thin dotted $light-grey;
+  }
+}
+
+#error-panel-troubleshooting a {
+  color: color.scale($teal, $lightness: 30%);
+}
+
+// endregion
+
+// region Folder browser
+a.akeeba-browser-folder {
+  color: $light-grey;
+
+  &:hover {
+    color: $teal;
+  }
+}
+
+// endregion
+
+// region Database table filters
+#tables {
+  background-color: $grey;
+  color: $light-grey;
+
+  .table-container {
+    border-bottom: 1px solid lighten($teal, 10%);
+
+    &:last-of-type
+    {
+      border-bottom: none;
+    }
+
+    &:hover {
+      background-color: lighten($grey, 5%);
+    }
+
+    span.table-name {
+      color: $white;
+    }
+
+    span.table-rowcount {
+      color: $green;
+    }
+
+    .akeeba-btn--grey {
+      background: lighten($grey, 10%);
+      color: $light-grey;
+      border: thin solid darken($grey, 10%);
+
+      &:hover {
+        background: lighten($grey, 20%);
+      }
+    }
+  }
+}
+
+// endregion
+
+// region File filters
+#ak_crumbs {
+  color: lighten($grey, 20%);
+}
+
+div#folders {
+  div.folder-container
+  {
+    color: $light-grey;
+    background: $grey;
+
+    &:hover {
+      background-color: lighten($grey, 5%);
+    }
+
+    span.folder-name {
+      color: $light-grey;
+
+      &:hover {
+        color: $teal !important;
+      }
+    }
+
+    .akeeba-btn--grey {
+      background: lighten($grey, 10%);
+      color: $light-grey;
+      border: thin solid darken($grey, 10%);
+
+      &:hover {
+        background: lighten($grey, 20%);
+      }
+    }
+  }
+}
+
+div#files {
+  .file-container {
+    color: $light-grey;
+    background-color: $grey;
+
+    &:hover {
+      background-color: lighten($grey, 5%);
+    }
+
+    span.file-name {
+      color: $light-grey;
+
+      &:hover {
+        color: $teal;
+      }
+    }
+
+    span.file-size {
+      color: $green;
+    }
+
+    .akeeba-btn--grey {
+      background: lighten($grey, 10%);
+      color: $light-grey;
+      border: thin solid darken($grey, 10%);
+
+      &:hover {
+        background: lighten($grey, 20%);
+      }
+    }
+  }
+}
+// endregion
+
+// region Manage backups
+div.akeeba-buadmin-startdate {
+  border-top: 1px solid lighten($grey, 30%);
+  color: darken($light-grey, 20%);
+  padding-top: 2px;
+  margin-top: 2px
+}
+// endregion
+
+// region WordPress-specific
+div.akeeba-wp
+{
+  background-color: $grey;
+}
+// endregion
+
+// region Configuration Wizard
+#confwiz-steps {
+  div.confwiz-step {
+    background-color: $grey;
+    color: $light-grey;
+  }
+}
+// endregion

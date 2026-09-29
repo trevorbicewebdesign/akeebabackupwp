@@ -1,0 +1,17 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/** Sign in page **/
+form#loginForm {
+  position: relative;
+  top: 50%;
+  transform: translateY(-50%);
+
+  margin-left: auto;
+  margin-right: auto;
+
+  max-width: 30em;
+}

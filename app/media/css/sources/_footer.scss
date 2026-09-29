@@ -1,0 +1,19 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+#akeeba-footer {
+  background-color: $light-grey;
+  color: $grey;
+  padding: 0.6em 1em 3em;
+
+  p {
+    margin: 6pt 0;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}

@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Profile List" type="PhpLocalRunConfigurationType" factoryName="PHP Console" folderName="Platform" path="$PROJECT_DIR$/dev_platform/index.php" scriptParameters="profile:list">
+    <method v="2" />
+  </configuration>
+</component>

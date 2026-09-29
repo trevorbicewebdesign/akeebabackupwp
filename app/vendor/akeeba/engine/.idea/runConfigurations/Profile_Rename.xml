@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Profile Rename" type="PhpLocalRunConfigurationType" factoryName="PHP Console" folderName="Platform" path="$PROJECT_DIR$/dev_platform/index.php" scriptParameters="profile:rename 2 &quot;Sacrifical profile&quot;">
+    <method v="2" />
+  </configuration>
+</component>

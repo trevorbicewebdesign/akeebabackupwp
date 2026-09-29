@@ -1,0 +1,3 @@
+<component name="DependencyValidationManager">
+  <scope name="Copyright" pattern="file:engine//*||file:connector_development//*||file:extract_cacert.php||file:ini_to_json.php" />
+</component>

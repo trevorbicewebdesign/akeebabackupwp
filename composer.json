@@ -1,0 +1,8 @@
+{
+    "name": "trevorbicewebdesign/akeebabackupwp",
+    "description": "Akeeba Backup CORE for WordPress (unofficial mirror for Composer; files are the vendor's release, unchanged)",
+    "type": "wordpress-plugin",
+    "require": {
+        "composer/installers": "^1.0 || ^2.0"
+    }
+}

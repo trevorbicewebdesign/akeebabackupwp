@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--~
+  ~ @package   solo
+  ~ @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
+  ~ @license   GNU General Public License version 3, or later
+  -->
+
+<schema>
+    <!-- Metadata -->
+    <meta>
+        <!-- Supported driver types -->
+        <drivers>
+            <driver>mysql</driver>
+            <driver>mysqli</driver>
+            <driver>pdomysql</driver>
+        </drivers>
+    </meta>
+
+    <!-- SQL commands to run on installation and update -->
+    <sql>
+        <action table="#__akeeba_common" canfail="0">
+            <condition type="missing" value=""/>
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__akeeba_common` (
+	`key` varchar(190) NOT NULL,
+	`value` longtext NOT NULL,
+	PRIMARY KEY (`key`)
+) DEFAULT COLLATE utf8_general_ci CHARSET=utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_params" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_params` (
+  `tag` varchar(255) NOT NULL,
+  `data` longtext,
+  PRIMARY KEY (`tag`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_profiles" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_profiles` (
+`id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+`description` varchar(255) NOT NULL,
+`configuration` longtext,
+`filters` longtext,
+`quickicon` tinyint(3) NOT NULL DEFAULT '1',
+PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_profiles" canfail="1">
+            <condition type="equals" operator="not" value="1"><![CDATA[
+SELECT COUNT(*) FROM `#__ak_profiles` WHERE `id` = 1;
+            ]]></condition>
+
+            <query><![CDATA[
+INSERT IGNORE INTO `#__ak_profiles`
+(`id`,`description`, `configuration`, `filters`, `quickicon`) VALUES
+(1,'Default Backup Profile','','',1);
+            ]]></query>
+        </action>
+
+        <action table="#__ak_stats" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_stats` (
+	`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+	`description` varchar(255) NOT NULL,
+	`comment` longtext,
+	`backupstart` timestamp NULL DEFAULT NULL,
+	`backupend` timestamp NULL DEFAULT NULL,
+	`status` enum('run','fail','complete') NOT NULL DEFAULT 'run',
+	`origin` varchar(30) NOT NULL DEFAULT 'backend',
+	`type` varchar(30) NOT NULL DEFAULT 'full',
+	`profile_id` bigint(20) NOT NULL DEFAULT '1',
+	`archivename` longtext,
+	`absolute_path` longtext,
+	`multipart` int(11) NOT NULL DEFAULT '0',
+	`tag` varchar(255) DEFAULT NULL,
+	`backupid` varchar(255) DEFAULT NULL,
+	`filesexist` tinyint(3) NOT NULL DEFAULT '1',
+	`remote_filename` varchar(1000) DEFAULT NULL,
+	`total_size` bigint(20) NOT NULL DEFAULT '0',
+	`frozen` tinyint(1) NOT NULL DEFAULT '0',
+	`instep` tinyint(1) NOT NULL DEFAULT '0',
+	PRIMARY KEY (`id`),
+	KEY `idx_fullstatus` (`filesexist`,`status`),
+	KEY `idx_stale` (`status`,`origin`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_storage" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_storage` (
+	`tag` varchar(255) NOT NULL,
+	`lastupdate` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+	`data` longtext,
+	PRIMARY KEY (`tag`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_users" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_users` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `username` varchar(255) NOT NULL,
+  `name` varchar(255) NOT NULL,
+  `email` varchar(255) NOT NULL,
+  `password` varchar(255) NOT NULL,
+  `parameters` longtext,
+  PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_schedules" canfail="0">
+            <condition type="missing" value="" />
+            <query><![CDATA[
+CREATE TABLE IF NOT EXISTS `#__ak_schedules`
+(
+    `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `description` VARCHAR(255) NULL,
+    `profile_id` INT UNSIGNED NOT NULL,
+    `cron_expression` TEXT,
+    `last_exit` TINYINT SIGNED NOT NULL DEFAULT 0,
+    `last_run_start` DATETIME NULL DEFAULT NULL,
+    `last_run_end` DATETIME NULL DEFAULT NULL,
+    `storage` MEDIUMTEXT,
+    PRIMARY KEY (`id`),
+    CONSTRAINT FOREIGN KEY
+        `#__ak_schedules_profile` (`profile_id`)
+        REFERENCES `#__ak_profiles` (`id`)
+        ON DELETE CASCADE,
+    INDEX (`last_exit`)
+) DEFAULT CHARACTER SET utf8;
+            ]]></query>
+        </action>
+
+        <!-- Add the backupid column to #__ak_stats if it's missing -->
+        <action table="#__ak_stats" canfail="1">
+            <condition type="missing" value="backupid" />
+            <query><![CDATA[
+ALTER TABLE `#__ak_stats`
+ADD COLUMN `backupid` varchar(255) DEFAULT NULL
+AFTER `tag`
+            ]]></query>
+        </action>
+
+        <!-- Add the quickicon column to #__ak_profiles if it's missing -->
+        <action table="#__ak_profiles" canfail="1">
+            <condition type="missing" value="quickicon" />
+            <query><![CDATA[
+ALTER TABLE `#__ak_profiles`
+ADD COLUMN `quickicon` tinyint(3) NOT NULL DEFAULT '1'
+AFTER `filters`
+            ]]></query>
+        </action>
+
+	<action table="#__akeeba_common" canfail="1">
+                <condition type="true" />
+                <query><![CDATA[
+ALTER TABLE `#__akeeba_common` MODIFY COLUMN `key` varchar(190) COLLATE utf8_unicode_ci NOT NULL;
+                ]]></query>
+        </action>
+
+        <!-- Add the frozen column to #__ak_stats if it's missing -->
+        <action table="#__ak_stats" canfail="1">
+            <condition type="missing" value="frozen" />
+            <query><![CDATA[
+ALTER TABLE `#__ak_stats` ADD COLUMN `frozen` tinyint(1) DEFAULT '0';
+            ]]></query>
+        </action>
+
+        <!-- Add the instep column to #__ak_stats if it's missing -->
+        <action table="#__ak_stats" canfail="1">
+            <condition type="missing" value="instep" />
+            <query><![CDATA[
+ALTER TABLE `#__ak_stats` ADD COLUMN `instep` tinyint(1) DEFAULT '0';
+            ]]></query>
+        </action>
+
+        <!-- Change datetime fields to nullable -->
+        <action table="#__ak_stats" canfail="1">
+            <condition type="nullable" value="backupstart" operator="not"/>
+            <query><![CDATA[
+        ALTER TABLE `#__ak_stats` MODIFY `backupstart` TIMESTAMP NULL DEFAULT NULL;
+        ]]></query>
+            <query><![CDATA[
+        UPDATE `#__ak_stats` SET `backupstart` = NULL WHERE `backupstart` = '0000-00-00 00:00:00';
+        ]]></query>
+        </action>
+
+        <action table="#__ak_stats" canfail="1">
+            <condition type="nullable" value="backupend" operator="not"/>
+            <query><![CDATA[
+        ALTER TABLE `#__ak_stats` MODIFY `backupend` TIMESTAMP NULL DEFAULT NULL;
+        ]]></query>
+            <query><![CDATA[
+        UPDATE `#__ak_stats` SET `backupend` = NULL WHERE `backupend` = '0000-00-00 00:00:00';
+        ]]></query>
+        </action>
+
+        <!-- Nuke any old record inside the ak_storage table -->
+        <action table="#__ak_storage" canfail="1">
+            <condition type="equals" operator="not" value="0"><![CDATA[
+SELECT COUNT(*) FROM `#__ak_storage`;
+            ]]></condition>
+
+            <query><![CDATA[
+TRUNCATE TABLE `#__ak_storage`;
+            ]]></query>
+        </action>
+
+        <!-- 7.5.6 :: Convert tables to InnoDB -->
+        <action table="#__ak_profiles" canfail="1">
+            <condition type="equals" operator="not" value="1"><![CDATA[
+SELECT COUNT(*) FROM `INFORMATION_SCHEMA`.`TABLES` WHERE (`TABLE_NAME` = '#__ak_profiles') AND (`TABLE_SCHEMA` = DATABASE()) AND (`ENGINE` = 'InnoDB');
+            ]]></condition>
+            <query><![CDATA[
+ALTER TABLE `#__ak_profiles` ENGINE InnoDB;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_stats" canfail="1">
+            <condition type="equals" operator="not" value="1"><![CDATA[
+SELECT COUNT(*) FROM `INFORMATION_SCHEMA`.`TABLES` WHERE (`TABLE_NAME` = '#__ak_stats') AND (`TABLE_SCHEMA` = DATABASE()) AND (`ENGINE` = 'InnoDB');
+            ]]></condition>
+            <query><![CDATA[
+ALTER TABLE `#__ak_stats` ENGINE InnoDB;
+            ]]></query>
+        </action>
+
+        <action table="#__ak_storage" canfail="1">
+            <condition type="equals" operator="not" value="1"><![CDATA[
+SELECT COUNT(*) FROM `INFORMATION_SCHEMA`.`TABLES` WHERE (`TABLE_NAME` = '#__ak_storage') AND (`TABLE_SCHEMA` = DATABASE()) AND (`ENGINE` = 'InnoDB');
+            ]]></condition>
+            <query><![CDATA[
+ALTER TABLE `#__ak_storage` ENGINE InnoDB;
+            ]]></query>
+        </action>
+    </sql>
+</schema>

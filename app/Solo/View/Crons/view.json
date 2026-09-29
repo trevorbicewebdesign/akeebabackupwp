@@ -1,0 +1,5 @@
+{
+    "show":     ["main"],
+    "order":    90,
+    "privileges": ["akeeba.configure"]
+}

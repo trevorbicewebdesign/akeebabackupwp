@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" serverName="MyOldSite">
+    <serverData>
+      <paths name="MyOldSite">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/administrator/components/com_akeeba/BackupEngine" local="$PROJECT_DIR$/engine" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+  </component>
+</project>

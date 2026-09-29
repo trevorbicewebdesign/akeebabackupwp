@@ -1,0 +1,140 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+.akeeba-popover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1060;
+  display: block;
+  max-width: 276px;
+  font-family: Arial, sans-serif;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  text-decoration: none;
+  text-shadow: none;
+  text-transform: none;
+  letter-spacing: normal;
+  word-break: normal;
+  word-spacing: normal;
+  white-space: normal;
+  line-break: auto;
+  font-size: .8rem;
+  word-wrap: break-word;
+  background-color: $white;
+  background-clip: padding-box;
+  border: 1px solid darken($light-grey, 10%);
+  border-radius: .5rem;
+  padding: 0;
+}
+
+.akeeba-popover-title {
+  margin: 0 !important;
+  padding: 0.5em !important;
+  background: $light-grey;
+  font-size: 0.9rem;
+  color: $grey;
+  border-bottom: thin solid darken($light-grey, 10%);
+}
+
+.akeeba-popover-content {
+  padding: 1em 1em 2em;
+  color: $grey;
+}
+
+/**
+ * Simple CSS tooltips
+ */
+
+.akeeba-hasTooltip {
+  position: relative;
+
+  .akeeba-tooltip-text {
+    visibility: hidden;
+    width: 180px;
+    background-color: darken($grey, 10%);
+    color: $white;
+    text-align: center;
+    padding: 5px 0;
+    border-radius: 6px;
+
+    /* Position the tooltip text! */
+    position: absolute;
+    z-index: 1001;
+
+    &:after {
+      content: " ";
+      position: absolute;
+      border-width: 5px;
+      border-style: solid;
+    }
+  }
+
+  &:hover {
+    .akeeba-tooltip-text {
+      visibility: visible;
+    }
+  }
+
+  .akeeba-tooltip-text-left {
+    top: -5px;
+    right: 105%;
+
+    &:after {
+      top: 50%;
+      left: 100%; /* To the right of the tooltip */
+      margin-top: -5px;
+      border-color: transparent transparent transparent darken($grey, 10%);
+    }
+  }
+
+  .akeeba-tooltip-text-right {
+    top: -5px;
+    left: 105%;
+
+    &:after {
+      top: 50%;
+      right: 100%; /* To the left of the tooltip */
+      margin-top: -5px;
+      border-color: transparent darken($grey, 10%) transparent transparent;
+    }
+  }
+
+
+  .akeeba-tooltip-text-top {
+    width: 180px;
+    bottom: 100%;
+    left: 50%;
+    margin-left: -90px;
+
+    &:after {
+      top: 100%; /* At the bottom of the tooltip */
+      left: 50%;
+      margin-left: -5px;
+      border-color: darken($grey, 10%) transparent transparent transparent;
+    }
+
+  }
+
+  .akeeba-tooltip-text-bottom {
+    width: 180px;
+    top: 100%;
+    left: 50%;
+    margin-left: -90px;
+
+    &:after {
+      bottom: 100%; /* At the top of the tooltip */
+      left: 50%;
+      margin-left: -5px;
+      border-color: transparent transparent darken($grey, 10%) transparent;
+    }
+  }
+}
+

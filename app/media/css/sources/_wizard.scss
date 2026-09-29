@@ -1,0 +1,52 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+#confwiz-steps {
+  display: flex;
+  flex-direction: column;
+  gap: .5em;
+
+  div.confwiz-step {
+    padding: .5em;
+    border: thin solid $light-grey;
+    border-radius: .25em;
+    background-color: $light-grey;
+    color: $grey;
+
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: .5em;
+  }
+
+  span[id^="step-"] {
+    width: 1.5em;
+    height: 1.5em;
+    text-align: center;
+    border: thin solid transparent;
+    border-radius: .25em;
+  }
+
+  span[id$="-wait"] {
+    color: $light-grey;
+  }
+
+  span[id$="-run"] {
+    color: $teal;
+  }
+
+  span[id$="-done"] {
+    color: $white;
+    background-color: $green;
+  }
+
+  span[id$="-error"] {
+    color: $white;
+    background-color: $red;
+  }
+}

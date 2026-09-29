@@ -1,0 +1,23 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+#DialogBody
+{
+  // Fix changelog scrolling in modal window
+  overflow: scroll;
+}
+
+ul.akeeba-changelog {
+  list-style-type: none;
+  padding: .5em;
+  margin: .25em;
+
+  li {
+    line-height: 1.3;
+    padding: 0;
+    margin: 0 0 .5em;
+  }
+}

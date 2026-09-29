@@ -1,0 +1,14 @@
+{
+    "brs-wordpress": {
+        "name": "Akeeba Backup Restoration Script for WordPress",
+        "package": "brs.jpa,brs-wordpress.jpa",
+        "language": "language-brs.jpa,language-wordpress.jpa",
+        "installerroot": "installation",
+        "sqlroot": "installation\/sql",
+        "databasesini": "1",
+        "readme": "1",
+        "extrainfo": "1",
+        "password": "1",
+        "typedtablelist": "1"
+    }
+}

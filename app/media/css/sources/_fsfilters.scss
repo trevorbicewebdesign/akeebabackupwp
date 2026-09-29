@@ -1,0 +1,140 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+/**
+ * Filesystem filters
+ */
+
+#ak_crumbs_container {
+  padding: 6px 0 2px 0;
+}
+
+#ak_crumbs {
+  display: inline;
+  color: $grey;
+
+  span {
+    padding: 1px 3px;
+    cursor: pointer;
+  }
+}
+
+#folders, #files {
+  height: 300px;
+  overflow-y: auto;
+}
+
+.folder-header, .file-header {
+  margin-bottom: .5em !important;
+
+  .folder-name, .file-name {
+    color: lighten($grey, 20%) !important;
+    cursor: unset !important;
+
+    &:hover {
+      color: unset !important;
+    }
+  }
+}
+
+.folder-container {
+  &:nth-of-type(2n) {
+    background-color: rgba(0,100,128,0.05);
+  }
+
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: start;
+
+  .folder-name {
+    flex-grow: 1;
+    margin: 0 .25em;
+    color: $grey;
+    cursor: pointer;
+
+    &:hover {
+      color: $teal;
+    }
+  }
+
+  .btn-danger, .akeeba-btn--red {
+    cursor: not-allowed !important;
+  }
+
+  &+.folder-container {
+    margin-bottom: .25em;
+  }
+}
+
+.file-container {
+  &:nth-of-type(2n) {
+    background-color: rgba(0,100,128,0.05);
+  }
+
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: start;
+
+  .file-icon-container {
+    flex-shrink: 1;
+  }
+
+  .file-name {
+    flex-grow: 1;
+    padding: 0 .25em;
+
+    color: $grey;
+    font-weight: normal;
+  }
+
+  span.file-clickable {
+    cursor: pointer;
+
+    &:hover {
+      font-weight: bold;
+      color: $red;
+    }
+  }
+
+  span.file-size {
+    flex-shrink: 0;
+    flex-basis: 5em;
+    text-align: right;
+    color: lighten($grey, 20%);
+  }
+
+  .btn-danger, .akeeba-btn--red {
+    cursor: not-allowed !important;
+  }
+
+  &+.file-container {
+    margin-bottom: .25em;
+  }
+}
+
+#ak_list_container {
+  padding: 4px;
+}
+
+.ak_filter_type {
+  font-weight: bold;
+}
+
+.ak_filter_row {
+  .ak_filter_tab_icon_container {
+    float: left;
+    /*cursor: pointer;*/
+    margin-right: 4px;
+  }
+}
+
+#addnewfilter {
+  padding: 0.6em 0;
+}

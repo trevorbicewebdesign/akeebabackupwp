@@ -1,0 +1,108 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+@use "sass:color";
+
+/* region Filter bar (above tables) */
+.akeeba-renderer-fef {
+  form[class*=akeeba-form] {
+    [class*=akeeba-filter-bar-container] {
+      [class*=akeeba-form-section] {
+        margin-bottom: 0;
+      }
+    }
+  }
+
+  div[class*=akeeba-filter-bar] {
+    &[class*=--right] {
+      text-align: right;
+    }
+
+    select.custom-select {
+      min-width: 0;
+      max-width: 115px;
+    }
+  }
+
+  div.akeeba-filter-element {
+    display: inline-block;
+    margin-right: 0.5em;
+
+    button[class*=--icon-only] {
+      & + button[class*=--icon-only] {
+        margin-left: 0;
+      }
+
+      [class*=akion-] {
+        margin: 0;
+        vertical-align: baseline;
+      }
+    }
+  }
+}
+
+/* endregion */
+
+/* region Form styling fixes (to backport into FEF) */
+
+div.akeeba-hidden-fields-container {
+  height: 0;
+}
+
+.akeeba-renderer-fef form[class*=--with-hidden] {
+  margin-bottom: 0;
+}
+
+.akeeba-renderer-fef form[class*=akeeba-form][class*=--no-margins] [class*=akeeba-form-group] {
+  margin-bottom: 0;
+}
+
+/* endregion */
+
+/**
+ * Form styling fixes
+ */
+.akeeba-renderer-fef {
+  div.akeeba-hidden-fields-container {
+    height: 0;
+  }
+
+  form[class*=--with-hidden] {
+    margin-bottom: 0;
+  }
+}
+
+/**
+ * Breadcrumbs
+ */
+ul.akeeba-breadcrumb {
+  display: -webkit-box;
+  display: flex;
+  flex-wrap: wrap;
+  padding: .75rem 1rem;
+  list-style: none;
+  color: lighten($grey, 20%);
+
+  li {
+    display: inline-block;
+
+    a {
+      color: $grey;
+      text-decoration: none;
+
+      &:hover {
+        color: $teal;
+        text-decoration: none;
+      }
+    }
+
+    span.divider {
+      display: inline-block;
+      padding: 0 0.5em;
+      color: lighten($grey, 20%);
+    }
+  }
+}

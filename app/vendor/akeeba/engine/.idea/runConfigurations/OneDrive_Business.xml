@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="OneDrive Business" type="PhpLocalRunConfigurationType" factoryName="PHP Console" folderName="Connector" path="$PROJECT_DIR$/connector_development/run.php" scriptParameters="oneDriveBusiness">
+    <method v="2" />
+  </configuration>
+</component>

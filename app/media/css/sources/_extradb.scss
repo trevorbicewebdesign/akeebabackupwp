@@ -1,0 +1,21 @@
+/*
+ * @package   solo
+ * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/*
+ * Multiple databases definitions and Include Off-site Folders
+ */
+
+/**
+ * Use in akeeba-table tables when you are going to have <input> inside <td>. Otherwise the TDs with INPUTs will have
+ * their content appear like it's pushed down by an invisible padding because of vertical-align: baseline.
+ */
+table[class*=--dynamic-line-editor] td {
+  vertical-align: middle;
+}
+
+#ak_editor_notifier img {
+  margin: 0 2em;
+}

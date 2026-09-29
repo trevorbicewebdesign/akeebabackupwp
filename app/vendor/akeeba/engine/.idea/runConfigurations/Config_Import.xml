@@ -1,0 +1,5 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Config Import" type="PhpLocalRunConfigurationType" factoryName="PHP Console" folderName="Platform" path="$PROJECT_DIR$/dev_platform/index.php" scriptParameters="config:import profile.json --profile=1">
+    <method v="2" />
+  </configuration>
+</component>
