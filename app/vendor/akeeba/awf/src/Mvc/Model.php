@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -446,6 +446,17 @@ class Model implements ContainerAwareInterface, LanguageAwareInterface
 		$clone = clone($this);
 
 		return $clone;
+	}
+
+	/**
+	 * Deep-clone the state object so that a cloned model has independent state.
+	 */
+	public function __clone()
+	{
+		if (is_object($this->state))
+		{
+			$this->state = clone $this->state;
+		}
 	}
 
 	/**

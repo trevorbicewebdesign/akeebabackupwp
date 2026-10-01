@@ -60,7 +60,7 @@ $router = $this->getContainer()->router;
 				   data-content="@lang('COM_AKEEBA_PROFILES_LABEL_DESCRIPTION_TOOLTIP')">
 				@lang('COM_AKEEBA_PROFILES_LABEL_DESCRIPTION')
 			</label>
-            <input type="text" name="profilename" id="profilename" value="{{ $this->profilename }}" />
+            <input type="text" name="profilename" id="profilename" value="{{{ $this->profilename }}}" />
 		</div>
 
 		<div class="akeeba-form-group">

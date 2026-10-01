@@ -128,18 +128,19 @@ class Html extends View
 
 		// Script options
 		$router  = $this->getContainer()->router;
-		$ajaxURL = $router->route('index.php?view=configuration&task=dpecustomapi&format=raw');
+		$token   = $this->container->session->getCsrfToken()->getValue();
+		$ajaxURL = $router->route('index.php?view=configuration&task=dpecustomapi&format=raw&' . $token . '=1');
 		$json    = Factory::getEngineParamsProvider()->getJsonGuiDefinition();
 
-		$document->addScriptOptions('akeeba.Configuration.token', $this->container->session->getCsrfToken()->getValue());
+		$document->addScriptOptions('akeeba.Configuration.token', $token);
 
 		$document->addScriptOptions('akeeba.Configuration.URLs', [
 			'browser'      => $router->route('index.php?view=browser&tmpl=component&processfolder=1&folder='),
 			'ftpBrowser'   => $router->route('index.php?view=ftpbrowser&tmpl=component'),
 			'sftpBrowser'  => $router->route('index.php?view=sftpbrowser&tmpl=component'),
-			'testFtp'      => $router->route('index.php?view=configuration&task=testftp&format=raw'),
-			'testSftp'     => $router->route('index.php?view=configuration&task=testsftp&format=raw'),
-			'dpeauthopen'  => $router->route('index.php?view=configuration&task=dpeoauthopen&format=raw'),
+			'testFtp'      => $router->route('index.php?view=configuration&task=testftp&format=raw&' . $token . '=1'),
+			'testSftp'     => $router->route('index.php?view=configuration&task=testsftp&format=raw&' . $token . '=1'),
+			'dpeauthopen'  => $router->route('index.php?view=configuration&task=dpeoauthopen&format=raw&' . $token . '=1'),
 			'dpecustomapi' => $ajaxURL,
 		]);
 		$document->addScriptOptions('akeeba.System.params.AjaxURL', $ajaxURL);

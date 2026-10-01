@@ -42,6 +42,9 @@ class Log extends ControllerDefault
 
 		if (!empty($profile_id) && is_numeric($profile_id) && ($profile_id > 0))
 		{
+			// Switching the active profile is a state change; it requires an anti-CSRF token.
+			$this->csrfProtection();
+
 			$this->getContainer()->segment->profile = $profile_id;
 		}
 
@@ -116,8 +119,7 @@ class Log extends ControllerDefault
 		$asAttachment = $this->input->getBool('attachment', true);
 
 		@ob_end_clean(); // In case some braindead plugin spits its own HTML
-		header("Cache-Control: no-cache, must-revalidate"); // HTTP/1.1
-		header("Expires: Sat, 26 Jul 1997 05:00:00 GMT"); // Date in the past
+		$this->sendNoCacheHeaders();
 		header("Content-Description: File Transfer");
 		header('Content-Type: text/plain');
 

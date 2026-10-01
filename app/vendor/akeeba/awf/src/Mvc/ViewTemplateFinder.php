@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -9,6 +9,7 @@ namespace Awf\Mvc;
 
 use Awf\Container\ContainerAwareInterface;
 use Awf\Container\ContainerAwareTrait;
+use Awf\Exception\LayoutNotFoundException;
 use Awf\Inflector\Inflector;
 use Awf\Utils\Path;
 
@@ -273,7 +274,7 @@ class ViewTemplateFinder implements ContainerAwareInterface
 			}
 		}
 
-		throw new \Exception($this->getContainer()->language->sprintf('AWF_APPLICATION_ERROR_LAYOUTFILE_NOT_FOUND', $uri), 500);
+		throw new LayoutNotFoundException($this->getContainer()->language->sprintf('AWF_APPLICATION_ERROR_LAYOUTFILE_NOT_FOUND', $uri), 500);
 	}
 
 	/**

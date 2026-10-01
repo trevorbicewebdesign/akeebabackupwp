@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -36,6 +36,18 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 {
 	use WarningsLoggerAware;
 
+	/** @var  string  Log file name suffix for the default, web-inaccessible log file */
+	private const SUFFIX_LOG_PHP = '.log.php';
+
+	/** @var  string  Log file name suffix for the fallback, still web-inaccessible log file */
+	private const SUFFIX_PHP = '.php';
+
+	/** @var  string  Log file name suffix for the fallback, web-accessible log file */
+	private const SUFFIX_LOG = '.log';
+
+	/** @var  string[]  All log file name suffixes we may have ever used */
+	private const ALL_SUFFIXES = [self::SUFFIX_LOG_PHP, self::SUFFIX_PHP, self::SUFFIX_LOG];
+
 	/** @var  string  Full path to log file */
 	protected $logName = null;
 
@@ -58,10 +70,24 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 	protected $site_root;
 
 	/**
-	 * Public constructor. Initialises the properties with the parameters from the backup profile and platform.
+	 * Should I fall back to a web-accessible .log file if I cannot create a .log.php file?
+	 *
+	 * When disabled (the default) the fallback is a .php file instead, keeping the privileged information in the log
+	 * file inaccessible over the web. If that fails as well logging is paused.
+	 *
+	 * @var  bool
 	 */
-	public function __construct()
+	protected $allowPlainLogFiles = false;
+
+	/**
+	 * Public constructor. Initialises the properties with the parameters from the backup profile and platform.
+	 *
+	 * @param   bool  $allowPlainLogFiles  Allow falling back to a web-accessible .log file?
+	 */
+	public function __construct($allowPlainLogFiles = false)
 	{
+		$this->allowPlainLogFiles = (bool) $allowPlainLogFiles;
+
 		$this->initialiseWithProfileParameters();
 	}
 
@@ -83,60 +109,77 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 		// Pause logging
 		$this->pause();
 
-		// Get the file names for the default log and the tagged log
+		// Get the file names of all log file flavours for this tag
 		$currentLogName = $this->logName;
-		$this->logName  = $this->getLogFilename($tag);
+		$taggedLogNames = $this->getAllLogFilenames($tag);
+
+		$this->logName = $this->getLogFilename($tag);
 
 		// Close the file if it's open
-		if ($currentLogName == $this->logName)
+		if (in_array($currentLogName, $taggedLogNames, true))
 		{
 			$this->close();
 		}
 
-		// Remove the log file if it exists
-		@unlink($this->logName);
+		// Remove all log file flavours for this tag
+		foreach ($taggedLogNames as $taggedLogName)
+		{
+			@unlink($taggedLogName);
+		}
 
-		// Reset the log file
-		$fp = @fopen($this->logName, 'w');
 		$hasWritten = false;
 
-		if ($fp !== false)
+		// Try each candidate log file until one of them can be created and written to
+		foreach ($this->getCandidateSuffixes() as $suffix)
 		{
-			$hasWritten = fwrite($fp, '<' . '?' . 'php die(); ' . '?' . '>' . "\n") !== false;
-			@fclose($fp);
-		}
+			$this->logName = $this->getLogFilenameWithSuffix($tag, $suffix);
 
-		// If I could not write to a .log.php file try using a .log file instead.
-		if (!$hasWritten)
-		{
-			$this->logName  = $this->getLogFilename($tag, '');
+			// Reset the log file
 			$fp = @fopen($this->logName, 'w');
-			$hasWritten = false;
 
-			if ($fp !== false)
+			if ($fp === false)
 			{
-				$hasWritten = fwrite($fp, "\n") !== false;
-				@fclose($fp);
+				continue;
 			}
+
+			$contents   = substr($suffix, -4) === self::SUFFIX_PHP
+				? '<' . '?' . 'php die(); ' . '?' . '>' . "\n"
+				: "\n";
+			$hasWritten = fwrite($fp, $contents) !== false;
+
+			@fclose($fp);
+
+			if ($hasWritten)
+			{
+				break;
+			}
+
+			// The file was created but I can't write to it. Do not leave it behind.
+			@unlink($this->logName);
 		}
 
-		// Delete the default log file(s) if they exists
-		$defaultLog     = $this->getLogFilename(null);
-
-		if (!empty($tag) && @file_exists($defaultLog))
+		// Delete the default log file(s) if they exist
+		if (!empty($tag))
 		{
-			@unlink($defaultLog);
-		}
+			foreach (self::ALL_SUFFIXES as $suffix)
+			{
+				$defaultLog = $this->getLogFilenameWithSuffix(null, $suffix);
 
-		$defaultLog     = $this->getLogFilename(null, '');
-
-		if (!empty($tag) && @file_exists($defaultLog))
-		{
-			@unlink($defaultLog);
+				if (@file_exists($defaultLog))
+				{
+					@unlink($defaultLog);
+				}
+			}
 		}
 
 		// Set the current log tag
 		$this->currentTag = $tag;
+
+		// If there is nowhere to write the log to we have to keep the logging paused
+		if (!$hasWritten)
+		{
+			return;
+		}
 
 		// Unpause logging
 		$this->unpause();
@@ -165,6 +208,12 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 			return;
 		}
 
+		// If the logging is paused we can't continue
+		if ($this->paused)
+		{
+			return;
+		}
+
 		// Open the log if it's closed
 		if (is_null($this->fp))
 		{
@@ -173,12 +222,6 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 
 		// If the log could not be opened we can't continue
 		if (is_null($this->fp))
-		{
-			return;
-		}
-
-		// If the logging is paused we can't continue
-		if ($this->paused)
 		{
 			return;
 		}
@@ -262,20 +305,47 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 	/**
 	 * Calculates the absolute path to the log file
 	 *
-	 * @param   string  $tag  The backup run's tag
+	 * @param   string  $tag        The backup run's tag
+	 * @param   string  $extension  The extension after the .log part of the file name ('' for a plain .log file)
 	 *
 	 * @return    string    The absolute path to the log file
 	 */
 	public function getLogFilename($tag = null, $extension = '.php')
 	{
-		if (empty($tag))
-		{
-			$fileName = 'akeeba.log' . $extension;
-		}
-		else
-		{
-			$fileName = "akeeba.$tag.log" . $extension;
-		}
+		return $this->getLogFilenameWithSuffix($tag, self::SUFFIX_LOG . $extension);
+	}
+
+	/**
+	 * Calculates the absolute paths to all log file flavours we may have ever created for a backup run.
+	 *
+	 * The paths are returned in order of preference: the .log.php file first, then the .php file, and finally the
+	 * .log file. The files are not guaranteed to exist.
+	 *
+	 * @param   string|null  $tag  The backup run's tag
+	 *
+	 * @return  string[]
+	 */
+	public function getAllLogFilenames($tag = null)
+	{
+		return array_map(
+			function ($suffix) use ($tag) {
+				return $this->getLogFilenameWithSuffix($tag, $suffix);
+			},
+			self::ALL_SUFFIXES
+		);
+	}
+
+	/**
+	 * Calculates the absolute path to the log file with a specific log file name suffix
+	 *
+	 * @param   string|null  $tag     The backup run's tag
+	 * @param   string       $suffix  The log file name suffix, one of the SUFFIX_* constants
+	 *
+	 * @return  string  The absolute path to the log file
+	 */
+	protected function getLogFilenameWithSuffix($tag = null, $suffix = self::SUFFIX_LOG_PHP)
+	{
+		$fileName = (empty($tag) ? 'akeeba' : "akeeba.$tag") . $suffix;
 
 		// Get output directory
 		$registry        = Factory::getConfiguration();
@@ -285,6 +355,32 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 		$absoluteLogFilename = Factory::getFilesystemTools()->TranslateWinPath($outputDirectory . DIRECTORY_SEPARATOR . $fileName);
 
 		return $absoluteLogFilename;
+	}
+
+	/**
+	 * Returns the log file name suffixes to try, in order, when creating a log file.
+	 *
+	 * The first choice is always a .log.php file. Some hosts, like WP Engine, do not let us write to files with a .php
+	 * extension. In this case we fall back to a .php file — which some of these hosts do allow — and, only if this
+	 * class is explicitly told to, to a .log file. The latter is a last ditch effort; it is readable over the web,
+	 * exposing the privileged information in the log file.
+	 *
+	 * @param   string  $extension  The requested log file extension. Anything other than '.php' is honoured verbatim.
+	 *
+	 * @return  string[]
+	 */
+	protected function getCandidateSuffixes($extension = '.php')
+	{
+		// An explicit request for a specific extension is honoured verbatim, without any fallback
+		if ($extension !== self::SUFFIX_PHP)
+		{
+			return [self::SUFFIX_LOG . $extension];
+		}
+
+		return [
+			self::SUFFIX_LOG_PHP,
+			$this->allowPlainLogFiles ? self::SUFFIX_LOG : self::SUFFIX_PHP,
+		];
 	}
 
 	/**
@@ -308,7 +404,8 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 	 * Open a new log instance with the specified tag. If another log is already open it is closed before switching to
 	 * the new log tag. If the tag is null use the default log defined in the logging system.
 	 *
-	 * @param   string|null  $tag  The log to open
+	 * @param   string|null  $tag        The log to open
+	 * @param   string       $extension  The log file extension (default: .php, use empty string for .log files)
 	 *
 	 * @return void
 	 */
@@ -332,8 +429,33 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 		// Set the current tag
 		$this->currentTag = $tag;
 
+		// Try each candidate log file in turn until one of them can be opened and written to
+		foreach ($this->getCandidateSuffixes($extension) as $suffix)
+		{
+			if ($this->openWithSuffix($tag, $suffix))
+			{
+				return;
+			}
+		}
+
+		// I have nowhere to write the log to. Pause the logging.
+		$this->fp = null;
+
+		$this->pause();
+	}
+
+	/**
+	 * Try to open the log file with the given tag and log file name suffix.
+	 *
+	 * @param   string|null  $tag     The log to open
+	 * @param   string       $suffix  The log file name suffix, one of the SUFFIX_* constants
+	 *
+	 * @return  bool  True if the log file was opened and is writeable
+	 */
+	protected function openWithSuffix($tag, $suffix)
+	{
 		// Get the log filename
-		$this->logName = $this->getLogFilename($tag, $extension);
+		$this->logName = $this->getLogFilenameWithSuffix($tag, $suffix);
 
 		// Touch the file
 		@touch($this->logName);
@@ -346,32 +468,28 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 		{
 			$this->fp = null;
 
-			return;
+			return false;
 		}
 
 		// Go to the end of the file, emulating append mode. DO NOT REPLACE THE fopen() FILE MODE!
 		if (@fseek($this->fp, 0, SEEK_END) === -1)
 		{
-			@fclose($this->fp);
-			@unlink($this->logName);
+			$this->closeAndRemove();
 
-			$this->fp = null;
-
-			return;
+			return false;
 		}
 
 		/**
 		 * The following sounds pretty stupid but there is a reason for that convoluted code.
 		 *
 		 * Some hosts, like WP Engine, will now allow you to write to a log file with a .php extension. The code below
-		 * tries to anticipate that when the log extension is .php. It will try to write to the *.log.php file and the
-		 * text is actually resembling PHP code. Hosts like WP Engine will fail the fwrite() which will cause this
-		 * method to terminate early and return a null pointer. Our code will catch this case and try to use a .log
-		 * extension as a safe fallback.
+		 * tries to anticipate that when the log file name ends in .php. It will try to write to the file text which is
+		 * actually resembling PHP code. Hosts like WP Engine will fail the fwrite() which will cause this method to
+		 * report failure. Our caller will catch this case and try the next log file name in the fallback chain.
 		 */
-		if ($extension !== '.php')
+		if (substr($suffix, -4) !== self::SUFFIX_PHP)
 		{
-			return;
+			return true;
 		}
 
 		// Try to write something into the file
@@ -379,14 +497,9 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 
 		if ($written === false)
 		{
-			@fclose($this->fp);
-			@unlink($this->logName);
+			$this->closeAndRemove();
 
-			$this->fp = null;
-
-			$this->open($tag, '');
-
-			return;
+			return false;
 		}
 
 		// Store truncate offset, we will have to rewind the internal pointer to it
@@ -394,20 +507,30 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 
 		if (ftruncate($this->fp, $truncate_point) === false)
 		{
-			@fclose($this->fp);
-			@unlink($this->logName);
+			$this->closeAndRemove();
 
-			$this->fp = null;
-
-			$this->open($tag, '');
-
-			return;
+			return false;
 		}
 
 		// Finally, move the file pointer at the truncation point. Otherwise PHP will append NULL bytes to the string
 		// to "pad" the file length to the internal file pointer. No need to check if the operation was successful,
 		// worst case scenario we will have some extra NULL bytes, there's no need to kill the log operation
 		@fseek($this->fp, $truncate_point);
+
+		return true;
+	}
+
+	/**
+	 * Close the log file we just tried — and failed — to use, and remove it from the disk.
+	 *
+	 * @return  void
+	 */
+	protected function closeAndRemove()
+	{
+		@fclose($this->fp);
+		@unlink($this->logName);
+
+		$this->fp = null;
 	}
 
 	/**
@@ -441,24 +564,25 @@ class Logger implements LoggerInterface, LogInterface, WarningsLoggerInterface
 	 */
 	public function getLastTimestamp($tag = null)
 	{
-		$fileName = $this->getLogFilename($tag);
+		$timestamp = null;
 
 		/**
-		 * The log file akeeba.tag.log.php may not exist but the akeeba.tag.log does. This would be the case in some bad
-		 * hosts, like WPEngine, which do not allow us to create .php files EVEN THOUGH that's the only way to ensure
-		 * the privileged information in the log file is not readable over the web. You can't fix bad hosts, you can
-		 * only work around them.
+		 * The log file akeeba.tag.log.php may not exist but the akeeba.tag.php or the akeeba.tag.log does. This would
+		 * be the case in some bad hosts, like WPEngine, which do not allow us to create .php files EVEN THOUGH that's
+		 * the only way to ensure the privileged information in the log file is not readable over the web. You can't fix
+		 * bad hosts, you can only work around them.
 		 */
-		if (!@file_exists($fileName) && @file_exists(substr($fileName, 0, -4)))
+		foreach (self::ALL_SUFFIXES as $suffix)
 		{
-			$fileName = substr($fileName, 0, -4);
-		}
+			$fileName = $this->getLogFilenameWithSuffix($tag, $suffix);
+			$fileTime = @file_exists($fileName) ? @filemtime($fileName) : false;
 
-		$timestamp = @filemtime($fileName);
+			if ($fileTime === false)
+			{
+				continue;
+			}
 
-		if ($timestamp === false)
-		{
-			return null;
+			$timestamp = max($timestamp ?? 0, $fileTime);
 		}
 
 		return $timestamp;

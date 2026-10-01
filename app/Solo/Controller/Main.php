@@ -14,8 +14,8 @@ use AkeebaBackupWPUpdater;
 use Awf\Text\Text;
 use Exception;
 use RuntimeException;
+use Solo\Helper\Utils;
 use Solo\Model\Update;
-use Solo\View\Main\Html;
 
 class Main extends ControllerDefault
 {
@@ -30,10 +30,12 @@ class Main extends ControllerDefault
 		// Redirect
 		$url = $this->container->router->route('index.php?view=main');
 
-		$returnURL = $this->input->get('returnurl', '', 'raw');
+		// Sanitise the return URL. Redirecting to a raw base64_decode() of it is an open redirect.
+		$returnURL = Utils::safeDecodeReturnUrl($this->input->get('returnurl', '', 'raw'));
+
 		if (!empty($returnURL))
 		{
-			$url = base64_decode($returnURL);
+			$url = $returnURL;
 		}
 
 		$this->setRedirect($url);
@@ -118,10 +120,12 @@ HTML;
 		// Redirect
 		$url = $this->container->router->route('index.php?view=main');
 
-		$returnURL = $this->input->get('returnurl', '', 'raw');
+		// Sanitise the return URL. Redirecting to a raw base64_decode() of it is an open redirect.
+		$returnURL = Utils::safeDecodeReturnUrl($this->input->get('returnurl', '', 'raw'));
+
 		if (!empty($returnURL))
 		{
-			$url = base64_decode($returnURL);
+			$url = $returnURL;
 		}
 
 		$this->setRedirect($url, $msg, $msgType);
@@ -168,6 +172,8 @@ HTML;
 	 */
 	public function forceUpdateDb()
 	{
+		$this->csrfProtection();
+
 		// Reset the flag so the updates could take place
 		$this->container->appConfig->set('updatedb', null);
 		$this->container->appConfig->saveConfiguration();
@@ -195,6 +201,8 @@ HTML;
 	 */
 	public function dismissUpsell()
 	{
+		$this->csrfProtection();
+
 		// Reset the flag so the updates could take place
 		$this->container->appConfig->set('lastUpsellDismiss', time());
 		$this->container->appConfig->saveConfiguration();
@@ -214,6 +222,9 @@ HTML;
 	 */
 	public function checkOutputDirectory()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Main $model */
 		$model  = $this->getModel();
 		$outDir = $model->getOutputDirectory();
@@ -369,11 +380,6 @@ HTML;
 		// Reload the quirks definitions, since flagging stuck backups will reset the factory state,
 		// deleting temp objects and their settings
 		Platform::getInstance()->apply_quirk_definitions();
-
-		// Copy the ACL checks to the view. We'll use that information to show or hide icons
-		/** @var Html $view */
-		$view            = $this->getView();
-		$view->aclChecks = $this->aclChecks;
 
 		return true;
 	}

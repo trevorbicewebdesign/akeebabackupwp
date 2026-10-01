@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -45,8 +45,26 @@ class Backblaze
 	use FileCloseAware;
 	use ProxyAware;
 
-	/** The API entry point URL, only used to retrieve the authorization token */
-	public const apiURL = "https://api.backblazeb2.com/b2api/v1/";
+	/**
+	 * The B2 Native API version every call is made against.
+	 *
+	 * v4 is required — not because v1–v3 were retired (they still route), but because Multi-Bucket Application Keys can
+	 * only be used with a v4 b2_authorize_account request; earlier versions reject them with "This request is not
+	 * currently supported on API version number 1". Backblaze now mints bucket-restricted keys as multi-bucket keys, so
+	 * in practice any restricted key fails to authorize below v4.
+	 *
+	 * Backblaze versions each call individually: a token obtained from v4 works against any version, and v4 is a
+	 * superset of v1 for every endpoint we use. Keep every call on one version so there is a single place to bump.
+	 *
+	 * @see  https://www.backblaze.com/docs/cloud-storage-native-api-versions
+	 */
+	public const apiVersion = 'v4';
+
+	/**
+	 * The API entry point URL, only used to retrieve the authorization token. Every other endpoint resolves against the
+	 * per-account apiUrl (or downloadUrl) returned by b2_authorize_account.
+	 */
+	public const apiURL = 'https://api.backblazeb2.com/b2api/' . self::apiVersion . '/';
 
 	/** @var  string  The Backblaze B2 Account ID */
 	private $accountId;
@@ -102,15 +120,15 @@ class Backblaze
 		}
 
 		$apiUrl       = $this->getApiUrl();
-		$explicitPost = [
+		$explicitPost = json_encode([
 			'fileId' => $fileId,
-		];
+		]);
 		$additional   = [
 			'headers' => [
 				'Accept: application/json',
 			],
 		];
-		$apiReturn    = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_cancel_large_file', $additional, $explicitPost);
+		$apiReturn    = $this->fetch('POST', $apiUrl, $this->endpoint('b2_cancel_large_file'), $additional, $explicitPost);
 
 		return new FileInformation($apiReturn);
 	}
@@ -141,7 +159,7 @@ class Backblaze
 			],
 		];
 
-		$this->fetch('POST', $apiUrl, '/b2api/v1/b2_delete_file_version', $additional, json_encode($body));
+		$this->fetch('POST', $apiUrl, $this->endpoint('b2_delete_file_version'), $additional, json_encode($body));
 	}
 
 	/**
@@ -232,7 +250,7 @@ class Backblaze
 
 		$accountInfo = $this->getAccountInformation();
 		$url         = rtrim($accountInfo->downloadUrl, '/') . '/';
-		$relativeUrl = 'api/b2_download_file_by_id?fileId=' . $fileId;
+		$relativeUrl = $this->endpoint('b2_download_file_by_id') . '?fileId=' . $fileId;
 
 		$this->fetch('GET', $url, $relativeUrl, [
 			'headers'   => $headers,
@@ -266,7 +284,7 @@ class Backblaze
 				'Accept: application/json',
 			],
 		];
-		$apiReturn    = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_finish_large_file', $additional, $explicitPost);
+		$apiReturn    = $this->fetch('POST', $apiUrl, $this->endpoint('b2_finish_large_file'), $additional, $explicitPost);
 
 		return new FileInformation($apiReturn);
 	}
@@ -321,9 +339,32 @@ class Backblaze
 	 */
 	public function getBucketId($name, $forceRefresh = false)
 	{
-		if ($this->getAccountInformation()->allowed->bucketName == $name)
+		$allowed = $this->getAccountInformation()->allowed;
+
+		/**
+		 * Resolve against the key's own allowed–bucket list first.
+		 *
+		 * This is not merely an optimisation. A bucket-restricted key cannot list buckets under API v4: b2_list_buckets
+		 * rejects an unfiltered listing for such a key, and a least-privilege key does not even carry the listBuckets
+		 * capability. Multi-bucket keys made the old code worse still — it only ever compared against the scalar
+		 * bucketName, which Allowed seeds from the FIRST entry, so asking for any other allowed bucket missed and fell
+		 * through to b2_list_buckets. Scanning the whole list keeps every restricted key off that fallback entirely.
+		 *
+		 * Allowed normalises each entry to {bucketId, bucketName} whichever spelling the API sent, so this reads one
+		 * shape. Entries with no name (a deleted bucket) cannot be matched by name and are skipped.
+		 */
+		foreach ($allowed->buckets as $bucket)
 		{
-			return $this->getAccountInformation()->allowed->bucketId;
+			if ($bucket['bucketName'] !== '' && $bucket['bucketName'] === $name)
+			{
+				return $bucket['bucketId'];
+			}
+		}
+
+		// Pre-v4 keys carried the restricted bucket in scalar fields, with no buckets[] array.
+		if (!empty($allowed->bucketName) && $allowed->bucketName === $name)
+		{
+			return $allowed->bucketId;
 		}
 
 		if (empty($this->buckets) || $forceRefresh)
@@ -369,7 +410,7 @@ class Backblaze
 			],
 		];
 
-		$apiReturn = $this->fetch('POST', $apiUrl, '/b2api/v1/b2_list_file_versions', $additional, json_encode($body));
+		$apiReturn = $this->fetch('POST', $apiUrl, $this->endpoint('b2_list_file_versions'), $additional, json_encode($body));
 		$return    = [];
 
 		foreach ($apiReturn['files'] as $file)
@@ -419,7 +460,7 @@ class Backblaze
 			],
 		];
 
-		$apiReturn = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_get_upload_part_url', $additional, $explicitPost);
+		$apiReturn = $this->fetch('POST', $apiUrl, $this->endpoint('b2_get_upload_part_url'), $additional, $explicitPost);
 
 		return new UploadURL($apiReturn);
 	}
@@ -460,7 +501,7 @@ class Backblaze
 			],
 		];
 
-		$authResponse = $this->fetch('POST', $apiUrl, '/b2api/v1/b2_get_download_authorization', $additional, json_encode($body));
+		$authResponse = $this->fetch('POST', $apiUrl, $this->endpoint('b2_get_download_authorization'), $additional, json_encode($body));
 
 		// Construct the signed URL
 		$accountInfo = $this->getAccountInformation();
@@ -495,41 +536,50 @@ class Backblaze
 			],
 		];
 
-		$apiReturn = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_get_upload_url', $additional, $explicitPost);
+		$apiReturn = $this->fetch('POST', $apiUrl, $this->endpoint('b2_get_upload_url'), $additional, $explicitPost);
 
 		return new UploadURL($apiReturn);
 	}
 
 	/**
-	 * List all of the buckets in the account
+	 * List the buckets this account (or application key) can see.
+	 *
+	 * Since API v2, b2_list_buckets no longer auto-filters the listing for a bucket-restricted application key. Asking
+	 * for all buckets with such a key is now unauthorized; you must name the bucket you want. We therefore ask for each
+	 * bucket the key is restricted to, one call apiece, and merge the results — which reproduces what v1 used to do for
+	 * us. An unrestricted key still gets the whole account in a single call.
 	 *
 	 * @return  BucketInformation[]
 	 *
-	 * @see  https://www.backblaze.com/b2/docs/b2_list_buckets.html
+	 * @see  https://www.backblaze.com/apidocs/b2-list-buckets
 	 */
 	public function listBuckets()
 	{
-		if (!$this->getAccountInformation()->allowed->canListBuckets())
+		$allowed = $this->getAccountInformation()->allowed;
+
+		if (!$allowed->canListBuckets())
 		{
 			throw new NotAllowed('Retrieving a list of your BackBlaze B2 buckets');
 		}
 
-		$apiUrl       = $this->getApiUrl();
-		$explicitPost = json_encode([
-			'accountId' => $this->getAccountInformation()->accountId,
-		]);
-		$additional   = [
-			'headers' => [
-				'Accept: application/json',
-			],
-		];
+		$restrictedTo = array_values(array_filter(array_column($allowed->buckets, 'bucketId')));
 
-		$apiReturn = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_list_buckets', $additional, $explicitPost);
-		$return    = [];
-
-		foreach ($apiReturn['buckets'] as $bucket)
+		// Pre-v4 keys carried the restricted bucket in a scalar field, with no buckets[] array.
+		if (empty($restrictedTo) && !empty($allowed->bucketId))
 		{
-			$return[] = new BucketInformation($bucket);
+			$restrictedTo = [$allowed->bucketId];
+		}
+
+		if (empty($restrictedTo))
+		{
+			return $this->fetchBuckets();
+		}
+
+		$return = [];
+
+		foreach ($restrictedTo as $bucketId)
+		{
+			$return = array_merge($return, $this->fetchBuckets(['bucketId' => $bucketId]));
 		}
 
 		return $return;
@@ -570,7 +620,7 @@ class Backblaze
 			],
 		];
 
-		$apiReturn = $this->fetch('POST', $apiUrl, 'b2api/v1/b2_start_large_file', $additional, $explicitPost);
+		$apiReturn = $this->fetch('POST', $apiUrl, $this->endpoint('b2_start_large_file'), $additional, $explicitPost);
 
 		return new FileInformation($apiReturn);
 	}
@@ -1021,7 +1071,10 @@ class Backblaze
 		$error        = curl_error($ch);
 		$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		// Close open file pointers
 		$hadFile = false;
@@ -1133,5 +1186,51 @@ class Backblaze
 		$downloadUrl = rtrim($downloadUrl, '/');
 
 		return $downloadUrl . '/';
+	}
+
+	/**
+	 * Build the version-prefixed, relative path of a B2 Native API endpoint.
+	 *
+	 * The version lives in the URL path, so every call has to carry it. Going through here keeps self::apiVersion the
+	 * only place that has to change when Backblaze forces us onto a newer version.
+	 *
+	 * @param   string  $name  The endpoint name, e.g. b2_list_buckets
+	 *
+	 * @return  string  The relative URL to pass to fetch(), e.g. b2api/v4/b2_list_buckets
+	 */
+	private function endpoint($name)
+	{
+		return 'b2api/' . self::apiVersion . '/' . $name;
+	}
+
+	/**
+	 * Execute a single b2_list_buckets call and convert the response into BucketInformation objects.
+	 *
+	 * @param   array  $filter  Optional bucketId or bucketName to limit the listing to. Empty lists every bucket, which
+	 *                          is only permitted for a key that is not restricted to a bucket.
+	 *
+	 * @return  BucketInformation[]
+	 */
+	private function fetchBuckets(array $filter = [])
+	{
+		$apiUrl       = $this->getApiUrl();
+		$explicitPost = json_encode(array_merge([
+			'accountId' => $this->getAccountInformation()->accountId,
+		], $filter));
+		$additional   = [
+			'headers' => [
+				'Accept: application/json',
+			],
+		];
+
+		$apiReturn = $this->fetch('POST', $apiUrl, $this->endpoint('b2_list_buckets'), $additional, $explicitPost);
+		$return    = [];
+
+		foreach ($apiReturn['buckets'] as $bucket)
+		{
+			$return[] = new BucketInformation($bucket);
+		}
+
+		return $return;
 	}
 }

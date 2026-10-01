@@ -1,4 +1,91 @@
 <?php die();?>
+Akeeba Solo 9.2.0
+================================================================================
++ wp akeeba profile import: select profile with --profile; overwrite it with --force
+~ Log files never use .log; hosts blocking .log.php get .php log files
+~ Fine-tuned access control across all views and tasks
+# [HIGH] wp akeeba filter commands ignored --profile, wrote to profile 1, and returned "Success"
+# [HIGH] Database dumps lost DOUBLE precision with PDO MySQL and PostgreSQL
+# [MEDIUM] Restoration: FTP test ignored FTPS and passive mode settings
+# [MEDIUM] Restoration and self-update saved wrong FTPS and passive mode extraction settings
+# [MEDIUM] FTP and SFTP tests showed the password in plain text on authentication failure
+# [MEDIUM] Split archives could end with an empty part, failing post-processing
+# [MEDIUM] ALICE never listed failed backup logs for selection
+# [MEDIUM] wp akeeba backup take ignored --overrides=…
+# [MEDIUM] Pythia could corrupt or reject wp-config.php DB credentials due to faulty constant parsing
+# [MEDIUM] canAccess() allowed unauthenticated access when the privilege list was empty
+# [MEDIUM] Profile switching and update checks did not validate the return URL
+# [LOW] Front-end check and upload check endpoints threw instead of returning HTTP 403
+# [LOW] FTP over cURL test ignored the passive mode workaround
+# [LOW] simplifyPath() stripped 'administrator' when it was not a complete path segment
+# [LOW] convertMemoryLimitToBytes() could return a string instead of an integer
+# [LOW] System Configuration: JavaScript error from the removed FTP/SFTP directory browser
+# [LOW] Profile import without a selected file showed an error page
+# [LOW] wp akeeba profile import treated the file path as JSON instead of reading it
+# [LOW] Release candidate and dev versions were normalised with the wrong revision
+# [LOW] Base64-like return URLs were decoded into binary garbage
+# [LOW] Backup sizes of 1EB or more had no unit
+# [LOW] Format::fileSize() raised a TypeError when given a unit name
+# [LOW] Archive relative path was wrong when the archive folder was above the site root
+# [LOW] wp akeeba backup take reported long elapsed times incorrectly
+# [LOW] wp akeeba backup list --description=0 ignored the filter
+# [LOW] Setup wizard: Previous button linked to a nonexistent view
+
+Akeeba Solo 9.1.8
+================================================================================
++ Site Transfer Wizard: transfer any backup archive present on the server, not just the latest one (gh-239)
+# [HIGH] Database dumps silently lost precision on DOUBLE columns (PDO MySQL and PostgreSQL)
+# [HIGH] Box, Dropbox, OneDrive stored files under the local temp name
+# [HIGH] Uploads failed when using a bucket-restricted BackBlaze B2 key
+# [MEDIUM] Box reported an expired authorisation as an opaque HTTP 401 error
+# [MEDIUM] Dropbox did not explain a missing or lapsed Download ID
+# [MEDIUM] WebDAV did not surface failed upload reason to the UI or the log file
+# [MEDIUM] Box, Dropbox, Google Drive, OneDrive token refresh raced expiry
+# [MEDIUM] RackSpace CloudFiles validated the username, not the API key
+# [MEDIUM] Dropbox public download URL embedded the access token
+# [MEDIUM] OneDrive for Business signed download URL was broken on Graph
+# [MEDIUM] S3 v4 pre-signed URLs failed (403) on path-style non-AWS hosts
+# [MEDIUM] Google Storage pre-signed URLs duplicated the bucket name (403)
+# [LOW] Box folder listing paginated incorrectly
+# [LOW] BackBlaze cancelUpload sent the request body as form-data, not JSON
+# [LOW] BackBlaze downloadFileById used the wrong API path (404)
+# [LOW] WebDAV options() dropped capabilities from repeated DAV headers
+# [MEDIUM] Hardened access control checks for the profiles and user management pages
+# [LOW] Removed the unused, legacy FTP/SFTP directory browser
+# [LOW] Broadened anti-CSRF token coverage across AJAX and maintenance actions
+# [LOW] Front-end backup and post-backup check endpoints now use constant-time secret word comparison
+# [LOW] Additional two-factor authentication and anti-CSRF token comparison hardening
+# [LOW] WordPress: the control panel is no longer rendered when the application files are accessed directly
+# [MEDIUM] FTP/FTPS connection test ignored the "Use FTP over SSL" setting due to a config key mismatch, causing it to fail against FTPS-only servers
+# [LOW] Legacy (hard-disabled) SFTP directory browser model used the wrong option keys for key-based authentication
+
+Akeeba Solo 9.1.7
+================================================================================
+~ Switched to BackBlaze B2 v4 API
+~ Obfuscate kickstart.txt so that broken file scanners (OVH) don't cause problems by misidentifying it as "malicious"
+# [HIGH] The Site Transfer Wizard was not working
+# [HIGH] DirectFTP would not work due to setting erroneous directory permissions
+
+Akeeba Solo 9.1.6
+================================================================================
+~ HTML output hardening
+
+Akeeba Solo 9.1.5
+================================================================================
+! Wrong packaging led into raw HTML being output in many pages of the software
+
+Akeeba Solo 9.1.4
+================================================================================
+# [HIGH] Site Transfer Wizard: PHP fatal error when loading the page
+# [MEDIUM] Fix stdClass warning when reading akeeba.quota.logfiles configuration key
+
+Akeeba Solo 9.1.3
+================================================================================
++ Add "Delete obsolete log files" quota feature
+~ Manage Backups: the View Log button is now disabled with a tooltip when the log file no longer exists on the server
+# [HIGH] Check file upload: SQL error on all PHP versions when checking for failed uploads
+# [MEDIUM] Configuration page: saving an SFTP password containing an angle bracket (e.g. `<F9`) would blank the profile description and deselect the one-click backup icon
+
 Akeeba Solo 9.1.2
 ================================================================================
 + Failed backup upload check

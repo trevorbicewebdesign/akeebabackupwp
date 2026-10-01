@@ -87,7 +87,8 @@ class Html extends View
 		$this->roots       = $roots;
 		$document          = $this->container->application->getDocument();
 
-		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=Dbfilters&task=ajax'));
+		$token = $this->container->session->getCsrfToken()->getValue();
+		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=Dbfilters&task=ajax&' . $token . '=1'));
 
 		switch ($task)
 		{

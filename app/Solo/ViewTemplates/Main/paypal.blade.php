@@ -47,7 +47,7 @@ if (time() - $this->lastUpsellDismiss < 1296000) return;
             </a>
         @endif
 
-        <a href="@route('index.php?view=Main&task=dismissUpsell')" class="akeeba-btn--ghost--small">
+        <a href="@route('index.php?view=Main&task=dismissUpsell&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1')" class="akeeba-btn--ghost--small">
             <span class="akion-ios-alarm"></span>
             @lang('COM_AKEEBA_CONTROLPANEL_BTN_HIDE')
         </a>

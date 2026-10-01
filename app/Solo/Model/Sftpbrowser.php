@@ -50,8 +50,8 @@ class Sftpbrowser extends Model
 			'username'	=> $this->getState('username'),
 			'password'	=> $this->getState('password'),
 			'directory'	=> $this->getState('directory'),
-			'privKey'	=> $this->getState('privKey'),
-			'pubKey'	=> $this->getState('pubKey'),
+			'privateKey'	=> $this->getState('privKey'),
+			'publicKey'	=> $this->getState('pubKey'),
 		);
 
 		$list = false;

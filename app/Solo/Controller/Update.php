@@ -24,6 +24,9 @@ class Update extends ControllerDefault
 
 	public function download()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Update $model */
 		$model = $this->getModel();
 		$model->prepareDownload();
@@ -35,6 +38,9 @@ class Update extends ControllerDefault
 
 	public function downloader()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		$json = $this->input->get('json', '', 'raw');
 		$params = json_decode($json, true);
 

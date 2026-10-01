@@ -52,6 +52,9 @@ class Fsfilters extends ControllerDefault
 	 */
 	public function ajax()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		// Parse the JSON data and reset the action query param to the resulting array
 		$action_json = $this->input->get('akaction', '', 'raw');
 		$action = json_decode($action_json);

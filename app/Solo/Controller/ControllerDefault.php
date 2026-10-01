@@ -7,50 +7,14 @@
 
 namespace Solo\Controller;
 
-use Awf\Text\Text;
+use Solo\Application\AclChecks;
 
 /**
  * Common controller superclass. Reserved for future use.
  */
 abstract class ControllerDefault extends \Awf\Mvc\Controller
 {
-	protected $aclChecks = array(
-		'alice'          => array('*' => array('configure')),
-		'backup'         => array('*' => array('backup')),
-		'browser'        => array('*' => array('configure')),
-		'configuration'  => array('*' => array('configure')),
-		'dbfilters'      => array('*' => array('configure')),
-		'discover'       => array('*' => array('configure')),
-		'errortest'      => array('*' => array('configure')),
-		'extradirs'      => array('*' => array('configure')),
-		'fsfilters'      => array('*' => array('configure')),
-		'leftovers'      => array('*' => array('configure')),
-		'log'            => array('*' => array('configure')),
-		'manage'         => array(
-			'manage'      => array(),
-			'showComment' => array('backup'),
-			'cancel'      => array('backup'),
-			'download'    => array('download'),
-			'restore'     => array('configure'),
-			'*'           => array('download'),
-		),
-		'multidb'        => array('*' => array('configure')),
-		'phpinfo'        => array('*' => array('configure', 'backup', 'download')),
-		'profiles'       => array('*' => array('configure')),
-		'profile'        => array('*' => array('configure')),
-		'regexdbfilters' => array('*' => array('configure')),
-		'regexfsfilters' => array('*' => array('configure')),
-		'remotefiles'    => array('*' => array('download')),
-		'restore'        => array('*' => array('configure')),
-		's3import'       => array('*' => array('configure')),
-		'schedule'       => array('*' => array('configure')),
-		'sysconfig'      => array('*' => array('configure', 'backup', 'download')),
-		'transfer'       => array('*' => array('download')),
-		'update'         => array('*' => array('configure', 'backup', 'download')),
-		'upload'         => array('*' => array('backup')),
-		'users'          => array('*' => array('configure', 'backup', 'download')),
-		'wizard'         => array('*' => array('configure')),
-	);
+	use AclChecks;
 
 	/**
 	 * Executes a given controller task. The onBefore<task> and onAfter<task>
@@ -72,45 +36,57 @@ abstract class ControllerDefault extends \Awf\Mvc\Controller
 	}
 
 	/**
-	 * Performs automatic access control checks
+	 * Tell every cache in the chain not to store this response.
 	 *
-	 * @param   string  $view  The view being accessed
-	 * @param   string  $task  The task being accessed
+	 * AJAX endpoints need to always hit the server, or the backups quite simply never runs. Even though we use POST
+	 * requests which will not be cached in an RFC-compliant cache, and we do use cache-busting random data in the
+	 * URL query parameters, it may not be enough. I have seen with my own eyes some really broken environments deciding
+	 * to ignore RFCs and common sense. Hence the need to send cache-busting HTTP headers, which is what this helper
+	 * does.
 	 *
-	 * @throws \RuntimeException
+	 * @return  void
 	 */
-	protected function aclCheck($view, $task)
+	protected function sendNoCacheHeaders(): void
 	{
-		$view = strtolower($view);
-		$task = strtolower($task);
+		@header('Expires: Wed, 17 Aug 2005 00:00:00 GMT', true);
+		@header('Cache-Control: no-store, no-cache, must-revalidate, post-check=0, pre-check=0', true);
+		@header('Pragma: no-cache', true);
+	}
 
-		if (!isset($this->aclChecks[$view]))
+	/**
+	 * Refuse an unauthenticated front-end endpoint request, cleanly.
+	 *
+	 * The front-end endpoints (remote, check, uploadcheck) speak a plain text protocol where the HTTP-like status is
+	 * the first token of the body: "200 OK", "500 ERROR -- …", "301 More work required …". This helper emits the
+	 * refusal in the same dialect, which is what the native CLI clients already expect — see the
+	 * `strpos($result, '403 ')` branches in Solo\Cli\AltCheckFailedCli and Solo\Cli\AltCheckFailedUploadCli.
+	 *
+	 * The message is deliberately generic: an anonymous caller must not be told which gate stopped them, i.e. whether
+	 * the legacy front-end API is disabled or their secret key was wrong.
+	 *
+	 * IMPORTANT: this method TERMINATES the request. Awf\Application\Application::close() ends in exit(); nothing
+	 * after the call to this method will ever run.
+	 *
+	 * @param   string  $message  The refusal message, appended to the "403 " status token.
+	 *
+	 * @return  void
+	 */
+	protected function refuseFrontendEndpoint(string $message = 'Operation not permitted'): void
+	{
+		@ob_end_clean();
+
+		$this->sendNoCacheHeaders();
+
+		@header('Content-type: text/plain', true);
+		@header('Connection: close', true);
+
+		echo '403 ' . $message;
+
+		if (!$this->container->appConfig->get('no_flush', 0))
 		{
-			return;
+			flush();
 		}
 
-		if (!isset($this->aclChecks[$view][$task]))
-		{
-			if (!isset($this->aclChecks[$view]['*']))
-			{
-				return;
-			}
-
-			$requiredPrivileges = $this->aclChecks[$view]['*'];
-		}
-		else
-		{
-			$requiredPrivileges = $this->aclChecks[$view][$task];
-		}
-
-		$user = $this->container->userManager->getUser();
-
-		foreach ($requiredPrivileges as $privilege)
-		{
-			if (!$user->getPrivilege('akeeba.' . $privilege))
-			{
-				throw new \RuntimeException(Text::_('SOLO_ERR_ACLDENIED'), 403);
-			}
-		}
+		$this->container->application->close();
 	}
 }

@@ -60,7 +60,7 @@ JS;
                 <span class="akion-close"></span>
 		        @lang('COM_AKEEBA_BUADMIN_BTN_REMINDME')
             </a>
-            <a href="@route('index.php?view=Manage&task=hideModal')" class="akeeba-btn--green">
+            <a href="@route('index.php?view=Manage&task=hideModal&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1')" class="akeeba-btn--green">
                 <span class="akion-checkmark-circled"></span>
 		        @lang('COM_AKEEBA_BUADMIN_BTN_DONTSHOWTHISAGAIN')
             </a>

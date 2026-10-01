@@ -180,7 +180,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_LIVESITE')
         </label>
         <input type="text" name="live_site" id="live_site"
-               value="{{ $config->get('live_site') }}">
+               value="{{{ $config->get('live_site') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_LIVESITE_HELP')
         </p>
@@ -191,7 +191,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_SESSIONTIMEOUT')
         </label>
         <input type="text" name="session_timeout" id="session_timeout"
-               value="{{ $config->get('session_timeout') }}">
+               value="{{{ $config->get('session_timeout') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_SESSIONTIMEOUT_HELP')
         </p>
@@ -203,7 +203,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
         @lang('COM_AKEEBA_CONFIG_DATEFORMAT_LABEL')
     </label>
     <input type="text" name="dateformat" id="dateformat"
-           value="{{ $config->get('dateformat') }}">
+           value="{{{ $config->get('dateformat') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_DATEFORMAT_DESC')
     </p>
@@ -240,7 +240,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('COM_AKEEBA_CONFIG_PROXY_HOST_LABEL')
         </label>
         <input type="text" name="proxy_host" id="proxy_host"
-               value="{{ $config->get('proxy_host') }}">
+               value="{{{ $config->get('proxy_host') }}}">
         <p class="akeeba-help-text">
             @lang('COM_AKEEBA_CONFIG_PROXY_HOST_DESC')
         </p>
@@ -251,7 +251,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('COM_AKEEBA_CONFIG_PROXY_PORT_LABEL')
         </label>
         <input type="number" min="1" max="65535" name="proxy_port" id="proxy_port"
-               value="{{ $config->get('proxy_port', '8080') }}">
+               value="{{{ $config->get('proxy_port', '8080') }}}">
         <p class="akeeba-help-text">
             @lang('COM_AKEEBA_CONFIG_PROXY_PORT_DESC')
         </p>
@@ -262,7 +262,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('COM_AKEEBA_CONFIG_PROXY_USER_LABEL')
         </label>
         <input type="text" name="proxy_user" id="proxy_user"
-               value="{{ $config->get('proxy_user', '') }}">
+               value="{{{ $config->get('proxy_user', '') }}}">
         <p class="akeeba-help-text">
             @lang('COM_AKEEBA_CONFIG_PROXY_USER_DESC')
         </p>
@@ -273,7 +273,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('COM_AKEEBA_CONFIG_PROXY_PASS_LABEL')
         </label>
         <input type="password" name="proxy_pass" id="proxy_pass"
-               value="{{ $config->get('proxy_pass', '') }}">
+               value="{{{ $config->get('proxy_pass', '') }}}">
         <p class="akeeba-help-text">
             @lang('COM_AKEEBA_CONFIG_PROXY_PASS_DESC')
         </p>
@@ -298,7 +298,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_FS_FTP_HOST')
         </label>
         <input type="text" name="fs_host" id="fs_host"
-               value="{{ $config->get('fs.host') }}">
+               value="{{{ $config->get('fs.host') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_FS_FTP_HOST_HELP')
         </p>
@@ -309,7 +309,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_FS_FTP_PORT')
         </label>
         <input type="text" name="fs_port" id="fs_port"
-               value="{{ $config->get('fs.port') }}">
+               value="{{{ $config->get('fs.port') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_FS_FTP_PORT_HELP')
         </p>
@@ -320,7 +320,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_FS_FTP_USERNAME')
         </label>
         <input type="text" name="fs_username" id="fs_username"
-               value="{{ $config->get('fs.username') }}">
+               value="{{{ $config->get('fs.username') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_FS_FTP_USERNAME_HELP')
         </p>
@@ -331,7 +331,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_FS_FTP_PASSWORD')
         </label>
         <input type="password" name="fs_password" id="fs_password"
-               value="{{ $config->get('fs.password') }}">
+               value="{{{ $config->get('fs.password') }}}">
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_FS_FTP_PASSWORD_HELP')
         </p>
@@ -342,7 +342,7 @@ $timezone = ($timezone == 'UTC') ? 'GMT' : $timezone;
             @lang('SOLO_SETUP_LBL_FS_FTP_DIRECTORY')
         </label>
 
-        <input type="text" name="fs_directory" id="fs_directory" value="{{ $config->get('fs.directory') }}" />
+        <input type="text" name="fs_directory" id="fs_directory" value="{{{ $config->get('fs.directory') }}}" />
 
         <p class="akeeba-help-text">
             @lang('SOLO_SETUP_LBL_FS_FTP_DIRECTORY_HELP')

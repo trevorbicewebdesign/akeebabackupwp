@@ -11,7 +11,7 @@ use Akeeba\Engine\Factory;
 use Akeeba\Engine\Platform;
 use Awf\Mvc\View;
 use Awf\Utils\Template;
-use RuntimeException;
+use Solo\Application\AclChecks;
 use Solo\Helper\Status;
 use Solo\Model\Main;
 use Solo\Model\Migreight;
@@ -19,6 +19,8 @@ use Solo\Model\Stats;
 
 class Html extends View
 {
+	use AclChecks;
+
 	/**
 	 * Active backup profile ID
 	 *
@@ -89,15 +91,6 @@ class Html extends View
 	 * @var  bool
 	 */
 	public $checkMbstring = true;
-
-	/**
-	 * ACL checks. This is set to the View by the Controller.
-	 *
-	 * @see  \Solo\Controller\Main::onBeforeDefault()
-	 *
-	 * @var  array
-	 */
-	public $aclChecks = [];
 
 	/**
 	 * The HTML for the backup status cell
@@ -225,7 +218,7 @@ class Html extends View
 		$document = $this->container->application->getDocument();
 
 		$document->addScriptOptions('akeeba.System.notification.hasDesktopNotification', $this->desktop_notifications);
-		$document->addScriptOptions('akeeba.ControlPanel.checkOutDirUrl', $router->route('index.php?view=main&format=raw&task=checkOutputDirectory'));
+		$document->addScriptOptions('akeeba.ControlPanel.checkOutDirUrl', $router->route('index.php?view=main&format=raw&task=checkOutputDirectory&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1'));
 		$document->addScriptOptions('akeeba.ControlPanel.outputDirUnderSiteRoot', (bool) $this->isOutputDirectoryUnderSiteRoot);
 		$document->addScriptOptions('akeeba.ControlPanel.hasSecurityFiles', (bool) $this->hasOutputDirectorySecurityFiles);
 		$document->addScriptOptions('akeeba.ControlPanel.cloudFlareURN', 'CLOUDFLARE::' . Template::parsePath('media://js/solo/system.js', false, $this->getContainer()->application));
@@ -243,52 +236,6 @@ class Html extends View
 		return true;
 	}
 
-	/**
-	 * Performs automatic access control checks
-	 *
-	 * @param   string  $view  The view being considered
-	 * @param   string  $task  The task being considered
-	 *
-	 * @return  bool  True if access is allowed
-	 *
-	 * @throws RuntimeException
-	 */
-	public function canAccess($view, $task)
-	{
-		$view = strtolower($view);
-		$task = strtolower($task);
-
-		if (!isset($this->aclChecks[$view]))
-		{
-			return true;
-		}
-
-		if (!isset($this->aclChecks[$view][$task]))
-		{
-			if (!isset($this->aclChecks[$view]['*']))
-			{
-				return true;
-			}
-
-			$requiredPrivileges = $this->aclChecks[$view]['*'];
-		}
-		else
-		{
-			$requiredPrivileges = $this->aclChecks[$view][$task];
-		}
-
-		$user = $this->container->userManager->getUser();
-
-		foreach ($requiredPrivileges as $privilege)
-		{
-			if (!$user->getPrivilege('akeeba.' . $privilege))
-			{
-				return false;
-			}
-		}
-
-		return true;
-	}
 
 	protected function formatChangelog($onlyLast = false)
 	{

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -28,6 +28,12 @@ use Akeeba\Engine\Postproc\Exception\RangeDownloadNotSupported;
 use Exception;
 use RuntimeException;
 
+/**
+ * OneDrive (consumer / personal) post-processing engine.
+ *
+ * @deprecated Legacy consumer OneDrive integration. Superseded by the Onedrivebusiness engine using the modern
+ *             Microsoft Graph API. Retained only for backwards compatibility with existing backup profiles.
+ */
 class Onedrive extends Base
 {
 	/**
@@ -135,8 +141,10 @@ class Onedrive extends Base
 			$config->set('volatile.engine.postproc.' . $this->settingsKey . '.check_directory', 1);
 		}
 
-		// Get the remote file's pathname
-		$remotePath = trim($directory, '/') . '/' . basename($localFilepath);
+		// Get the remote file's pathname. This MUST use the same basename as $this->remotePath (which getRemotePath()
+		// reports and downloadToFile()/delete() are later called with), otherwise the file would be stored under the
+		// local temp file's name instead of the requested remote name and every later lookup would 404.
+		$remotePath = trim($directory, '/') . '/' . $basename;
 
 		// Check if the size of the file is compatible with chunked uploading
 		clearstatcache();
@@ -251,6 +259,10 @@ class Onedrive extends Base
 
 		$connector = new ConnectorOneDrive($access_token, $refresh_token, $dlid);
 
+		// Restore the persisted access-token expiry so the connector can refresh proactively (before the token lapses)
+		// across stepped backup runs, instead of only reacting after a request has already failed.
+		$connector->setTokenExpiration((int) $config->get('engine.postproc.' . $this->settingsKey . '.token_expiration', 0));
+
 		// Validate the tokens
 		Factory::getLog()->debug(__METHOD__ . " - Validating the OneDrive tokens");
 		$pingResult = $connector->ping();
@@ -261,9 +273,9 @@ class Onedrive extends Base
 			Factory::getLog()->debug(__METHOD__ . " - OneDrive tokens were refreshed");
 			$config->set('engine.postproc.' . $this->settingsKey . '.access_token', $pingResult['access_token'], false);
 			$config->set('engine.postproc.' . $this->settingsKey . '.refresh_token', $pingResult['refresh_token'], false);
+			$config->set('engine.postproc.' . $this->settingsKey . '.token_expiration', $pingResult['token_expiration'] ?? 0, false);
 
-			$profile_id = Platform::getInstance()->get_active_profile();
-			Platform::getInstance()->save_configuration($profile_id);
+			Platform::getInstance()->save_configuration($config->activeProfile);
 		}
 
 		return $connector;
@@ -288,9 +300,9 @@ class Onedrive extends Base
 		Factory::getLog()->debug(__METHOD__ . " - OneDrive tokens were forcibly refreshed");
 		$config->set('engine.postproc.' . $this->settingsKey . '.access_token', $pingResult['access_token'], false);
 		$config->set('engine.postproc.' . $this->settingsKey . '.refresh_token', $pingResult['refresh_token'], false);
+		$config->set('engine.postproc.' . $this->settingsKey . '.token_expiration', $pingResult['token_expiration'] ?? 0, false);
 
-		$profile_id = Platform::getInstance()->get_active_profile();
-		Platform::getInstance()->save_configuration($profile_id);
+		Platform::getInstance()->save_configuration($config->activeProfile);
 	}
 
 	protected function getOAuth2HelperUrl()

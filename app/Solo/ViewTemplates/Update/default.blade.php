@@ -13,7 +13,15 @@ defined('_AKEEBA') or die();
 
 $releaseNotes = $this->updateInfo->get('releaseNotes');
 $infoUrl = $this->updateInfo->get('infoUrl');
+$downloadUrl = $this->updateInfo->get('download');
 $requirePlatformName = $this->getContainer()->segment->get('platformNameForUpdates', 'php');
+$token = $this->getContainer()->session->getCsrfToken()->getValue();
+
+$safeUrl = function ($url) {
+	$url = (string) $url;
+	$scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+	return in_array($scheme, ['http', 'https'], true) ? $url : '';
+};
 
 ?>
 
@@ -94,19 +102,19 @@ $requirePlatformName = $this->getContainer()->segment->get('platformNameForUpdat
         <td>@lang('SOLO_UPDATE_LATESTVERSION')</td>
         <td>
 			<span class="akeeba-label--success">
-				{{ $this->updateInfo->get('version') }}
+				{{{ $this->updateInfo->get('version') }}}
 			</span>
         </td>
     </tr>
     <tr>
         <td>@lang('SOLO_UPDATE_LATESTRELEASED')</td>
-        <td>{{ $this->updateInfo->get('date') }}</td>
+        <td>{{{ $this->updateInfo->get('date') }}}</td>
     </tr>
     <tr>
         <td>@lang('SOLO_UPDATE_DOWNLOADURL')</td>
         <td>
-            <a href="{{ $this->updateInfo->get('download') }}">
-				{{{ $this->updateInfo->get('download') }}}
+            <a href="{{{ $safeUrl($downloadUrl) }}}">
+				{{{ $downloadUrl }}}
             </a>
         </td>
     </tr>
@@ -125,7 +133,7 @@ $requirePlatformName = $this->getContainer()->segment->get('platformNameForUpdat
 				@endif
 
 				@if (!empty($infoUrl))
-                    <a href="{{ $infoUrl }}" target="_blank" class="btn btn-link">
+                    <a href="{{{ $safeUrl($infoUrl) }}}" target="_blank" class="btn btn-link">
 						@lang('SOLO_UPDATE_READMOREINFO')
                     </a>
 				@endif
@@ -143,7 +151,7 @@ $requirePlatformName = $this->getContainer()->segment->get('platformNameForUpdat
 				@lang('SOLO_UPDATE_DO_UPDATE')
 			</button>
 		@else
-			<a href="@route('index.php?view=update&task=download')"
+			<a href="@route('index.php?view=update&task=download&' . $token . '=1')"
 			   class="akeeba-btn--large--primary">
 				<span class="akion-chevron-right"></span>
 				@lang('SOLO_UPDATE_DO_UPDATE')

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -35,10 +35,12 @@ class BackupTake
 
 	private float $lastStep;
 
+	private bool $jsonl = false;
+
 	public static function register(Application $app)
 	{
 		$app
-			->command('backup:take [description] [--profile=]', new self())
+			->command('backup:take [description] [--profile=] [--jsonl]', new self())
 			->defaults(
 				[
 					'description' => null,
@@ -49,14 +51,17 @@ class BackupTake
 				'Take a backup',
 				[
 					'--profile' => 'Profile ID',
+					'--jsonl'   => 'Emit one JSON object per backup step (machine-readable) instead of human-readable output',
 				]
 			);
 	}
 
 	public function __invoke(
-		?string $description, int $profile, InputInterface $input, OutputInterface $output, SymfonyStyle $io
+		?string $description, int $profile, bool $jsonl, InputInterface $input, OutputInterface $output, SymfonyStyle $io
 	)
 	{
+		$this->jsonl = $jsonl;
+
 		$outputStyle = new OutputFormatterStyle('red', null, ['bold']);
 		$output->getFormatter()->setStyle('borked', $outputStyle);
 
@@ -100,7 +105,10 @@ class BackupTake
 			}
 			else
 			{
-				$io->section('Starting backup');
+				if (!$this->jsonl)
+				{
+					$io->section('Starting backup');
+				}
 
 				$firstTime = false;
 
@@ -152,7 +160,10 @@ class BackupTake
 				}
 			}
 
-			$io->section('Stepping backup');
+			if (!$this->jsonl)
+			{
+				$io->section('Stepping backup');
+			}
 
 			Factory::getTimer()->resetTime();
 
@@ -173,14 +184,17 @@ class BackupTake
 
 				if ($weirdnessCounter > 3)
 				{
-					$io->warning(
-						[
-							'FIX ME: THIS SHOULD NOT BE HAPPENING!',
-							'',
-							'We are in the finished state of the finalisation domain for more than three steps.',
-							'This is a bug. Fix me.',
-						]
-					);
+					if (!$this->jsonl)
+					{
+						$io->warning(
+							[
+								'FIX ME: THIS SHOULD NOT BE HAPPENING!',
+								'',
+								'We are in the finished state of the finalisation domain for more than three steps.',
+								'This is a bug. Fix me.',
+							]
+						);
+					}
 
 					$retArray['HasRun'] = 1;
 				}
@@ -193,7 +207,11 @@ class BackupTake
 		Factory::nuke();
 		Factory::getFactoryStorage()->reset($tempVarsTag);
 
-		if (!$retArray['Error'] && $retArray['HasRun'] == 1)
+		if ($this->jsonl)
+		{
+			$io->writeln(json_encode(['event' => 'finished', 'success' => (!$retArray['Error'] && $retArray['HasRun'] == 1)], JSON_UNESCAPED_SLASHES));
+		}
+		elseif (!$retArray['Error'] && $retArray['HasRun'] == 1)
 		{
 			$io->success('The backup finished successfully.');
 		}
@@ -224,14 +242,38 @@ class BackupTake
 
 	private function backupProgress(SymfonyStyle $io, ?array $retArray): ?array
 	{
-		$stateText = !$retArray['HasRun'] ? '<fg=yellow>Running</> ▶️' : '<fg=green>Done</> ✅';
-		$stateText = !empty($retArray['Error']) ? '<fg=red>Error</> 💀' : $stateText;
-
 		$now          = microtime(true);
 		$totalElapsed = $now - $this->startTime;
 		$lastStep     = $now - $this->lastStep;
 
 		$this->lastStep = $now;
+
+		if ($this->jsonl)
+		{
+			$payload = [
+				'event'     => 'step',
+				'state'     => !empty($retArray['Error']) ? 'error' : ($retArray['HasRun'] ? 'done' : 'running'),
+				'domain'    => $retArray['Domain'] ?? null,
+				'step'      => $retArray['Step'] ?? null,
+				'substep'   => $retArray['Substep'] ?? null,
+				'elapsed'   => round($totalElapsed, 3),
+				'step_time' => round($lastStep, 3),
+				'warnings'  => $retArray['Warnings'] ?? [],
+				'error'     => $retArray['Error'] ?? null,
+			];
+
+			if (isset($retArray['ErrorException']) && $retArray['ErrorException'] instanceof \Throwable)
+			{
+				$payload['exception'] = $retArray['ErrorException']->getMessage();
+			}
+
+			$io->writeln(json_encode($payload, JSON_UNESCAPED_SLASHES));
+
+			return $retArray;
+		}
+
+		$stateText = !$retArray['HasRun'] ? '<fg=yellow>Running</> ▶️' : '<fg=green>Done</> ✅';
+		$stateText = !empty($retArray['Error']) ? '<fg=red>Error</> 💀' : $stateText;
 
 		$io->text(
 			[

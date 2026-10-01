@@ -1200,7 +1200,7 @@ ENDBODY;
 	}
 
 	/**
-	 * Converts a log file from .log to .log.php
+	 * Converts a log file from .log to .log.php or, if that is not possible, to .php
 	 *
 	 * @param   string  $filePath
 	 *
@@ -1210,21 +1210,52 @@ ENDBODY;
 	 */
 	protected function convertLogFile($filePath)
 	{
-		// The name of the converted log file is the same with the extension .php appended to it.
-		$newFile = $filePath . '.php';
+		/**
+		 * The name of the converted log file is the same with the extension .php appended to it. Some hosts, like WP
+		 * Engine, do not let us write to files with a .php extension. In this case we try a .php extension replacing
+		 * the .log one. Either way the converted log file is not readable over the web.
+		 */
+		$candidates = [
+			$filePath . '.php',
+			substr($filePath, 0, -4) . '.php',
+		];
 
-		// If the new log file exists I should return immediately
-		if (@file_exists($newFile))
+		foreach ($candidates as $newFile)
 		{
-			return;
-		}
+			// If the new log file exists I should return immediately
+			if (@file_exists($newFile))
+			{
+				return;
+			}
 
-		// Try to open the converted log file (.log.php)
+			if ($this->copyLogFile($filePath, $newFile))
+			{
+				// Delete the original (.log) file
+				@unlink($filePath);
+
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Copies a plaintext log file into a new, web inaccessible log file, prefixed with a PHP die statement.
+	 *
+	 * @param   string  $filePath  The .log file to copy from
+	 * @param   string  $newFile   The log file to create
+	 *
+	 * @return  bool  True if the log file was converted in its entirety
+	 *
+	 * @since   9.1.9
+	 */
+	private function copyLogFile($filePath, $newFile)
+	{
+		// Try to open the converted log file
 		$fp = @fopen($newFile, 'w');
 
 		if ($fp === false)
 		{
-			return;
+			return false;
 		}
 
 		// Try to open the source log file (.log)
@@ -1233,37 +1264,40 @@ ENDBODY;
 		if ($sourceFP === false)
 		{
 			@fclose($fp);
+			@unlink($newFile);
 
-			return;
+			return false;
 		}
 
-		// Write the die statement to the source log file
-		fwrite($fp, '<' . '?' . 'php die(); ' . '?' . ">\n");
+		// Write the die statement to the converted log file
+		$success = @fwrite($fp, '<' . '?' . 'php die(); ' . '?' . ">\n") !== false;
 
 		// Copy data, 512KB at a time
-		while (!feof($sourceFP))
+		while ($success && !feof($sourceFP))
 		{
 			$chunk = @fread($sourceFP, 524288);
 
 			if ($chunk === false)
 			{
+				$success = false;
+
 				break;
 			}
 
-			$result = fwrite($fp, $chunk);
-
-			if ($result === false)
-			{
-				break;
-			}
+			$success = @fwrite($fp, $chunk) !== false;
 		}
 
 		// Close both files
 		@fclose($sourceFP);
 		@fclose($fp);
 
-		// Delete the original (.log) file
-		@unlink($filePath);
+		// Do not leave a partially written log file behind
+		if (!$success)
+		{
+			@unlink($newFile);
+		}
+
+		return $success;
 	}
 
 	/**

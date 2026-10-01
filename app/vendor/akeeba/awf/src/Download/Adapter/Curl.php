@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -22,7 +22,7 @@ class Curl extends AbstractAdapter implements DownloadInterface
 		$this->supportsFileSize      = true;
 		$this->supportsChunkDownload = true;
 		$this->name                  = 'curl';
-		$this->isSupported           = function_exists('curl_init') && function_exists('curl_exec') && function_exists('curl_close');
+		$this->isSupported           = function_exists('curl_init') && function_exists('curl_exec');
 	}
 
 	/**
@@ -178,7 +178,10 @@ class Curl extends AbstractAdapter implements DownloadInterface
 			$error = $this->getContainer()->language->sprintf('AWF_DOWNLOAD_ERR_LIB_HTTPERROR', $http_status);
 		}
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($result === false)
 		{
@@ -278,7 +281,11 @@ class Curl extends AbstractAdapter implements DownloadInterface
 		}
 
 		$data = curl_exec($ch);
-		curl_close($ch);
+
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($data)
 		{

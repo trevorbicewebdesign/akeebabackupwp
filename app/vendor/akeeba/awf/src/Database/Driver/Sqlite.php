@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -50,7 +50,7 @@ class Sqlite extends Pdo
 	public function __destruct()
 	{
 		$this->freeResult();
-		unset($this->connection);
+		$this->connection = null;
 	}
 
 	/**
@@ -63,7 +63,7 @@ class Sqlite extends Pdo
 	public function disconnect()
 	{
 		$this->freeResult();
-		unset($this->connection);
+		$this->connection = null;
 	}
 
 	/**
@@ -113,7 +113,28 @@ class Sqlite extends Pdo
 			return 'NULL';
 		}
 
-		return SQLite3::escapeString($text);
+		$result = SQLite3::escapeString($text);
+
+		if ($extra)
+		{
+			$result = addcslashes($result, '%_');
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Returns the ` ESCAPE '...'` fragment to append to a LIKE clause whose pattern was escaped
+	 * with escape($value, true).
+	 *
+	 * SQLite does not process backslash escapes in string literals, so the escape character is
+	 * written as a single backslash rather than the doubled form MySQL requires.
+	 *
+	 * @return  string
+	 */
+	public function getLikeEscapeSql()
+	{
+		return " ESCAPE '\\'";
 	}
 
 	/**

@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -270,14 +270,14 @@ class Pimple implements \ArrayAccess
 		};
 
 		if (isset($this->factories[$factory])) {
-			$this->factories->detach($factory);
-
 			if (version_compare(PHP_VERSION, '8.4.999', '>='))
 			{
+				$this->factories->offsetUnset($factory);
 				$this->factories->offsetSet($extended);
 			}
 			else
 			{
+				$this->factories->detach($factory);
 				$this->factories->attach($extended);
 			}
 		}

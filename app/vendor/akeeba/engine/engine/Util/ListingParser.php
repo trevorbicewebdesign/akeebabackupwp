@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -331,6 +331,19 @@ class ListingParser
 			if (empty($matches))
 			{
 				$entry['name'] = $vInfo[3];
+
+				// In 24h format (no AM/PM), the target '[...]' may be in the next field
+				if (empty($entry['target']) && isset($vInfo[4]))
+				{
+					preg_match('/(.*)[\s]+\[(.*)\]/', $vInfo[3] . ' ' . $vInfo[4], $matches);
+
+					if (!empty($matches))
+					{
+						$entry['type']   = 'link';
+						$entry['name']   = $matches[1];
+						$entry['target'] = $matches[2];
+					}
+				}
 			}
 			else
 			{
@@ -359,12 +372,12 @@ class ListingParser
 		$permBit  = 0;
 		$flagBits = 0;
 
-		if (strpos($perms, 'r'))
+		if (strpos($perms, 'r') !== false)
 		{
 			$permBit += 4;
 		}
 
-		if (strpos($perms, 'w'))
+		if (strpos($perms, 'w') !== false)
 		{
 			$permBit += 2;
 		}
@@ -376,15 +389,15 @@ class ListingParser
 		 * sure that all servers will report the text permissions in rwx order and b. I am not sure that switch and
 		 * substr are faster than strpos (and too lazy to benchmark; sorry).
 		 */
-		if (strpos($perms, 'x'))
+		if (strpos($perms, 'x') !== false)
 		{
 			$permBit += 1;
 		}
-		elseif (strpos($perms, 't'))
+		elseif (strpos($perms, 't') !== false)
 		{
 			$flagBits += 1;
 		}
-		elseif (strpos($perms, 's'))
+		elseif (strpos($perms, 's') !== false)
 		{
 			$flagBits += 1;
 		}

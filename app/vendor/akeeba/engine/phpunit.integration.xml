@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+         bootstrap="Test/bootstrap.php"
+         colors="true"
+         cacheResultFile=".phpunit.integration.result.cache"
+>
+    <testsuites>
+        <testsuite name="integration">
+            <directory>Test/Integration</directory>
+        </testsuite>
+        <!-- The database driver tests on their own. run-integration-tests.sh runs this suite once per server image,
+             so it must not drag the live remote-storage tests along on every iteration. -->
+        <testsuite name="drivers">
+            <directory>Test/Integration/Driver</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -250,7 +250,7 @@ final class Init extends Part
 
 			if (isset($_SERVER['HTTP_USER_AGENT']))
 			{
-				Factory::getLog()->info("User agent         :" . $_SERVER['HTTP_USER_AGENT']);
+				Factory::getLog()->info("User agent         :" . self::sanitiseUserAgent($_SERVER['HTTP_USER_AGENT']));
 			}
 
 			Factory::getLog()->info("Safe mode          :" . ini_get("safe_mode"));
@@ -335,6 +335,8 @@ final class Init extends Part
 			Factory::getLog()->warning("You are using PHP $phpVersion which is officially End of Life. We recommend using PHP 7.4 or later for best results. Your version of PHP, $phpVersion, will stop being supported by this backup software in the future.");
 		}
 
+		$this->warnAboutLegacyMysqlDriver();
+
 		// Report profile ID
 		$profile_id = Platform::getInstance()->get_active_profile();
 		Factory::getLog()->info("Loaded profile #$profile_id");
@@ -403,6 +405,57 @@ final class Init extends Part
 		}
 
 		$this->setState(self::STATE_POSTRUN);
+	}
+
+	/**
+	 * Sanitises the user agent string before it is written to the log.
+	 *
+	 * The user agent is attacker–controlled. Writing it verbatim lets anyone inject newlines, control characters, or
+	 * markup into the backup log. Only letters, digits, spaces, and the punctuation which occurs structurally in real
+	 * user agents (. _ - ( ) [ ] { } / ; , :) are kept; anything else is removed.
+	 *
+	 * @param   string  $userAgent  The raw user agent string
+	 *
+	 * @return  string  The sanitised user agent string
+	 */
+	private static function sanitiseUserAgent($userAgent): string
+	{
+		return preg_replace('/[^a-zA-Z0-9._\-\ ()\[\]{}\/;,:]/', '', (string) $userAgent);
+	}
+
+	/**
+	 * Warns in the log if any configured database (main site or extra) uses the legacy mysql driver.
+	 *
+	 * The PHP mysql extension was removed in PHP 7.0 and is therefore never available on any PHP version we support.
+	 * Users who have backup profiles configured with this driver should update their configuration.
+	 *
+	 * @return  void
+	 */
+	private function warnAboutLegacyMysqlDriver(): void
+	{
+		$databases = Factory::getFilters()->getInclusions('db');
+
+		foreach ($databases as $key => $definition)
+		{
+			$driver = strtolower($definition['driver'] ?? '');
+
+			if ($driver !== 'mysql')
+			{
+				continue;
+			}
+
+			$label = ($key === '[SITEDB]')
+				? 'The main site database'
+				: sprintf('Extra configured database "%s"', $definition['database'] ?? $key);
+
+			Factory::getLog()->warning(
+				sprintf(
+					'%s is configured to use the driver MySQL which is not supported since PHP 7.0 (you are using PHP %s). Please edit your backup profile configuration to address this issue. The backup will continue using the MySQLi driver.',
+					$label,
+					PHP_VERSION
+				)
+			);
+		}
 	}
 
 	/**

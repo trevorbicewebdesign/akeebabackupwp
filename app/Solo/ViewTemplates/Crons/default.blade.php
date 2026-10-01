@@ -164,8 +164,8 @@ $i = 0;
 	<div class="akeeba-hidden-fields-container">
 		<input type="hidden" name="boxchecked" id="boxchecked" value="0">
 		<input type="hidden" name="task" id="task" value="browse">
-		<input type="hidden" name="filter_order" id="filter_order" value="{{ $this->lists->order }}">
-		<input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{ $this->lists->order_Dir }}">
+		<input type="hidden" name="filter_order" id="filter_order" value="{{{ $this->lists->order }}}">
+		<input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{{ $this->lists->order_Dir }}}">
 		<input type="hidden" name="token" value="@token()">
 	</div>
 </form>

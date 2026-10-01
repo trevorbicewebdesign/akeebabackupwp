@@ -9,6 +9,7 @@ namespace Solo\Controller;
 
 use Awf\Container\Container;
 use Awf\Text\Language;
+use Awf\Text\Text;
 
 /**
  * The controller for FTP browser
@@ -26,15 +27,10 @@ class Ftpbrowser extends ControllerDefault
 
 	public function execute($task)
 	{
-		// If we are running inside a CMS but there is no active user we have to throw a 403
-		$inCMS = $this->container->segment->get('insideCMS', false);
-
-		if ($inCMS && !$this->container->userManager->getUser()->getId())
-		{
-			return false;
-		}
-
-		return parent::execute($task);
+		// This legacy FTP directory browser is no longer supported and is hard-disabled. Besides being unused, it
+		// would otherwise let a request open an outbound connection to an arbitrary host, i.e. act as an SSRF /
+		// port-scanning oracle.
+		throw new \RuntimeException(Text::_('SOLO_ERR_ACLDENIED'), 403);
 	}
 
 

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -200,7 +200,11 @@ class SftpCurl extends Sftp implements TransferInterface
 		$listing = curl_exec($ch);
 		$errNo   = curl_errno($ch);
 		$error   = curl_error($ch);
-		curl_close($ch);
+
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($errNo)
 		{
@@ -513,7 +517,11 @@ class SftpCurl extends Sftp implements TransferInterface
 		$list = curl_exec($ch);
 
 		$errNo = curl_errno($ch);
-		curl_close($ch);
+
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($errNo)
 		{
@@ -581,7 +589,11 @@ class SftpCurl extends Sftp implements TransferInterface
 
 		$errNo = curl_errno($ch);
 		$error = curl_error($ch);
-		curl_close($ch);
+
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($errNo)
 		{
@@ -777,7 +789,11 @@ class SftpCurl extends Sftp implements TransferInterface
 		$error_no = curl_errno($ch);
 		$error    = curl_error($ch);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
+
 		fclose($fp);
 
 		if ($error_no)
@@ -808,7 +824,10 @@ class SftpCurl extends Sftp implements TransferInterface
 		$error_no = curl_errno($ch);
 		$error    = curl_error($ch);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($close)
 		{
@@ -842,7 +861,10 @@ class SftpCurl extends Sftp implements TransferInterface
 		$error_no = curl_errno($ch);
 		$error    = curl_error($ch);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($error_no)
 		{
@@ -873,7 +895,11 @@ class SftpCurl extends Sftp implements TransferInterface
 		$listing = curl_exec($ch);
 		$errNo   = curl_errno($ch);
 		$error   = curl_error($ch);
-		curl_close($ch);
+
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($errNo)
 		{

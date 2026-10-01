@@ -570,8 +570,8 @@ akeeba.Configuration.FtpTest.testConnection = function (buttonKey, configKey, is
             user:                    document.getElementById(configKey + "_user").value,
             pass:                    document.getElementById(configKey + "_pass").value,
             initdir:                 document.getElementById(configKey + "_initial_directory").value,
-            usessl:                  document.getElementById(configKey + "_ftps").checked ? 1 : 0,
-            passive:                 document.getElementById(configKey + "_passive_mode").checked ? 1 : 0,
+            usessl:                  document.getElementById(configKey + "_ftps_1").checked ? 1 : 0,
+            passive:                 document.getElementById(configKey + "_passive_mode_1").checked ? 1 : 0,
             passive_mode_workaround: 0
         };
     }
@@ -582,12 +582,12 @@ akeeba.Configuration.FtpTest.testConnection = function (buttonKey, configKey, is
         try
         {
             data.passive_mode_workaround =
-                document.getElementById("var[" + configKey + ".passive_mode_workaround]_1").checked;
+                document.getElementById("var[" + configKey + ".passive_mode_workaround]_1").checked ? 1 : 0;
         }
         catch (e)
         {
             data.passive_mode_workaround =
-                document.getElementById(configKey + "_passive_mode_workaround").checked;
+                document.getElementById(configKey + "_passive_mode_workaround_1").checked ? 1 : 0;
         }
     }
 

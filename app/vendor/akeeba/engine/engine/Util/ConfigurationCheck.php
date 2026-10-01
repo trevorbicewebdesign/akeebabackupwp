@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -28,6 +28,27 @@ use Akeeba\Engine\Platform;
  */
 class ConfigurationCheck
 {
+	/**
+	 * Returns the configured output directory with the platform's stock directory macros (e.g. [SITEROOT])
+	 * expanded to their actual values.
+	 *
+	 * @return  string
+	 */
+	private function getExpandedOutputDirectory()
+	{
+		$stock_dirs = Platform::getInstance()->get_stock_directories();
+
+		$registry = Factory::getConfiguration();
+		$outdir   = (string) $registry->get('akeeba.basic.output_directory');
+
+		foreach ($stock_dirs as $macro => $replacement)
+		{
+			$outdir = str_replace($macro, (string) $replacement, $outdir);
+		}
+
+		return $outdir;
+	}
+
 	/**
 	 * The configuration checks to perform
 	 *
@@ -105,16 +126,7 @@ class ConfigurationCheck
 
 		if (is_null($status))
 		{
-			$stock_dirs = Platform::getInstance()->get_stock_directories();
-
-			// Get output writable status
-			$registry = Factory::getConfiguration();
-			$outdir   = $registry->get('akeeba.basic.output_directory');
-
-			foreach ($stock_dirs as $macro => $replacement)
-			{
-				$outdir = str_replace($macro, $replacement, $outdir);
-			}
+			$outdir = $this->getExpandedOutputDirectory();
 
 			$status['output'] = @is_writable($outdir);
 		}
@@ -271,7 +283,7 @@ class ConfigurationCheck
 			$delimiter  = strpos($open_basedir, ';') !== false ? ';' : ':';
 			$paths_temp = explode($delimiter, $open_basedir);
 
-			// Some open_basedirs are using environemtn variables
+			// Some open_basedirs are using environment variables
 			$paths = [];
 
 			foreach ($paths_temp as $path)
@@ -304,7 +316,32 @@ class ConfigurationCheck
 
 			foreach ($paths as $path)
 			{
-				$newpath = @realpath($path);
+				/**
+				 * This catches the empty path caused by open_basedir values with a trailing colon.
+				 *
+				 * For example, `/var/www:/tmp:` is THREE directories: /var/www, /tmp, and an empty directory. Yes, it
+				 * is invalid. Yes, people are stupid.
+				 */
+				if (empty($path))
+				{
+					continue;
+				}
+
+				/**
+				 * The try-catch here will catch any other kind of invalid path. For example, we may get a $path with
+				 * NULL bytes, or pointing to an invalid / inaccessible location which doesn't just return FALSE but
+				 * causes realpath() to throw.
+				 *
+				 * For our purposes, we want to skip any invalid paths and continue checking the rest.
+				 */
+				try
+				{
+					$newpath = @realpath($path);
+				}
+				catch (\Throwable $e)
+				{
+					continue;
+				}
 
 				if (!($newpath === false))
 				{
@@ -313,9 +350,11 @@ class ConfigurationCheck
 
 				if (strlen($check) >= strlen($path))
 				{
-					// Only check if the path to check is longer than the inclusion path.
-					// Otherwise, I guarantee it's not included!!
-					// If the path to check begins with an inclusion path, it's permitted. Easy, huh?
+					/**
+					 * Only check if the path to check is longer than the inclusion path. Shorter paths are, by
+					 * definition, not included (e.g. a 10-character path cannot be under a 15-character parent path).
+					 * If the path to check begins with an inclusion path we consider it permitted
+					 */
 					if (substr($check, 0, strlen($path)) == $path)
 					{
 						$included = true;
@@ -370,15 +409,7 @@ class ConfigurationCheck
 	 */
 	private function q003()
 	{
-		$stock_dirs = Platform::getInstance()->get_stock_directories();
-
-		$registry = Factory::getConfiguration();
-		$outdir   = $registry->get('akeeba.basic.output_directory');
-
-		foreach ($stock_dirs as $macro => $replacement)
-		{
-			$outdir = str_replace($macro, $replacement, $outdir);
-		}
+		$outdir = $this->getExpandedOutputDirectory();
 
 		$outdir_real = @realpath($outdir);
 
@@ -434,16 +465,7 @@ class ConfigurationCheck
 	 */
 	private function q101()
 	{
-		$stock_dirs = Platform::getInstance()->get_stock_directories();
-
-		// Get output writable status
-		$registry = Factory::getConfiguration();
-		$outdir   = $registry->get('akeeba.basic.output_directory');
-
-		foreach ($stock_dirs as $macro => $replacement)
-		{
-			$outdir = str_replace($macro, $replacement, $outdir);
-		}
+		$outdir = $this->getExpandedOutputDirectory();
 
 		return $this->checkOpenBasedirs($outdir);
 	}
@@ -596,15 +618,8 @@ class ConfigurationCheck
 	{
 		$stock_dirs = Platform::getInstance()->get_stock_directories();
 
-		$registry = Factory::getConfiguration();
-		$outdir   = $registry->get('akeeba.basic.output_directory');
-
-		foreach ($stock_dirs as $macro => $replacement)
-		{
-			$outdir = str_replace($macro, $replacement, $outdir);
-		}
-
-		$default = $stock_dirs['[DEFAULT_OUTPUT]'];
+		$outdir  = $this->getExpandedOutputDirectory();
+		$default = (string) $stock_dirs['[DEFAULT_OUTPUT]'];
 
 		$outdir  = Factory::getFilesystemTools()->TranslateWinPath($outdir);
 		$default = Factory::getFilesystemTools()->TranslateWinPath($default);

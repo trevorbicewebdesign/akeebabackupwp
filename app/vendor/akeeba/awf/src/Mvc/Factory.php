@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -121,8 +121,8 @@ class Factory implements ContainerAwareInterface, LanguageAwareInterface
 		}
 
 		/** @var Model $model */
-		$model  = new $className($this->container, $language ?? $language ?? $this->getLanguage());
-		$config = $container['mvc_config'] ?? [];
+		$model  = new $className($this->container, $language ?? $this->getLanguage());
+		$config = $this->container['mvc_config'] ?? [];
 		$isDeprecated = false;
 
 		if ($config['modelTemporaryInstance'] ?? false)

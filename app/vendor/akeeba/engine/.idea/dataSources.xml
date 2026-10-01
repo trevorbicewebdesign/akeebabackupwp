@@ -39,5 +39,12 @@
       <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/dev_platform/dev.sqlite</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
+    <data-source source="LOCAL" name="pgboot6@localhost" uuid="f43bdc85-2de6-43ac-bf31-93ca3036c64e">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://localhost:5432/pgboot6</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
   </component>
 </project>

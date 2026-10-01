@@ -9,7 +9,7 @@
 Plugin Name: Akeeba Backup CORE for WordPress
 Plugin URI: https://www.akeeba.com
 Description: The complete backup solution for WordPress
-Version: 9.1.2
+Version: 9.2.0
 Requires at least: 6.3.0
 Tested up to: 6.6
 Requires PHP: 7.4

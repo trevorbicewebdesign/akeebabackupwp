@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -65,6 +65,13 @@ class Box
 	public const helperUrl = 'https://www.akeeba.com/oauth2/box.php';
 
 	/**
+	 * Refresh the access token proactively when it is within this many seconds of expiring. Box access tokens are
+	 * short-lived (typically 1 hour); refreshing a little before expiry prevents the token from lapsing in the middle
+	 * of a long-running backup, which is the cause of intermittent, hard-to-reproduce upload/download failures.
+	 */
+	private const tokenExpirationThreshold = 300;
+
+	/**
 	 * The access token for connecting to Box.com
 	 *
 	 * @var   string
@@ -86,6 +93,15 @@ class Box
 	private $dlid = '';
 
 	private $refreshUrl = '';
+
+	/**
+	 * UNIX timestamp at which the current access token expires. 0 means "unknown" — e.g. a token supplied from saved
+	 * configuration whose lifetime we have not learned yet. It is populated from the `expires_in` value Box returns
+	 * whenever the token is refreshed.
+	 *
+	 * @var int
+	 */
+	private $tokenExpiration = 0;
 
 	/**
 	 * Default cURL options
@@ -139,18 +155,35 @@ class Box
 			'needs_refresh' => false,
 		];
 
-		// If we're not force refreshing the tokens try to get the drive information. It's our test to see if the token
-		// works.
 		if (!$forceRefresh)
 		{
-			try
+			if (empty($this->accessToken))
 			{
-				$dummy = $this->getCurrentUser();
-			}
-			catch (UnexpectedHTTPStatus $e)
-			{
-				// If it failed we need to refresh the token
+				// We have no access token at all. There is nothing to probe with, and a recorded expiry for a token
+				// which is no longer there tells us nothing, so we must refresh. Without this the saved expiry would
+				// convince us the missing token is still good and every request would fail with an opaque "not
+				// authorised" error instead of the token being renewed transparently.
 				$response['needs_refresh'] = true;
+			}
+			elseif (!empty($this->tokenExpiration))
+			{
+				// We know when the token expires: refresh PROACTIVELY once it is at — or within a safety margin of —
+				// expiry, so it cannot lapse mid-operation. This avoids the race where a "test" call succeeds but the
+				// token then expires moments later during the real request (the cause of intermittent failures).
+				$response['needs_refresh'] = (time() + self::tokenExpirationThreshold) >= $this->tokenExpiration;
+			}
+			else
+			{
+				// We do NOT know this token's expiry (e.g. it was supplied from saved configuration). Fall back to
+				// probing the API with it and refreshing only if that probe fails.
+				try
+				{
+					$this->getCurrentUser();
+				}
+				catch (UnexpectedHTTPStatus $e)
+				{
+					$response['needs_refresh'] = true;
+				}
 			}
 		}
 
@@ -190,13 +223,64 @@ class Box
 
 		$refreshResponse = $this->fetch('GET', $baseUrl, $refreshUrl);
 
-		$this->refreshToken = $refreshResponse['refresh_token'] ?? $this->refreshToken;
-		$this->accessToken  = $refreshResponse['access_token'] ?? $this->accessToken;
+		// A rejected refresh token comes back as an error payload carrying an HTTP *200* status, so fetch() hands it to
+		// us instead of throwing. Left unchecked we would keep the old, dead access token, report the refresh as a
+		// success, and the caller would learn of it only through an opaque "Unexpected HTTP status 401" from whatever
+		// API call it made next. Say what actually went wrong instead.
+		if (!isset($refreshResponse['access_token']))
+		{
+			// A rejected refresh token explains itself in error_description; a missing or lapsed Download ID may explain
+			// itself in user_message instead. Read both, or the most useful half of the message is thrown away.
+			$reason = $refreshResponse['error_description']
+				?? $refreshResponse['user_message']
+				?? 'Box did not return a new access token';
 
-		$refreshResponse['refresh_token'] = $this->refreshToken;
-		$refreshResponse['access_token']  = $this->accessToken;
+			throw new APIError(
+				$refreshResponse['error'] ?? 'invalid_grant',
+				rtrim($reason, " \t\n\r\0\x0B.")
+				. '. Your Box authorisation is no longer valid. Box refresh tokens are single-use and expire after 60 '
+				. 'days of disuse; check your Download ID and reconnect your Box account to this backup profile to '
+				. 'obtain a new pair.'
+			);
+		}
+
+		$this->refreshToken = $refreshResponse['refresh_token'] ?? $this->refreshToken;
+		$this->accessToken  = $refreshResponse['access_token'];
+
+		// Record when the freshly minted access token will expire so ping() can refresh it proactively next time.
+		if (isset($refreshResponse['expires_in']))
+		{
+			$this->tokenExpiration = time() + (int) $refreshResponse['expires_in'];
+		}
+
+		$refreshResponse['refresh_token']    = $this->refreshToken;
+		$refreshResponse['access_token']     = $this->accessToken;
+		$refreshResponse['token_expiration'] = $this->tokenExpiration;
 
 		return $refreshResponse;
+	}
+
+	/**
+	 * Get the UNIX timestamp at which the current access token expires (0 if unknown).
+	 *
+	 * @return  int
+	 */
+	public function getTokenExpiration()
+	{
+		return $this->tokenExpiration;
+	}
+
+	/**
+	 * Restore a previously persisted access-token expiry timestamp, so ping() can refresh proactively without first
+	 * having to probe the API. Pass 0 to mark the expiry as unknown.
+	 *
+	 * @param   int  $tokenExpiration  UNIX timestamp at which the access token expires.
+	 *
+	 * @return  void
+	 */
+	public function setTokenExpiration($tokenExpiration)
+	{
+		$this->tokenExpiration = (int) $tokenExpiration;
 	}
 
 	/**
@@ -228,7 +312,7 @@ class Box
 	public function listFolder($parentId = 0, $offset = 0)
 	{
 		$parentId = (int) $parentId;
-		$offset   = min((int) $offset, 0);
+		$offset   = max((int) $offset, 0);
 		$url      = "folders/$parentId/items?limit=1000";
 
 		if ($offset > 0)
@@ -274,13 +358,14 @@ class Box
 		}
 
 		/**
-		 * The API paginates at $limit (default: 1000) items. If we get exactly $limit items we probably have more
-		 * pages of information to fetch. This will recurse through all the pages.
+		 * The API paginates at $limit (default: 1000) items. If the items returned so far (offset + items on this page)
+		 * do not yet account for the folder's total_count, there are more pages to fetch. This recurses through them.
 		 */
-		$limit  = $apiReturn['limit'] ?? 1000;
-		$offset = $apiReturn['offset'] ?? $offset;
+		$limit       = $apiReturn['limit'] ?? 1000;
+		$offset      = $apiReturn['offset'] ?? $offset;
+		$itemsSoFar  = $offset + count($apiReturn['entries']);
 
-		if ($totalCount == $limit)
+		if ($itemsSoFar < $totalCount)
 		{
 			$offset    += $limit;
 			$moreItems = $this->listFolder($parentId, $offset);
@@ -787,7 +872,10 @@ class Box
 		$error        = curl_error($ch);
 		$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		// Close open file pointers
 		$hadFile = false;

@@ -41,7 +41,7 @@ $config = $this->getContainer()->appConfig;
     <label for="mail_mailfrom">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_MAILFROM')
     </label>
-    <input type="email" name="mail_mailfrom" id="mail_mailfrom" value="{{ $config->get('mail.mailfrom') }}">
+    <input type="email" name="mail_mailfrom" id="mail_mailfrom" value="{{{ $config->get('mail.mailfrom') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_MAILFROM_HELP')
     </p>
@@ -51,7 +51,7 @@ $config = $this->getContainer()->appConfig;
     <label for="mail_fromname">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_FROMNAME')
     </label>
-    <input type="text" name="mail_fromname" id="mail_fromname" value="{{ $config->get('mail.fromname') }}">
+    <input type="text" name="mail_fromname" id="mail_fromname" value="{{{ $config->get('mail.fromname') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_FROMNAME_HELP')
     </p>
@@ -62,7 +62,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPHOST')
     </label>
     <input type="text" name="mail_smtphost" id="mail_smtphost"
-           value="{{ $config->get('mail.smtphost', 'localhost') }}">
+           value="{{{ $config->get('mail.smtphost', 'localhost') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPHOST_HELP')
     </p>
@@ -73,7 +73,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPPORT')
     </label>
     <input type="number" name="mail_smtpport" id="mail_smtpport"
-           value="{{ $config->get('mail.smtpport', 25) }}">
+           value="{{{ $config->get('mail.smtpport', 25) }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPPORT_HELP')
     </p>
@@ -105,7 +105,7 @@ $config = $this->getContainer()->appConfig;
     <label for="mail_smtpuser">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPUSER')
     </label>
-    <input type="text" name="mail_smtpuser" id="mail_smtpuser" value="{{ $config->get('mail.smtpuser', '') }}">
+    <input type="text" name="mail_smtpuser" id="mail_smtpuser" value="{{{ $config->get('mail.smtpuser', '') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPUSER_HELP')
     </p>
@@ -116,7 +116,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPPASS')
     </label>
     <input type="password" name="mail_smtppass" id="mail_smtppass"
-           value="{{ $config->get('mail.smtppass', '') }}">
+           value="{{{ $config->get('mail.smtppass', '') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SYSCONFIG_LBL_EMAIL_SMTPPASS_HELP')
     </p>

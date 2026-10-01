@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -182,9 +182,9 @@ class Router implements ContainerAwareInterface
 			// Merge the paths of the rebase and routed URIs. However if the router URI contains index.php
 			// and the base URL ends in a .php script do not append index.php to the other .php script
 			// (this is required for the WP integration to work properly)
-			if (!(($uri->getPath() == 'index.php') && (substr($rebaseURI->getPath(), -4) == '.php')))
+			if (!(($uri->getPath() == 'index.php') && (substr((string) $rebaseURI->getPath(), -4) == '.php')))
 			{
-				$rebaseURI->setPath(rtrim($rebaseURI->getPath(), '/') . '/' . $uri->getPath());
+				$rebaseURI->setPath(rtrim((string) $rebaseURI->getPath(), '/') . '/' . $uri->getPath());
 			}
 
 			// Merge the query string parameters of the rebase and routed URIs
@@ -266,7 +266,7 @@ class Router implements ContainerAwareInterface
 		{
 			if (strpos($path, $removePath) === 0)
 			{
-				$path = substr($path, strlen($removePath));
+				$path = ltrim(substr($path, strlen($removePath)), '/');
 			}
 		}
 

@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -532,7 +532,7 @@ class DataModel extends Model
 		elseif (substr($name, 0, 5) == 'scope')
 		{
 			$isScope = true;
-			$name    = strtolower(substr($name, 5, 1)) . substr($name, 5);
+			$name    = strtolower(substr($name, 5, 1)) . substr($name, 6);
 		}
 
 		// If $name is a field name, set its value
@@ -1470,9 +1470,9 @@ class DataModel extends Model
 		// Apply ordering unless we are called to override limits
 		if (!$overrideLimits)
 		{
-			$order = $this->getState('filter_order', null, 'cmd');
+			$order = $this->getState('filter_order', null, 'cmd') ?? '';
 
-			if (!array_key_exists($order, $this->knownFields))
+			if ($order === '' || !array_key_exists($order, $this->knownFields))
 			{
 				$order = $this->getIdFieldName();
 			}

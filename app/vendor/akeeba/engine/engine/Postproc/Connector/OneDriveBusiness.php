@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -124,6 +124,46 @@ class OneDriveBusiness extends OneDrive
 		], $explicitPost);
 
 		return $info['uploadUrl'];
+	}
+
+	/**
+	 * Get a signed (pre-authenticated) download URL for the remote file.
+	 *
+	 * Unlike the legacy consumer OneDrive API, the Microsoft Graph API does not expose a usable download URL through the
+	 * redirect Location of the `/content` endpoint with an appended `access_token`: that produces a short-lived,
+	 * download.aspx URL that breaks when query parameters are tacked on, returning an HTML error page instead of the
+	 * file. Graph instead surfaces a fully pre-authenticated, time-limited URL as the `@microsoft.graph.downloadUrl`
+	 * property of the item's metadata. We use that directly.
+	 *
+	 * @param   string  $path   Relative path to the Drive's root
+	 * @param   bool    $retry  Should I refresh the token and retry once if the URL cannot be retrieved?
+	 *
+	 * @return  string  Pre-authenticated URL to download the file's contents
+	 *
+	 * @see https://docs.microsoft.com/en-us/graph/api/driveitem-get?view=graph-rest-1.0&tabs=http#download-a-file
+	 */
+	public function getSignedUrl($path, $retry = true)
+	{
+		$relativeUrl = $this->normalizeDrivePath($path);
+
+		$metadata = $this->fetch('GET', $relativeUrl);
+
+		$downloadUrl = $metadata['@microsoft.graph.downloadUrl'] ?? $metadata['@content.downloadUrl'] ?? null;
+
+		if (!empty($downloadUrl))
+		{
+			return $downloadUrl;
+		}
+
+		// We failed to get a download URL. This usually means the access token has expired. Refresh it and retry once.
+		if ($retry)
+		{
+			$this->refreshToken();
+
+			return $this->getSignedUrl($path, false);
+		}
+
+		throw new \RuntimeException('Could not get the download URL', 500);
 	}
 
 	/**

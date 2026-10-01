@@ -29,6 +29,9 @@ class Profiles extends DataModel
 		parent::__construct($container, $language);
 
 		$this->addBehaviour('filters');
+
+		// Never let these be filtered on: `configuration` holds remote storage credentials.
+		$this->blacklistFilters(['configuration', 'filters']);
 	}
 
 	/**

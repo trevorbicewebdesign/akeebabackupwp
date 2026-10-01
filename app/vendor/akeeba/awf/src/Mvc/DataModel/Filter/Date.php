@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -10,6 +10,18 @@ namespace Awf\Mvc\DataModel\Filter;
 
 class Date extends Text
 {
+	/**
+	 * SQL INTERVAL units a date filter is allowed to use.
+	 *
+	 * The unit is SQL structure, not a value, so it cannot be quoted — it has to be
+	 * whitelisted. The unit arrives from request state via getInterval().
+	 *
+	 * @var  string[]
+	 */
+	protected $allowedIntervalUnits = [
+		'MICROSECOND', 'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR',
+	];
+
 	/**
 	 * Returns the default search method for this field.
 	 *
@@ -109,6 +121,14 @@ class Date extends Text
 			return '';
 		}
 
+		// The unit is SQL structure, not a value, so it must be whitelisted rather than quoted.
+		// A silently-substituted default unit would return wrong data, which is worse than
+		// returning no filter at all — so an unrecognised unit contributes nothing.
+		if (!in_array($interval['unit'], $this->allowedIntervalUnits, true))
+		{
+			return '';
+		}
+
 		$function = $interval['sign'] == '+' ? 'DATE_ADD' : 'DATE_SUB';
 
 		$extra = '';
@@ -120,7 +140,7 @@ class Date extends Text
 
 		$sql = '(' . $this->getFieldName() . ' >' . $extra . ' ' . $function;
 
-		return $sql . ('(' . $this->getFieldName() . ', INTERVAL ' . $interval['value'] . ' ' . $interval['unit'] . '))');
+		return $sql . ('(' . $this->db->q($value) . ', INTERVAL ' . $interval['value'] . ' ' . $interval['unit'] . '))');
 	}
 
 	/**
@@ -179,11 +199,12 @@ class Date extends Text
 			if (strlen($interval) > 2)
 			{
 				$interval = explode(" ", $interval);
-				$sign     = ($interval[0] == '-') ? '-' : '+';
+				$sign     = (substr($interval[0], 0, 1) === '-') ? '-' : '+';
 				$value    = (int) substr($interval[0], 1);
+				$unit     = isset($interval[1]) ? strtoupper(trim($interval[1])) : '';
 
 				$interval = [
-					'unit'  => $interval[1],
+					'unit'  => $unit,
 					'value' => $value,
 					'sign'  => $sign,
 				];
@@ -200,6 +221,18 @@ class Date extends Text
 		else
 		{
 			$interval = (array) $interval;
+
+			if (isset($interval['value']))
+			{
+				$interval['value'] = (int) $interval['value'];
+			}
+
+			if (isset($interval['unit']))
+			{
+				$interval['unit'] = strtoupper(trim((string) $interval['unit']));
+			}
+
+			$interval['sign'] = (isset($interval['sign']) && $interval['sign'] === '-') ? '-' : '+';
 		}
 
 		return $interval;

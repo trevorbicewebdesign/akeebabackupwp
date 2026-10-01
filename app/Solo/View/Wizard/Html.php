@@ -56,7 +56,7 @@ class Html extends View
 		$document   = $this->container->application->getDocument();
 		$router     = $this->getContainer()->router;
 		$urlBrowser = Escape::escapeJS($router->route('index.php?view=browser&tmpl=component&processfolder=1&folder='));
-		$urlAjax    = Escape::escapeJS($router->route('index.php?view=wizard&task=ajax'));
+		$urlAjax    = Escape::escapeJS($router->route('index.php?view=wizard&task=ajax&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1'));
 
 		$document->addScriptOptions('akeeba.Configuration.URLs', [
 			'browser' => $urlBrowser,
@@ -91,7 +91,7 @@ class Html extends View
 
 		$document = $this->container->application->getDocument();
 		$router   = $this->getContainer()->router;
-		$urlAjax  = Escape::escapeJS($router->route('index.php?view=wizard&task=ajax'));
+		$urlAjax  = Escape::escapeJS($router->route('index.php?view=wizard&task=ajax&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1'));
 
 		$document->addScriptOptions('akeeba.System.params.AjaxURL', $urlAjax);
 

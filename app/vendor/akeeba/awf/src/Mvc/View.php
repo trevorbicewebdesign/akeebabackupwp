@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -12,6 +12,7 @@ use Awf\Container\Container;
 use Awf\Container\ContainerAwareInterface;
 use Awf\Container\ContainerAwareTrait;
 use Awf\Exception\App;
+use Awf\Exception\LayoutNotFoundException;
 use Awf\Input\Input;
 use Awf\Mvc\Engine\EngineInterface;
 use Awf\Text\Language;
@@ -405,7 +406,7 @@ class View implements ContainerAwareInterface, LanguageAwareInterface
 		// If $model is null we use the default model
 		if (is_null($modelName))
 		{
-			$model = $this->defaultModel;
+			$model = $this->defaultModel !== null ? strtolower($this->defaultModel) : null;
 		}
 		else
 		{
@@ -413,7 +414,7 @@ class View implements ContainerAwareInterface, LanguageAwareInterface
 		}
 
 		// First check to make sure the model requested exists
-		if (isset($this->modelInstances[$model]))
+		if ($model !== null && isset($this->modelInstances[$model]))
 		{
 			// Model exists, let's build the method name
 			$method = 'get' . ucfirst($property);
@@ -637,7 +638,9 @@ class View implements ContainerAwareInterface, LanguageAwareInterface
 			{
 				$result = $this->loadAnyTemplate($path);
 			}
-			catch (Exception $e)
+			// Only a missing layout file triggers the fallback to the next candidate. A genuine render-time
+			// exception from a layout that DOES exist must propagate, not be masked by falling back to 'default'.
+			catch (LayoutNotFoundException $e)
 			{
 				$result = $e;
 			}

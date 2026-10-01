@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -35,7 +35,7 @@ class Filters extends Observer
 
 		foreach ($fields as $fieldname => $fieldmeta)
 		{
-			if (in_array($fieldname, $blacklist))
+			if (in_array($fieldname, $blacklist, true))
 			{
 				continue;
 			}
@@ -95,7 +95,7 @@ class Filters extends Observer
 			$methods = $field->getSearchMethods();
 			$method  = $options->get('method', $field->getDefaultSearchMethod());
 
-			if (!in_array($method, $methods))
+			if (!in_array($method, $methods, true))
 			{
 				$method = 'exact';
 			}
@@ -104,12 +104,10 @@ class Filters extends Observer
 			{
 				case 'between':
 				case 'outside':
-				case 'range':
 					$sql = $field->$method($options->get('from', null), $options->get('to'));
 					break;
 
 				case 'interval':
-				case 'modulo':
 					$sql = $field->$method($options->get('value', null), $options->get('interval'));
 					break;
 

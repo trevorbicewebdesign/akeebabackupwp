@@ -1,0 +1,15 @@
+{
+    "myns.mysection.alpha": {
+        "default": "alpha_default",
+        "title": "Alpha",
+        "type": "string"
+    },
+    "myns.mysection.beta": {
+        "default": "beta_default",
+        "title": "Beta",
+        "type": "string"
+    },
+    "_ignored.key": {
+        "default": "should_not_appear"
+    }
+}

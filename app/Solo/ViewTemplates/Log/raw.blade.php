@@ -16,15 +16,8 @@ $router = $this->container->router;
 
 // -- Get the log's file name
 $tag     = $this->tag;
-$logFile = \Akeeba\Engine\Factory::getLog()->getLogFilename($tag);
-
-if (!@is_file($logFile) && @file_exists(substr($logFile, 0, -4)))
-{
-	/**
-	 * Bad host: the log file akeeba.tag.log.php may not exist but the akeeba.tag.log does.
-	 */
-	$logFile = substr($logFile, 0, -4);
-}
+// If no log file exists we fall back to the expected file name, which the error message below displays.
+$logFile = \Solo\Helper\Utils::getLogFilePath($tag) ?: \Akeeba\Engine\Factory::getLog()->getLogFilename($tag);
 
 @ob_end_clean();
 

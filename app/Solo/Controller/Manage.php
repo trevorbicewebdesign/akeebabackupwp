@@ -579,6 +579,8 @@ class Manage extends ControllerDefault
 
 	public function hideModal()
 	{
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Manage $model */
 		$model = $this->getModel();
 		$model->hideRestorationInstructionsModal();

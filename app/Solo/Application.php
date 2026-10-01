@@ -421,19 +421,28 @@ class Application extends \Awf\Application\Application
 	 */
 	private function redirectToLogin()
 	{
-		// Get the view. Necessary to go through $this->getContainer()->input as it may have already changed
-		$view = $this->getContainer()->input->getCmd('view', '');
+		// Get the view. Necessary to go through $this->getContainer()->input as it may have already changed.
+		// Lowercased because Input::getCmd() preserves case: without this, ?view=Api or ?view=CHECK would miss the
+		// list below and get rewritten to the login view, silently breaking the endpoint for its callers.
+		$view = strtolower($this->getContainer()->input->getCmd('view', ''));
 
 		// Get the user manager
 		$manager = $this->container->userManager;
 
-		// Show the login page if there is no logged in user and we're not in the setup or login page already
-		// and we're not using the remote (front-end backup), json (remote JSON API) views of the (S)FTP
-		// browser views (required by the session task of the setup view).
+		/**
+		 * Show the login page if there is no logged in user, unless the requested view is one which does not need
+		 * one: the Secret Word authenticated front-end endpoints, the OAuth2 callback, the login and setup views
+		 * themselves, and the (S)FTP browsers.
+		 *
+		 * This list must agree with Solo\Application\AclChecks::$aclPublicViews. A view missing from THIS list is
+		 * rewritten to the login view and never runs; a view missing from THAT one is refused with a 403. Both
+		 * failures are silent from the caller's point of view, which is how uploadcheck came to be absent here.
+		 */
 		if (!in_array($view, [
-				'check', 'login', 'setup', 'json', 'api', 'Api', 'remote', 'oauth2',
+				'api', 'check', 'uploadcheck', 'remote', 'oauth2', 'json',
+				'login', 'setup',
 				'ftpbrowser', 'sftpbrowser',
-			]) && !$manager->getUser()->getId())
+			], true) && !$manager->getUser()->getId())
 		{
 			// Try to perform transparent authentication
 			$transparentAuth = new TransparentAuthentication($this->container);

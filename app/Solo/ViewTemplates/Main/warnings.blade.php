@@ -26,9 +26,10 @@ $token    = $this->container->session->getCsrfToken()->getValue();
 {{-- AdBlock warning --}}
 @include('Main/warning_adblock')
 
-{{-- Stuck database updates warning --}}
-@if ($this->stuckUpdates)
-	<?php $resetUrl = $router->route('index.php?view=Main&task=forceUpdateDb');	?>
+{{-- Stuck database updates warning. Only actionable with the `configure` privilege, and it is nothing but a call to
+     action, so we do not nag users who cannot do anything about it. --}}
+@if ($this->stuckUpdates && $this->canAccess('main', 'forceUpdateDb'))
+	<?php $resetUrl = $router->route('index.php?view=Main&task=forceUpdateDb&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1');	?>
     <div class="akeeba-block--failure">
         <p>
 			<?php
@@ -85,21 +86,24 @@ $token    = $this->container->session->getCsrfToken()->getValue();
             @sprintf('COM_AKEEBA_CPANEL_LBL_OUTDIR_LISTABLE', realpath($this->getModel()->getOutputDirectory()))
         </p>
         @if (!$this->hasOutputDirectorySecurityFiles)
-            <p>
-                @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_CLICKTHEBUTTON')
-            </p>
-            <p>
-                @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_FIX_SECURITYFILES')
-            </p>
+            {{-- The warning itself is useful to everyone; only the fix requires the `configure` privilege. --}}
+            @if ($this->canAccess('main', 'fixOutputDirectory'))
+                <p>
+                    @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_CLICKTHEBUTTON')
+                </p>
+                <p>
+                    @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_FIX_SECURITYFILES')
+                </p>
 
-            <form action="@route('index.php?view=Main&task=fixOutputDirectory')" method="POST" class="akeeba-form--inline">
-                <input type="hidden" name="@token()" value="1">
+                <form action="@route('index.php?view=Main&task=fixOutputDirectory')" method="POST" class="akeeba-form--inline">
+                    <input type="hidden" name="@token()" value="1">
 
-                <button type="submit" class="akeeba-btn--block--green">
-                    <span class="akion-hammer"></span>
-                    @lang('COM_AKEEBA_CPANEL_BTN_FIXSECURITY')
-                </button>
-            </form>
+                    <button type="submit" class="akeeba-btn--block--green">
+                        <span class="akion-hammer"></span>
+                        @lang('COM_AKEEBA_CPANEL_BTN_FIXSECURITY')
+                    </button>
+                </form>
+            @endif
         @else
             <p>
                 @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_TRASHHOST')
@@ -116,21 +120,24 @@ $token    = $this->container->session->getCsrfToken()->getValue();
         <p>
             @sprintf('COM_AKEEBA_CPANEL_LBL_OUTDIR_FILEREADABLE', realpath($this->getModel()->getOutputDirectory()))
         </p>
-        <p>
-            @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_CLICKTHEBUTTON')
-        </p>
-        <p>
-            @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_FIX_RANDOM')
-        </p>
+        {{-- The warning itself is useful to everyone; only the fix requires the `configure` privilege. --}}
+        @if ($this->canAccess('main', 'addRandomToFilename'))
+            <p>
+                @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_CLICKTHEBUTTON')
+            </p>
+            <p>
+                @lang('COM_AKEEBA_CPANEL_LBL_OUTDIR_FIX_RANDOM')
+            </p>
 
-        <form action="@route('index.php?view=Main&task=addRandomToFilename')" method="POST" class="akeeba-form--inline">
-            <input type="hidden" name="@token()" value="1">
+            <form action="@route('index.php?view=Main&task=addRandomToFilename')" method="POST" class="akeeba-form--inline">
+                <input type="hidden" name="@token()" value="1">
 
-            <button type="submit" class="akeeba-btn--block--green">
-                <span class="akion-hammer"></span>
-                @lang('COM_AKEEBA_CPANEL_BTN_FIXSECURITY')
-            </button>
-        </form>
+                <button type="submit" class="akeeba-btn--block--green">
+                    <span class="akion-hammer"></span>
+                    @lang('COM_AKEEBA_CPANEL_BTN_FIXSECURITY')
+                </button>
+            </form>
+        @endif
     </div>
 @endif
 
@@ -141,8 +148,8 @@ $token    = $this->container->session->getCsrfToken()->getValue();
     </div>
 @endunless
 
-{{-- Front-end backup secret word reminder --}}
-@unless(empty($this->frontEndSecretWordIssue))
+{{-- Front-end backup secret word reminder. The whole block is a call to action which requires `configure`. --}}
+@if (!empty($this->frontEndSecretWordIssue) && $this->canAccess('main', 'resetSecretWord'))
     <div class="akeeba-block--warning">
         <h3>@lang('COM_AKEEBA_CPANEL_ERR_FESECRETWORD_HEADER')</h3>
         <p>@lang('COM_AKEEBA_CPANEL_ERR_FESECRETWORD_INTRO')</p>
@@ -159,10 +166,10 @@ $token    = $this->container->session->getCsrfToken()->getValue();
             </a>
         </p>
     </div>
-@endunless
+@endif
 
-{{-- You need to enter your Download ID --}}
-@if ($this->needsDownloadId)
+{{-- You need to enter your Download ID. The whole block is a call to action which requires `configure`. --}}
+@if ($this->needsDownloadId && $this->canAccess('main', 'applyDownloadId'))
     <div class="akeeba-block--success">
         <h3>
             @lang('COM_AKEEBA_CPANEL_MSG_MUSTENTERDLID')

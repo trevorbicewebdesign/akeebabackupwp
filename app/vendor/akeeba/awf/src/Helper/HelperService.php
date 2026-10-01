@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -10,7 +10,6 @@ namespace Awf\Helper;
 use Awf\Container\Container;
 use Awf\Container\ContainerAwareInterface;
 use Awf\Container\ContainerAwareTrait;
-use Awf\Html\HtmlHelperInterface;
 use BadMethodCallException;
 use InvalidArgumentException;
 use OutOfRangeException;
@@ -39,7 +38,7 @@ class HelperService implements ContainerAwareInterface
 	{
 		$this->setContainer($container);
 
-		if ($container['autoloadHelpers'] = true)
+		if ($container['autoloadHelpers'] == true)
 		{
 			try
 			{
@@ -55,13 +54,13 @@ class HelperService implements ContainerAwareInterface
 	/**
 	 * Register a helper object.
 	 *
-	 * @param   string               $name    The name prefix of the helper. Empty for automatic detection.
-	 * @param   HtmlHelperInterface  $helper  The helper object.
+	 * @param   string           $name    The name prefix of the helper. Empty for automatic detection.
+	 * @param   HelperInterface  $helper  The helper object.
 	 *
 	 * @return  void
 	 * @since   1.1.0
 	 */
-	public function registerHelper(string $name, HtmlHelperInterface $helper): void
+	public function registerHelper(string $name, HelperInterface $helper): void
 	{
 		$this->helpers[($name ?: $helper->getName())] = $helper;
 	}

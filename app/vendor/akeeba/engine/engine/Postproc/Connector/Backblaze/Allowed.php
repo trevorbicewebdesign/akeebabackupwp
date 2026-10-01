@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -30,6 +30,7 @@ use DomainException;
  *
  * @property-read  string $bucketId     The ID of the bucket we are limited to. Empty if we are not limited to a bucket.
  * @property-read  string $bucketName   The name of the bucket we are limited to. Empty if we are not limited to a bucket.
+ * @property-read  array  $buckets      v4: list of {bucketId, bucketName} objects the key may access.
  * @property-read  array  $capabilities An array containing one or more of listKeys, writeKeys, deleteKeys, listBuckets, writeBuckets, deleteBuckets, listFiles, readFiles, shareFiles, writeFiles, and deleteFiles
  * @property-read  string $namePrefix   The prefix inside the bucket we are allowed to write to
  */
@@ -48,6 +49,13 @@ class Allowed
 	 * @var string
 	 */
 	private $bucketName;
+
+	/**
+	 * v4: list of {bucketId, bucketName} objects the key may access. Empty means unrestricted.
+	 *
+	 * @var array
+	 */
+	private $buckets = [];
 
 	/**
 	 * An array containing one or more of listKeys, writeKeys, deleteKeys, listBuckets, writeBuckets, deleteBuckets, listFiles, readFiles, shareFiles, writeFiles, and deleteFiles
@@ -82,6 +90,51 @@ class Allowed
 				$this->$key = $value;
 			}
 		}
+
+		// An unrestricted key omits buckets entirely, and the API may send it as an explicit null. Callers iterate this,
+		// so it must always be an array.
+		if (!is_array($this->buckets))
+		{
+			$this->buckets = [];
+		}
+
+		// v4 replaces bucketId/bucketName with a buckets[] array for multi-bucket keys. The live API keys each entry
+		// id/name; earlier documentation used bucketId/bucketName. Normalise every entry to {bucketId, bucketName} so
+		// all read sites see a single, consistent shape regardless of which key spelling the API sends.
+		if (!empty($this->buckets))
+		{
+			$this->buckets = array_map(
+				static function ($entry) {
+					$entry = (array) $entry;
+
+					return [
+						'bucketId'   => $entry['bucketId'] ?? $entry['id'] ?? '',
+						'bucketName' => $entry['bucketName'] ?? $entry['name'] ?? '',
+					];
+				},
+				array_values($this->buckets)
+			);
+
+			// Seed the scalar fields so single-bucket callers keep working. A bucket that has been deleted comes back
+			// with a null name; seeding from such an entry would leave bucketName empty and shadow a perfectly good
+			// named bucket sitting behind it in the list. Prefer the first entry we can actually name.
+			if (empty($this->bucketId))
+			{
+				$named = array_values(
+					array_filter(
+						$this->buckets,
+						static function ($entry) {
+							return $entry['bucketName'] !== '';
+						}
+					)
+				);
+
+				$seed = $named[0] ?? $this->buckets[0];
+
+				$this->bucketId   = $seed['bucketId'];
+				$this->bucketName = $seed['bucketName'];
+			}
+		}
 	}
 
 	/**
@@ -102,6 +155,23 @@ class Allowed
 		}
 
 		throw new DomainException(sprintf("Property %s does not exist in class %s", $name, __CLASS__));
+	}
+
+	/**
+	 * Is a property set, and not null?
+	 *
+	 * Without this, isset() and empty() on these properties go looking for __isset(), do not find it, and conclude the
+	 * property is unset — so empty($allowed->bucketName) came back true no matter what the bucket was actually called.
+	 * The properties are private, so an outside caller never reaches them directly and PHP always routes through the
+	 * magic methods. __get() alone is not enough.
+	 *
+	 * @param   string  $name  The property name being tested
+	 *
+	 * @return  bool
+	 */
+	public function __isset($name)
+	{
+		return property_exists($this, $name) && !is_null($this->$name);
 	}
 
 	/**
@@ -240,6 +310,35 @@ class Allowed
 	 */
 	public function isBucketAllowed($bucket)
 	{
+		// v4 multi-bucket keys: check against the full buckets list.
+		if (!empty($this->buckets))
+		{
+			$hasUnnamed = false;
+
+			foreach ($this->buckets as $entry)
+			{
+				$entry = (array) $entry;
+				$name  = $entry['bucketName'] ?? '';
+
+				if ($name === '')
+				{
+					$hasUnnamed = true;
+
+					continue;
+				}
+
+				if ($name === $bucket)
+				{
+					return true;
+				}
+			}
+
+			// A bucket the API would not name for us (a deleted one) could be the very bucket we were asked about. We
+			// cannot prove it is disallowed, and this check is only a courtesy that turns a remote 401 into a legible
+			// error — Backblaze enforces the restriction regardless. Defer to the API rather than block a valid upload.
+			return $hasUnnamed;
+		}
+
 		if (empty($this->bucketName))
 		{
 			return true;

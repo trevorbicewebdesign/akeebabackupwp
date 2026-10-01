@@ -87,7 +87,7 @@ CSS;
 			<nav>
 				<?php _solo_template_renderSubmenu($this, $this->getMenu()->getMenuItems('main'), 'nav navbar-nav'); ?>
 				<?php if ($user->getId()): ?>
-					<a href="<?php echo $this->getContainer()->router->route('index.php?view=login&task=logout') ?>"
+					<a href="<?php echo $this->getContainer()->router->route('index.php?view=login&task=logout&' . $this->getContainer()->session->getCsrfToken()->getValue() . '=1') ?>"
 					   class="akeeba-btn--grey hasTooltip"
 					   title="<?php echo Text::sprintf('SOLO_LOGIN_LBL_LOGOUT', $user->getUsername()) ?>"
 					   data-toggle="tooltip" data-placement="bottom">

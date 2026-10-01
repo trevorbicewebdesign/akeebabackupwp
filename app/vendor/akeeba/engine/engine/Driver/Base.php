@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -325,6 +325,26 @@ abstract class Base
 	 * @return  string   The escaped string.
 	 */
 	abstract public function escape($text, $extra = false);
+
+	/**
+	 * Render a float as an SQL numeric literal without losing precision.
+	 *
+	 * Casting a float to a string the ordinary way goes through PHP's `precision` ini setting — 14 significant digits
+	 * by default — but a double needs up to 17 to survive a round trip. The dump engine turns every fetched value into
+	 * an INSERT statement through escape(), so an ordinary cast silently truncates DOUBLE columns in the backup.
+	 *
+	 * var_export() instead honours `serialize_precision`, which defaults to -1: the shortest representation that
+	 * converts back to the exact same double. It is also locale-independent, unlike sprintf('%.17G') — which on the
+	 * PHP 7.4 we still support would emit a decimal comma under, say, a de_DE locale, corrupting the SQL.
+	 *
+	 * @param   float  $value  The float to render.
+	 *
+	 * @return  string  The float as a round-trip-safe numeric literal.
+	 */
+	protected function floatToSqlString($value)
+	{
+		return var_export((float) $value, true);
+	}
 
 	/**
 	 * An alias for query()
@@ -1213,6 +1233,19 @@ abstract class Base
 
 			return $fin;
 		}
+	}
+
+	/**
+	 * Quote a value as a hex string.
+	 *
+	 * @param   string  $text  The value to quote as hex.
+	 *
+	 * @return  string  The hex-quoted value.
+	 * @since   10.3
+	 */
+	public function quoteHex(string $text): string
+	{
+		return "x'" . bin2hex($text) . "'";
 	}
 
 	/**

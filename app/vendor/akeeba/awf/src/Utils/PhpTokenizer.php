@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 namespace Awf\Utils;
@@ -78,7 +78,10 @@ class PhpTokenizer
         $tokens = token_get_all($code);
 
         $iterator   = new Collection($tokens);
-        $collection = $iterator->getCachingIterator();
+        // Use FULL_CACHE (instead of the default CALL_TOSTRING) so the caching iterator does not attempt to cast the
+        // array-shaped tokens returned by token_get_all() to strings, which would emit "Array to string conversion"
+        // warnings on every token while leaving the iteration behaviour otherwise identical.
+        $collection = $iterator->getCachingIterator(\CachingIterator::FULL_CACHE);
         $offset     = $skip ? $skip - 1 : 0;
 
         // Ok let's start looking for the requested token

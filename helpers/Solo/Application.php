@@ -32,6 +32,23 @@ class Application extends \Awf\Application\Application
 		// Put a small marker to indicate that we run inside another CMS
 		$isCMS = $this->setIsCMSFlag();
 
+		// When accessed directly over the web (i.e. NOT bootstrapped by WordPress itself, e.g. calling the plugin's
+		// app/index.php or remote.php without WordPress having loaded), only the unauthenticated, secret-word
+		// protected front-end endpoints are permitted. Everything else — the control panel, configuration, etc. —
+		// must be reached through the WordPress admin, which authenticates the user and enforces their capabilities.
+		// This prevents the control panel (and the information it displays) from rendering to an anonymous visitor.
+		if (!$isCMS && array_key_exists('REQUEST_METHOD', $_SERVER))
+		{
+			$allowedDirectViews = ['remote', 'api', 'check', 'uploadcheck', 'oauth2'];
+			$requestedView      = strtolower($this->container->input->getCmd('view', ''));
+
+			if (!in_array($requestedView, $allowedDirectViews, true))
+			{
+				// NB: The language files are not loaded yet at this point, so we use a plain, untranslated message.
+				throw new \RuntimeException('Access denied', 403);
+			}
+		}
+
 		// Get the target platform information for updates
 		$this->setupUpdatePlatform();
 

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -29,11 +29,6 @@ class Utf8
 {
 	public static function utf8_encode($s)
 	{
-		if (version_compare(PHP_VERSION, '8.1.999', 'le'))
-		{
-			return utf8_encode($s);
-		}
-
 		if (function_exists('mb_convert_encoding'))
 		{
 			return mb_convert_encoding($s, 'UTF-8', 'ISO-8859-1');
@@ -70,11 +65,6 @@ class Utf8
 
 	public static function utf8_decode($s)
 	{
-		if (version_compare(PHP_VERSION, '8.1.999', 'le'))
-		{
-			return utf8_decode($s);
-		}
-
 		if (function_exists('mb_convert_encoding'))
 		{
 			return mb_convert_encoding($s, 'ISO-8859-1', 'UTF-8');

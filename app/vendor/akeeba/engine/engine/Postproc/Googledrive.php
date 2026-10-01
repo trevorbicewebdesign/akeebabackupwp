@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -449,6 +449,10 @@ HTML;
 			$config->get('engine.postproc.googledrive.oauth2_refresh')
 		);
 
+		// Restore the persisted access-token expiry so the connector can refresh proactively (before the token lapses)
+		// across stepped backup runs, instead of only reacting after a request has already failed.
+		$connector->setTokenExpiration((int) $config->get('engine.postproc.googledrive.token_expiration', 0));
+
 		// Validate the tokens
 		Factory::getLog()->debug(sprintf(
 			"%s - Validating the Google Drive tokens",
@@ -466,9 +470,9 @@ HTML;
 			));
 
 			$config->set('engine.postproc.googledrive.access_token', $pingResult['access_token'], false);
+			$config->set('engine.postproc.googledrive.token_expiration', $pingResult['token_expiration'] ?? 0, false);
 
-			$profile_id = Platform::getInstance()->get_active_profile();
-			Platform::getInstance()->save_configuration($profile_id);
+			Platform::getInstance()->save_configuration($config->activeProfile);
 		}
 
 		$connector->setUploadToSharedWithMe(
@@ -500,9 +504,8 @@ HTML;
 			__METHOD__
 		));
 		$config->set('engine.postproc.googledrive.access_token', $pingResult['access_token'], false);
+		$config->set('engine.postproc.googledrive.token_expiration', $pingResult['token_expiration'] ?? 0, false);
 
-		$profile_id = Platform::getInstance()->get_active_profile();
-
-		Platform::getInstance()->save_configuration($profile_id);
+		Platform::getInstance()->save_configuration($config->activeProfile);
 	}
 }

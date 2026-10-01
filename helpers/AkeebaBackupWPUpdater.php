@@ -142,22 +142,22 @@ abstract class AkeebaBackupWPUpdater
 				return $value;
 			}
 
-			if (is_object($value->response))
+			if (isset($value->response) && is_object($value->response))
 			{
 				$value->response = (array) ($value->response);
 			}
 
-			if (!is_array($value->response))
+			if (!isset($value->response) || !is_array($value->response))
 			{
 				$value->response = [];
 			}
 
-			if (is_object($value->no_update))
+			if (isset($value->no_update) && is_object($value->no_update))
 			{
 				$value->no_update = (array) ($value->no_update);
 			}
 
-			if (!is_array($value->no_update))
+			if (!isset($value->no_update) || !is_array($value->no_update))
 			{
 				$value->no_update = [];
 			}
@@ -188,12 +188,12 @@ abstract class AkeebaBackupWPUpdater
 		// Add the Download ID to Akeeba Backup Professional
 		if (AKEEBABACKUP_PRO)
 		{
-			$updateInfo['link'] = add_query_arg(
-				[
-					'dlid' => self::getDownloadID(),
-				],
-				$updateInfo['link']
-			);
+			$dlid = self::getDownloadID();
+
+			if (!empty($dlid))
+			{
+				$obj->package = add_query_arg(['dlid' => $dlid], $obj->package);
+			}
 		}
 
 		return $value;
@@ -589,7 +589,12 @@ HTML;
 		$myUpdate = array_reduce(
 			$rawData,
 			function ($carry, $item) {
-				if ($carry)
+				if (!is_array($carry))
+				{
+					return is_array($item) ? $item : null;
+				}
+
+				if (!is_array($item))
 				{
 					return $carry;
 				}
@@ -601,8 +606,15 @@ HTML;
 			null
 		);
 
+		if (!is_array($myUpdate))
+		{
+			return self::$updateInformation;
+		}
+
 		// It is an update if it's newer than the currently installed version
 		$myUpdate['hasUpdate'] = version_compare($myUpdate['version'], AKEEBABACKUP_VERSION, '>');
+
+		self::$updateInformation = $myUpdate;
 
 		return $myUpdate;
 	}

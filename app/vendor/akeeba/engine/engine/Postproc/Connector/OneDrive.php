@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -25,6 +25,12 @@ use Akeeba\Engine\Util\FileCloseAware;
 use Exception;
 use RuntimeException;
 
+/**
+ * OneDrive (consumer / personal) API connector.
+ *
+ * @deprecated Legacy consumer OneDrive (api.onedrive.com) connector. Superseded by the OneDriveBusiness connector
+ *             using the modern Microsoft Graph API. Retained only for backwards compatibility.
+ */
 class OneDrive
 {
 	use FileCloseAware;
@@ -44,6 +50,14 @@ class OneDrive
 	 * Item property to set the name conflict behavior
 	 */
 	public const nameConflictBehavior = '@name.conflictBehavior';
+
+	/**
+	 * Refresh the access token proactively when it is within this many seconds of expiring. OneDrive / Microsoft Graph
+	 * access tokens are short-lived (typically one hour); refreshing a little before expiry prevents the token from
+	 * lapsing in the middle of a long-running backup, which is the cause of intermittent, hard-to-reproduce
+	 * upload/download failures.
+	 */
+	private const tokenExpirationThreshold = 300;
 
 	/**
 	 * The access token for connecting to OneDrive
@@ -87,6 +101,15 @@ class OneDrive
 	protected $dlid = '';
 
 	/**
+	 * UNIX timestamp at which the current access token expires. 0 means "unknown" — e.g. a token supplied from saved
+	 * configuration whose lifetime we have not learned yet. It is populated from the `expires_in` value OneDrive returns
+	 * whenever the token is refreshed.
+	 *
+	 * @var int
+	 */
+	private $tokenExpiration = 0;
+
+	/**
 	 * Public constructor
 	 *
 	 * @param   string  $accessToken   The access token for accessing OneDrive
@@ -122,18 +145,35 @@ class OneDrive
 			'needs_refresh' => false,
 		];
 
-		// If we're not force refreshing the tokens try to get the drive information. It's our test to see if the token
-		// works.
 		if (!$forceRefresh)
 		{
-			try
+			if (empty($this->accessToken))
 			{
-				$dummy = $this->getDriveInformation();
-			}
-			catch (RuntimeException $e)
-			{
-				// If it failed we need to refresh the token
+				// We have no access token at all. There is nothing to probe with, and a recorded expiry for a token
+				// which is no longer there tells us nothing, so we must refresh. Without this the saved expiry would
+				// convince us the missing token is still good and every request would fail with an opaque "not
+				// authorised" error instead of the token being renewed transparently.
 				$response['needs_refresh'] = true;
+			}
+			elseif (!empty($this->tokenExpiration))
+			{
+				// We know when the token expires: refresh PROACTIVELY once it is at — or within a safety margin of —
+				// expiry, so it cannot lapse mid-operation. This avoids the race where a "test" call succeeds but the
+				// token then expires moments later during the real request (the cause of intermittent failures).
+				$response['needs_refresh'] = (time() + self::tokenExpirationThreshold) >= $this->tokenExpiration;
+			}
+			else
+			{
+				// We do NOT know this token's expiry (e.g. it was supplied from saved configuration). Fall back to
+				// probing the API with it and refreshing only if that probe fails.
+				try
+				{
+					$this->getDriveInformation();
+				}
+				catch (RuntimeException $e)
+				{
+					$response['needs_refresh'] = true;
+				}
 			}
 		}
 
@@ -594,13 +634,61 @@ class OneDrive
 
 		$refreshResponse = $this->fetch('GET', $refreshUrl);
 
-		$this->refreshToken = $refreshResponse['refresh_token'] ?? $this->refreshToken;
-		$this->accessToken  = $refreshResponse['access_token'] ?? $this->accessToken;
+		// A rejected refresh can come back as an error payload carrying an HTTP *200* status, which fetch() hands to us
+		// instead of throwing. Silently keeping the old, dead access token would report the refresh as a success and
+		// the caller would learn of it only through an opaque "not authorised" error from whatever API call it made
+		// next. Say what actually went wrong instead.
+		if (!isset($refreshResponse['access_token']))
+		{
+			$reason = $refreshResponse['error_description']
+				?? $refreshResponse['user_message']
+				?? 'OneDrive did not return a new access token';
 
-		$refreshResponse['refresh_token'] = $this->refreshToken;
-		$refreshResponse['access_token']  = $this->accessToken;
+			throw new RuntimeException(
+				rtrim($reason, " \t\n\r\0\x0B.")
+				. '. Your OneDrive authorisation is no longer valid. Check your Download ID and reconnect your '
+				. 'Microsoft account to this backup profile to obtain a new pair of tokens.',
+				500
+			);
+		}
+
+		$this->refreshToken = $refreshResponse['refresh_token'] ?? $this->refreshToken;
+		$this->accessToken  = $refreshResponse['access_token'];
+
+		// Record when the freshly minted access token will expire so ping() can refresh it proactively next time.
+		if (isset($refreshResponse['expires_in']))
+		{
+			$this->tokenExpiration = time() + (int) $refreshResponse['expires_in'];
+		}
+
+		$refreshResponse['refresh_token']    = $this->refreshToken;
+		$refreshResponse['access_token']     = $this->accessToken;
+		$refreshResponse['token_expiration'] = $this->tokenExpiration;
 
 		return $refreshResponse;
+	}
+
+	/**
+	 * Get the UNIX timestamp at which the current access token expires (0 if unknown).
+	 *
+	 * @return  int
+	 */
+	public function getTokenExpiration()
+	{
+		return $this->tokenExpiration;
+	}
+
+	/**
+	 * Restore a previously persisted access-token expiry timestamp, so ping() can refresh proactively without first
+	 * having to probe the API. Pass 0 to mark the expiry as unknown.
+	 *
+	 * @param   int  $tokenExpiration  UNIX timestamp at which the access token expires.
+	 *
+	 * @return  void
+	 */
+	public function setTokenExpiration($tokenExpiration)
+	{
+		$this->tokenExpiration = (int) $tokenExpiration;
 	}
 
 	/**
@@ -790,7 +878,10 @@ class OneDrive
 		$error        = curl_error($ch);
 		$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		// Close open file pointers
 		if ($fp)

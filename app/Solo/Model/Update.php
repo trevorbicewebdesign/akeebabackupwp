@@ -556,7 +556,7 @@ class Update extends Model
 	'kickstart.setup.sourcefile' => '{$tempdir}/update.zip',
 	'kickstart.setup.destdir' => '$destDir',
 	'kickstart.setup.restoreperms' => '0',
-	'kickstart.setup.filetype' => 'zip',
+	'kickstart.setup.filetype' => 'ZIP',
 	'kickstart.setup.dryrun' => '$dryRun',
 ENDDATA;
 
@@ -604,8 +604,8 @@ ENDDATA;
 			}
 
 			$data .= <<<ENDDATA
-	'kickstart.ftp.ssl' => '0',
-	'kickstart.ftp.passive' => '1',
+	'kickstart.ftp.ssl' => '{$ftpOptions['ssl']}',
+	'kickstart.ftp.passive' => '{$ftpOptions['passive']}',
 	'kickstart.ftp.host' => '{$ftpOptions['host']}',
 	'kickstart.ftp.port' => '{$ftpOptions['port']}',
 	'kickstart.ftp.user' => '{$ftpOptions['user']}',
@@ -677,6 +677,8 @@ ENDDATA;
 			'user'    => $config->get('fs.username', ''),
 			'pass'    => $config->get('fs.password', ''),
 			'root'    => $config->get('fs.directory', ''),
+			'ssl'     => $config->get('fs.ssl', false) ? 1 : 0,
+			'passive' => $config->get('fs.passive', true) ? 1 : 0,
 			'tempdir' => APATH_BASE . '/tmp',
 		];
 
@@ -728,7 +730,7 @@ ENDDATA;
 			{
 				$betaRevision = 1;
 			}
-			$test = substr($test, 0, $alphaQualifierPosition) . '.a' . $betaRevision;
+			$test = rtrim(substr($test, 0, $alphaQualifierPosition), '.-_') . '.a' . $betaRevision;
 		}
 		elseif ($betaQualifierPosition !== false)
 		{
@@ -737,7 +739,7 @@ ENDDATA;
 			{
 				$betaRevision = 1;
 			}
-			$test = substr($test, 0, $betaQualifierPosition) . '.b' . $betaRevision;
+			$test = rtrim(substr($test, 0, $betaQualifierPosition), '.-_') . '.b' . $betaRevision;
 		}
 		elseif ($betaQualifierPosition2 !== false)
 		{
@@ -748,16 +750,16 @@ ENDDATA;
 				$betaRevision = 1;
 			}
 
-			$test = substr($test, 0, $betaQualifierPosition2) . '.b' . $betaRevision;
+			$test = rtrim(substr($test, 0, $betaQualifierPosition2), '.-_') . '.b' . $betaRevision;
 		}
 		elseif ($rcQualifierPosition !== false)
 		{
-			$betaRevision = substr($test, $rcQualifierPosition + 5);
+			$betaRevision = substr($test, $rcQualifierPosition + 3);
 			if (!$betaRevision)
 			{
 				$betaRevision = 1;
 			}
-			$test = substr($test, 0, $rcQualifierPosition) . '.rc' . $betaRevision;
+			$test = rtrim(substr($test, 0, $rcQualifierPosition), '.-_') . '.rc' . $betaRevision;
 		}
 		elseif ($rcQualifierPosition2 !== false)
 		{
@@ -768,27 +770,27 @@ ENDDATA;
 				$betaRevision = 1;
 			}
 
-			$test = substr($test, 0, $rcQualifierPosition2) . '.rc' . $betaRevision;
+			$test = rtrim(substr($test, 0, $rcQualifierPosition2), '.-_') . '.rc' . $betaRevision;
 		}
 		elseif ($rcQualifierPosition3 !== false)
 		{
-			$betaRevision = substr($test, $rcQualifierPosition3 + 5);
+			$betaRevision = substr($test, $rcQualifierPosition3 + 2);
 
 			if (!$betaRevision)
 			{
 				$betaRevision = 1;
 			}
 
-			$test = substr($test, 0, $rcQualifierPosition3) . '.rc' . $betaRevision;
+			$test = rtrim(substr($test, 0, $rcQualifierPosition3), '.-_') . '.rc' . $betaRevision;
 		}
 		elseif ($devQualifiedPosition !== false)
 		{
-			$betaRevision = substr($test, $devQualifiedPosition + 6);
+			$betaRevision = substr($test, $devQualifiedPosition + 3);
 			if (!$betaRevision)
 			{
 				$betaRevision = '';
 			}
-			$test = substr($test, 0, $devQualifiedPosition) . '.dev' . $betaRevision;
+			$test = rtrim(substr($test, 0, $devQualifiedPosition), '.-_') . '.dev' . $betaRevision;
 		}
 
 		return $test;

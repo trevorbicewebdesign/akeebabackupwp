@@ -126,10 +126,7 @@ class Oauth2 extends ControllerDefault
 
 		@ob_end_clean();
 
-		header("Pragma: public");
-		header("Expires: 0");
-		header("Cache-Control: must-revalidate, post-check=0, pre-check=0");
-		header("Cache-Control: public", false);
+		$this->sendNoCacheHeaders();
 
 		header('Content-type: application/json');
 		header('Connection: close');

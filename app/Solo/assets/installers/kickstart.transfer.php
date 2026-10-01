@@ -5,8 +5,6 @@
  * @license   GNU General Public License version 3, or later
  */
 
-namespace Akeeba\Kickstart\Feature;
-
 defined('KSROOTDIR') or die;
 
 /**
@@ -16,7 +14,7 @@ defined('KSROOTDIR') or die;
  * Backup's Site Transfer Wizard. The features inside this file can only be accessed through Kickstart. Trying to access
  * this file directly will of course fail.
  */
-class Transfer
+class AKFeatureTransfer
 {
 	/**
 	 * Returns information about the server we're running on.

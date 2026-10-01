@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -158,12 +158,15 @@ class Csv extends Raw
 		{
             $items = $this->items;
 
+            if (is_array($items))
+            {
+                $items = \Awf\Mvc\DataModel\Collection::make($items);
+            }
+
 			// Default CSV behaviour in case the template isn't there!
 			$item    = $items->last();
 			$keys    = $item->getData();
 			$keys    = array_keys($keys);
-
-			reset($items);
 
 			if (!empty($this->csvFields))
 			{

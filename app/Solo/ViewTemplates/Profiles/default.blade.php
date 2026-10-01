@@ -52,7 +52,7 @@ $model = $this->getModel();
 				<td></td>
 				<td></td>
 				<td>
-					<input type="text" name="description" value="{{ $model->getState('description', '', 'string') }}"
+					<input type="text" name="description" value="{{{ $model->getState('description', '', 'string') }}}"
 						   class="akeebaGridViewAutoSubmitOnChange"
 						   placeholder="@lang('COM_AKEEBA_PROFILES_COLLABEL_DESCRIPTION')" />
 				</td>
@@ -110,8 +110,8 @@ $model = $this->getModel();
     <div class="akeeba-hidden-fields-container">
         <input type="hidden" name="boxchecked" id="boxchecked" value="0">
         <input type="hidden" name="task" id="task" value="browse">
-        <input type="hidden" name="filter_order" id="filter_order" value="{{ $this->lists->order }}">
-        <input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{ $this->lists->order_Dir }}">
+        <input type="hidden" name="filter_order" id="filter_order" value="{{{ $this->lists->order }}}">
+        <input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{{ $this->lists->order_Dir }}}">
         <input type="hidden" name="token" value="@token()">
     </div>
 </form>

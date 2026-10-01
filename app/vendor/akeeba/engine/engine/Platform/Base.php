@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -50,6 +50,22 @@ abstract class Base implements PlatformInterface
 	/** @var string The name of the table where backup records are stored */
 	public $tableNameStats = '#__ak_stats';
 
+	/**
+	 * Allow-list of comparison operators accepted in statistics filters.
+	 *
+	 * Any operand not in this list is coerced to '=' so caller-supplied operands can never be
+	 * injected into the query as SQL structure.
+	 *
+	 * @var string[]
+	 */
+	private $allowedFilterOperands = [
+		'=', '!=', '<>', '<', '<=', '>', '>=',
+		'BETWEEN', 'NOT BETWEEN', 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'EMPTY',
+	];
+
+	/** @var array Cache of known column names, keyed by table name */
+	private $tableColumnsCache = [];
+
 	/** @var bool Have I initialised the proxy configuration settings? */
 	protected $hasInitialisedProxySettings = false;
 
@@ -80,7 +96,7 @@ abstract class Base implements PlatformInterface
 		$db    = Factory::getDatabase($this->get_platform_database_options());
 		$query = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
 			->delete($db->qn($this->tableNameStats))
-			->where($db->qn('id') . ' = ' . $db->q($id));
+			->where($db->qn('id') . ' = ' . $db->q((int) $id));
 		$db->setQuery($query);
 
 		$result = true;
@@ -199,7 +215,8 @@ abstract class Base implements PlatformInterface
 			->where(' NOT ' . $db->qn('archivename') . ' = ' . $db->q(''));
 		if (!empty($tag))
 		{
-			$query->where($db->qn('origin') . ' LIKE ' . $db->q($tag . '%'));
+			// Escape LIKE wildcards in the caller-supplied tag; keep the trailing % as a literal wildcard.
+			$query->where($db->qn('origin') . ' LIKE \'' . $db->escape($tag, true) . '%\'');
 		}
 		$db->setQuery($query);
 
@@ -229,7 +246,7 @@ abstract class Base implements PlatformInterface
 		$query = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
 			->select('*')
 			->from($db->qn($this->tableNameStats))
-			->where($db->qn('id') . ' = ' . $db->q($id));
+			->where($db->qn('id') . ' = ' . $db->q((int) $id));
 		$db->setQuery($query);
 
 		return $db->loadAssoc();
@@ -249,52 +266,7 @@ abstract class Base implements PlatformInterface
 
 		$query = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true));
 
-		if (!empty($filters))
-		{
-			if (is_array($filters))
-			{
-				// Parse the filters array
-				foreach ($filters as $f)
-				{
-					$clause  = $db->quoteName($f['field']);
-					$operand = strtoupper($f['operand'] ?? '=');
-
-					switch ($operand)
-					{
-						case 'BETWEEN':
-						case 'NOT BETWEEN':
-							$clause .= $operand . ' ' . $db->q($f['value']) . ' AND ' . $db->q($f['value2']);
-							break;
-
-						case 'LIKE':
-						case 'NOT LIKE':
-							$clause .= $operand . ' ' . '\'%' . $db->escape($f['value']) . '%\'';
-							break;
-
-						case 'IN':
-						case 'NOT IN':
-							$clause .= ' ' . $operand . ' (' . implode(', ', array_map([$db, 'quote'], array_filter($f['value']))) . ')';
-							break;
-
-						case 'EMPTY':
-							$field = $db->quoteName($f['field']);
-							$empty = $db->quote('');
-							$clause = "($field IS NULL OR $field = $empty)";
-
-						default:
-							$clause .= $operand . ' ' . $db->q($f['value']);
-							break;
-					}
-
-					$query->where($clause);
-				}
-			}
-			else
-			{
-				// Legacy mode: profile ID given
-				$query->where($db->qn('profile_id') . ' = ' . $db->q($filters));
-			}
-		}
+		$this->applyStatisticsFilters($db, $query, $filters);
 
 		$query->select('COUNT(*)')
 			->from($db->quoteName($this->tableNameStats));
@@ -328,47 +300,7 @@ abstract class Base implements PlatformInterface
 
 		$query = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true));
 
-		if (!empty($config->filters))
-		{
-			if (is_array($config->filters))
-			{
-				if (!empty($config->filters))
-				{
-					// Parse the filters array
-					foreach ($config->filters as $f)
-					{
-						$clause = $db->qn($f['field']);
-						if (array_key_exists('operand', $f))
-						{
-							$clause .= ' ' . strtoupper($f['operand']) . ' ';
-							if ($f['operand'] == 'BETWEEN')
-							{
-								$clause .= $db->q($f['value']) . ' AND ' . $db->q($f['value2']);
-							}
-							elseif ($f['operand'] == 'LIKE')
-							{
-								$clause .= '\'%' . $db->escape($f['value']) . '%\'';
-							}
-							else
-							{
-								$clause .= $db->q($f['value']);
-							}
-						}
-						else
-						{
-							$clause .= ' = ' . $db->q($f['value']);
-						}
-
-						$query->where($clause);
-					}
-				}
-			}
-			else
-			{
-				// Legacy mode: profile ID given
-				$query->where($db->qn('profile_id') . ' = ' . $db->q($config->filters));
-			}
-		}
+		$this->applyStatisticsFilters($db, $query, $config->filters);
 
 		if (empty($config->order) || !is_array($config->order))
 		{
@@ -378,9 +310,14 @@ abstract class Base implements PlatformInterface
 			];
 		}
 
+		// Whitelist the ORDER BY column against the schema and the direction to ASC/DESC.
+		$orderBy        = $this->whitelistColumn($db, $this->tableNameStats, $config->order['by'] ?? 'id');
+		$orderDirection = strtoupper(trim((string) ($config->order['order'] ?? 'DESC')));
+		$orderDirection = ($orderDirection === 'ASC') ? 'ASC' : 'DESC';
+
 		$query->select('*')
 			->from($db->qn($this->tableNameStats))
-			->order($db->qn($config->order['by']) . " " . strtoupper($config->order['order']));
+			->order($db->qn($orderBy) . ' ' . $orderDirection);
 
 		$db->setQuery($query, $config->limitstart, $config->limit);
 
@@ -418,6 +355,9 @@ abstract class Base implements PlatformInterface
 	public function &get_valid_backup_records($useprofile = false, $tagFilters = [], $ordering = 'DESC')
 	{
 		$db = Factory::getDatabase($this->get_platform_database_options());
+
+		// Whitelist the ORDER BY direction to ASC/DESC so it cannot be injected as SQL structure.
+		$ordering = (strtoupper(trim((string) $ordering)) === 'ASC') ? 'ASC' : 'DESC';
 
 		$query2 = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
 			->select('MAX(' . $db->qn('id') . ') AS ' . $db->qn('id'))
@@ -501,7 +441,7 @@ abstract class Base implements PlatformInterface
 		$sql = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
 			->select('*')
 			->from($db->qn($this->tableNameStats))
-			->where($db->qn('profile_id') . ' = ' . $db->q($profile))
+			->where($db->qn('profile_id') . ' = ' . $db->q((int) $profile))
 			->where($db->qn('remote_filename') . ' LIKE ' . $db->q($engine . '://%'))
 			->order($db->qn('id') . ' DESC');
 
@@ -525,7 +465,7 @@ abstract class Base implements PlatformInterface
 		$temp = [];
 		foreach ($ids as $id)
 		{
-			$temp[] = $db->q($id);
+			$temp[] = $db->q((int) $id);
 		}
 		$list = implode(',', $temp);
 		$sql  = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
@@ -569,6 +509,8 @@ abstract class Base implements PlatformInterface
 		{
 			$profile_id = $this->get_active_profile();
 		}
+
+		$profile_id = (int) $profile_id;
 
 		// Initialize the registry
 		$registry = Factory::getConfiguration();
@@ -901,6 +843,8 @@ abstract class Base implements PlatformInterface
 			$profile_id = $this->get_active_profile();
 		}
 
+		$profile_id = (int) $profile_id;
+
 		// Get an INI format registry dump
 		$registry     = Factory::getConfiguration();
 		$dump_profile = $registry->exportAsJSON();
@@ -1084,7 +1028,7 @@ abstract class Base implements PlatformInterface
 			$sql = (method_exists($db, 'createQuery') ? $db->createQuery() : $db->getQuery(true))
 				->update($db->qn($this->tableNameStats))
 				->set($sql_set)
-				->where($db->qn('id') . '=' . $db->q($id));
+				->where($db->qn('id') . '=' . $db->q((int) $id));
 			$db->setQuery($sql);
 			$db->query();
 
@@ -1150,5 +1094,163 @@ abstract class Base implements PlatformInterface
 	protected function detectProxySettings()
 	{
 
+	}
+
+	/**
+	 * Applies a set of statistics filters to a query, safely.
+	 *
+	 * Each filter is an array of the form
+	 * ['field' => column, 'operand' => operator, 'value' => …, 'value2' => …].
+	 *
+	 * Field names are whitelisted against the table schema, operands against a fixed allow-list,
+	 * and every value is quoted. LIKE values additionally have their wildcards escaped so a
+	 * caller-supplied '%' or '_' cannot turn an equality-style match into a pattern probe.
+	 *
+	 * @param   \Akeeba\Engine\Driver\Base  $db       The database driver
+	 * @param   object                      $query    The query being built
+	 * @param   mixed                       $filters  Array of filters, or a scalar profile ID (legacy)
+	 *
+	 * @return  void
+	 */
+	private function applyStatisticsFilters($db, $query, $filters)
+	{
+		if (empty($filters))
+		{
+			return;
+		}
+
+		// Legacy mode: a scalar profile ID was given
+		if (!is_array($filters))
+		{
+			$query->where($db->qn('profile_id') . ' = ' . $db->q((int) $filters));
+
+			return;
+		}
+
+		foreach ($filters as $f)
+		{
+			if (!is_array($f) || !isset($f['field']))
+			{
+				continue;
+			}
+
+			$field   = $this->whitelistColumn($db, $this->tableNameStats, $f['field']);
+			$clause  = $db->qn($field);
+			$operand = $this->normaliseFilterOperand($f['operand'] ?? '=');
+
+			// Arrays are only meaningful for IN / NOT IN, which handle them explicitly below. Every
+			// other operand requires a scalar 'value' (and, for BETWEEN / NOT BETWEEN, a scalar
+			// 'value2' too) or we skip the filter rather than emit a half-formed clause or hand an
+			// array to escape()/quote() and fatal.
+			if (!in_array($operand, ['IN', 'NOT IN'], true) && $operand !== 'EMPTY')
+			{
+				$needsValue2 = in_array($operand, ['BETWEEN', 'NOT BETWEEN'], true);
+
+				if (!isset($f['value']) || !is_scalar($f['value'])
+					|| ($needsValue2 && (!isset($f['value2']) || !is_scalar($f['value2']))))
+				{
+					continue;
+				}
+			}
+
+			switch ($operand)
+			{
+				case 'BETWEEN':
+				case 'NOT BETWEEN':
+					$clause .= ' ' . $operand . ' ' . $db->q($f['value']) . ' AND ' . $db->q($f['value2']);
+					break;
+
+				case 'LIKE':
+				case 'NOT LIKE':
+					$clause .= ' ' . $operand . ' \'%' . $db->escape($f['value'], true) . '%\'';
+					break;
+
+				case 'IN':
+				case 'NOT IN':
+					$values = is_array($f['value']) ? $f['value'] : [$f['value']];
+					$values = array_filter(
+						$values, function ($v) {
+						return $v !== null && $v !== '';
+					}
+					);
+
+					// An empty set: IN () is a syntax error, so emit a constant that matches nothing / everything.
+					if (empty($values))
+					{
+						$clause = ($operand === 'IN') ? '(1 = 0)' : '(1 = 1)';
+						break;
+					}
+
+					$clause .= ' ' . $operand . ' (' . implode(', ', array_map([$db, 'q'], $values)) . ')';
+					break;
+
+				case 'EMPTY':
+					$clause = '(' . $db->qn($field) . ' IS NULL OR ' . $db->qn($field) . ' = ' . $db->q('') . ')';
+					break;
+
+				default:
+					$clause .= ' ' . $operand . ' ' . $db->q($f['value']);
+					break;
+			}
+
+			$query->where($clause);
+		}
+	}
+
+	/**
+	 * Normalises a caller-supplied filter operand to a known-safe SQL operator.
+	 *
+	 * Unknown operands collapse to '=' so they can never be concatenated into the query as SQL
+	 * structure.
+	 *
+	 * @param   mixed  $operand  The caller-supplied operand
+	 *
+	 * @return  string  A safe SQL operator
+	 */
+	private function normaliseFilterOperand($operand)
+	{
+		$operand = strtoupper(trim((string) ($operand ?? '=')));
+
+		return in_array($operand, $this->allowedFilterOperands, true) ? $operand : '=';
+	}
+
+	/**
+	 * Returns $field only if it is a real column of $table, otherwise $default.
+	 *
+	 * Column names are already back-tick quoted by the caller (so they cannot break out of the
+	 * identifier), but whitelisting them against the actual schema prevents filtering or ordering
+	 * by arbitrary/unexpected columns.
+	 *
+	 * @param   \Akeeba\Engine\Driver\Base  $db       The database driver
+	 * @param   string                      $table    The table to inspect
+	 * @param   mixed                       $field    The caller-supplied column name
+	 * @param   string                      $default  The column to fall back to
+	 *
+	 * @return  string
+	 */
+	private function whitelistColumn($db, $table, $field, $default = 'id')
+	{
+		if (!array_key_exists($table, $this->tableColumnsCache))
+		{
+			try
+			{
+				$this->tableColumnsCache[$table] = array_keys((array) $db->getTableColumns($table));
+			}
+			catch (Exception $e)
+			{
+				$this->tableColumnsCache[$table] = [];
+			}
+		}
+
+		$field   = (string) $field;
+		$columns = $this->tableColumnsCache[$table];
+
+		// If we could not introspect the schema, fall back to the (back-tick quoted) caller value.
+		if (empty($columns))
+		{
+			return ($field !== '') ? $field : $default;
+		}
+
+		return in_array($field, $columns, true) ? $field : $default;
 	}
 }

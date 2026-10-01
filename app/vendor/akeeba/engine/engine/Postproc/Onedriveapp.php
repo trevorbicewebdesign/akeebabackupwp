@@ -23,6 +23,12 @@ use Akeeba\Engine\Platform;
 use Akeeba\Engine\Postproc\Connector\OneDriveApp as ConnectorOneDrive;
 use Akeeba\Engine\Postproc\Exception\BadConfiguration;
 
+/**
+ * OneDrive (custom Azure AD application) post-processing engine.
+ *
+ * @deprecated Legacy OneDrive integration tied to a per-user custom OAuth2 application. Superseded by the
+ *             Onedrivebusiness engine using the modern Microsoft Graph API. Retained only for backwards compatibility.
+ */
 class Onedriveapp extends Onedrivebusiness
 {
 	/**
@@ -99,8 +105,7 @@ class Onedriveapp extends Onedrivebusiness
 			$config->set('engine.postproc.' . $this->settingsKey . '.access_token', $pingResult['access_token'], false);
 			$config->set('engine.postproc.' . $this->settingsKey . '.refresh_token', $pingResult['refresh_token'], false);
 
-			$profile_id = Platform::getInstance()->get_active_profile();
-			Platform::getInstance()->save_configuration($profile_id);
+			Platform::getInstance()->save_configuration($config->activeProfile);
 		}
 
 		return $connector;

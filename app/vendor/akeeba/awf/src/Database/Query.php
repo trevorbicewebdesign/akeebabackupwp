@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -1572,6 +1572,13 @@ abstract class Query
 	{
 		foreach ($this as $k => $v)
 		{
+			// The database driver reference is intentionally shared (not deep-copied)
+			// because drivers may hold non-serialisable resources such as PDO cursors.
+			if ($k === 'db')
+			{
+				continue;
+			}
+
 			if (is_object($v) || is_array($v))
 			{
 				$this->{$k} = unserialize(serialize($v));

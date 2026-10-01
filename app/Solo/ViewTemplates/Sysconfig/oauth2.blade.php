@@ -65,7 +65,7 @@ $uri    = new Uri(
         @lang('COM_AKEEBA_CONFIG_' . $engine . '_CLIENT_ID_LABEL')
     </label>
     <input type="text" name="{{ $engine }}_client_id" id="{{ $engine }}_client_id"
-           value="{{ $config->get($engine . '_client_id') }}">
+           value="{{{ $config->get($engine . '_client_id') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_' . $engine . '_CLIENT_ID_DESC')
     </p>
@@ -76,7 +76,7 @@ $uri    = new Uri(
         @lang('COM_AKEEBA_CONFIG_' . $engine . '_CLIENT_SECRET_LABEL')
     </label>
     <input type="password" name="{{  $engine }}_client_secret" id="{{ $engine }}_client_secret"
-           value="{{ $config->get($engine . '_client_secret') }}">
+           value="{{{ $config->get($engine . '_client_secret') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_' . $engine . '_CLIENT_SECRET_DESC')
     </p>

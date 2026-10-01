@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -573,8 +573,13 @@ abstract class BaseArchiver extends BaseFileManagement
 				$zdata = aksubstr($zdata, -$bytesLeftInData);
 			}
 
-			// If the part file is full create a new one
-			if ($freeSpaceInPart <= 0)
+			// If the part file is full, and we still have data to write, create a new one.
+			//
+			// The "data left" check is essential. Without it, data ending exactly on a part boundary creates a surplus
+			// part which never receives a single byte. JPA/JPS finalisation renames the last part to .jpa/.jps, so that
+			// surplus part becomes a zero byte final archive which post-processing engines refuse to upload. Every
+			// other writer re-checks the free part space before writing, so leaving the part exactly full is safe.
+			if ($freeSpaceInPart <= 0 && $bytesLeftInData > 0)
 			{
 				// Create new part
 				$this->createAndOpenNewPart();

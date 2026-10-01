@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -28,6 +28,12 @@ use Exception;
 
 /**
  * SugarSync post-processing class for Akeeba Backup
+ *
+ * @obsolete  SugarSync discontinued its consumer file-sync service and its public REST API
+ *            (https://api.sugarsync.com) is no longer generally available. This engine can therefore no longer be
+ *            exercised against a live service, and no integration test exists for it (see GitHub issue #146). It is
+ *            retained only so that pre-existing backup profiles do not break on load; do not target it for new backups
+ *            and do not expect it to function. Use any of the other, actively-supported remote storage engines instead.
  */
 class Sugarsync extends Base
 {

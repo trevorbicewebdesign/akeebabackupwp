@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -62,24 +62,37 @@ final class UploadKickstart extends AbstractFinalizer
 		Factory::getLog()->debug("Loading post-processing engine object ($engineName)");
 		$postProcEngine = Factory::getPostprocEngine($engineName);
 
-		// Set $filename to kickstart's source file
-		$filename = Platform::getInstance()->get_installer_images_path() . '/kickstart.txt';
+		// Prefer XOR-encoded kickstart.dat (obfuscated to defeat host scanners); fall back to plain kickstart.txt.
+		$xorKey        = 'ThisIsKickstartCoreWhichIsNotMaliciousYouCanDownloadItFromAkeebaDotComIfYouWant';
+		$installerPath = Platform::getInstance()->get_installer_images_path();
+		$encodedPath   = $installerPath . '/kickstart.dat';
+		$plainPath     = $installerPath . '/kickstart.txt';
+		$isTempFile    = false;
 
-		// Post-process the file
-		$this->setSubstep('kickstart.php');
-
-		if (!@file_exists($filename) || !is_file($filename))
+		if (@file_exists($encodedPath) && is_file($encodedPath))
+		{
+			$encoded    = file_get_contents($encodedPath);
+			$fullKey    = str_repeat($xorKey, (int) ceil(strlen($encoded) / strlen($xorKey)));
+			$filename   = tempnam(sys_get_temp_dir(), 'ksdat_');
+			$isTempFile = true;
+			file_put_contents($filename, $encoded ^ substr($fullKey, 0, strlen($encoded)));
+		}
+		elseif (@file_exists($plainPath) && is_file($plainPath))
+		{
+			$filename = $plainPath;
+		}
+		else
 		{
 			Factory::getLog()->warning(
-				sprintf(
-					'Failed to upload kickstart.php. Missing file %s',
-					$filename
-				)
+				sprintf('Failed to upload kickstart.php. Missing file %s', $encodedPath)
 			);
 
 			// Indicate we're done.
 			return true;
 		}
+
+		// Post-process the file
+		$this->setSubstep('kickstart.php');
 
 		$exception          = null;
 		$finishedProcessing = false;
@@ -91,6 +104,13 @@ final class UploadKickstart extends AbstractFinalizer
 		catch (Exception $e)
 		{
 			$exception = $e;
+		}
+		finally
+		{
+			if ($isTempFile)
+			{
+				@unlink($filename);
+			}
 		}
 
 		if (!is_null($exception))

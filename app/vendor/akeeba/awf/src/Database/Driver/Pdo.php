@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -151,7 +151,7 @@ abstract class Pdo extends Driver
 	public function __destruct()
 	{
 		$this->freeResult();
-		unset($this->connection);
+		$this->connection = null;
 	}
 
 	/**
@@ -497,7 +497,7 @@ abstract class Pdo extends Driver
 	public function disconnect()
 	{
 		$this->freeResult();
-		unset($this->connection);
+		$this->connection = null;
 	}
 
 	/**
@@ -535,7 +535,14 @@ abstract class Pdo extends Driver
 
 		$text = str_replace("'", "''", $text);
 
-		return addcslashes($text, "\000\n\r\\\032");
+		$result = addcslashes($text, "\000\n\r\\\032");
+
+		if ($extra)
+		{
+			$result = addcslashes($result, '%_');
+		}
+
+		return $result;
 	}
 
 	/**

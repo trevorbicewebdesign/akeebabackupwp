@@ -294,6 +294,7 @@ class Html extends View
 		{
 			unset($buttons['delete']);
 			unset($buttons['deletefiles']);
+			unset($buttons['view']);
 		}
 
 		$toolbar = $document->getToolbar();

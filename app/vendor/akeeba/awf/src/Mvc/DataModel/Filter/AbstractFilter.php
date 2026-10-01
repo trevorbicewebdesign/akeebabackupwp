@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -10,8 +10,6 @@ namespace Awf\Mvc\DataModel\Filter;
 
 use Awf\Database\Driver;
 use InvalidArgumentException;
-use ReflectionClass;
-use ReflectionMethod;
 
 abstract class AbstractFilter
 {
@@ -23,6 +21,27 @@ abstract class AbstractFilter
 	public $null_value = null;
 
 	protected $db = null;
+
+	/**
+	 * SQL comparison operators a filter is allowed to use.
+	 *
+	 * Anything not on this list collapses to '=' rather than being concatenated into the
+	 * query, because the operator arrives from request state and is not quotable.
+	 *
+	 * @var  string[]
+	 */
+	protected $allowedOperators = ['=', '!=', '<>', '>', '>=', '<', '<=', 'LIKE', 'NOT LIKE'];
+
+	/**
+	 * The search methods a filter descriptor is allowed to select.
+	 *
+	 * This is deliberately an explicit list, not reflection over the class. The method name
+	 * comes from request state; deriving the allow-list from whatever public methods happen
+	 * to exist means adding a public helper would silently make it request-selectable.
+	 *
+	 * @var  string[]
+	 */
+	protected $searchMethods = ['exact', 'partial', 'between', 'outside', 'interval', 'search'];
 
 	/**
 	 * The column name of the table field
@@ -44,6 +63,13 @@ abstract class AbstractFilter
 	 * @var bool
 	 */
 	protected $filterZero = true;
+
+	/**
+	 * Optional table alias to prefix the field name in generated SQL.
+	 *
+	 * @var string|null
+	 */
+	protected $tableAlias = null;
 
 	/**
 	 * Constructor
@@ -128,6 +154,9 @@ abstract class AbstractFilter
 		{
 			[$type,] = explode('(', $type);
 		}
+
+		// Normalise to lowercase so that drivers (e.g. SQLite) returning upper-case type names are handled correctly.
+		$type = strtolower(trim((string) $type));
 
 		$detectedType = null;
 
@@ -244,29 +273,7 @@ abstract class AbstractFilter
 	 */
 	public function getSearchMethods()
 	{
-		$ignore = [
-			'isEmpty', 'getField', 'getFieldType', '__construct', 'getDefaultSearchMethod', 'getSearchMethods',
-			'getFieldName',
-		];
-
-		$class   = new ReflectionClass(__CLASS__);
-		$methods = $class->getMethods(ReflectionMethod::IS_PUBLIC);
-
-		$tmp = [];
-
-		foreach ($methods as $method)
-		{
-			$tmp[] = $method->name;
-		}
-
-		$methods = $tmp;
-
-		if ($methods = array_diff($methods, $ignore))
-		{
-			return $methods;
-		}
-
-		return [];
+		return $this->searchMethods;
 	}
 
 	/**
@@ -364,13 +371,50 @@ abstract class AbstractFilter
 
 		$prefix = '';
 
-		if (substr($operator, 0, 1) == '!')
+		if (is_scalar($operator))
 		{
-			$prefix   = 'NOT ';
-			$operator = substr($operator, 1);
+			$operator = (string) $operator;
+
+			if (substr($operator, 0, 1) == '!')
+			{
+				$prefix   = 'NOT ';
+				$operator = substr($operator, 1);
+			}
 		}
 
-		return $prefix . '(' . $this->getFieldName() . ' ' . $operator . ' ' . $this->db->quote($value) . ')';
+		$operator = $this->normaliseOperator($operator);
+
+		// LIKE operators take a pattern, so % and _ in a filter value would turn an
+		// equality-style match into a pattern probe. Escape them; see Text::partial().
+		if ($operator === 'LIKE' || $operator === 'NOT LIKE')
+		{
+			$quotedValue = $this->db->quote($this->db->escape($value, true), false) . $this->db->getLikeEscapeSql();
+		}
+		else
+		{
+			$quotedValue = $this->db->quote($value);
+		}
+
+		return $prefix . '(' . $this->getFieldName() . ' ' . $operator . ' ' . $quotedValue . ')';
+	}
+
+	/**
+	 * Normalises a caller-supplied comparison operator to a known-safe SQL operator.
+	 *
+	 * @param   mixed  $operator  The caller-supplied operator
+	 *
+	 * @return  string  A safe SQL operator
+	 */
+	protected function normaliseOperator($operator)
+	{
+		if (!is_scalar($operator))
+		{
+			return '=';
+		}
+
+		$operator = strtoupper(trim((string) $operator));
+
+		return in_array($operator, $this->allowedOperators, true) ? $operator : '=';
 	}
 
 	/**

@@ -45,7 +45,7 @@ $config = $this->getContainer()->appConfig;
     </label>
     <input type="text" name="options[frontend_secret_word]" id="frontend_secret_word"
            placeholder="@lang('COM_AKEEBA_CONFIG_SECRETWORD_LABEL')"
-           value="{{ \Akeeba\Engine\Platform::getInstance()->get_platform_configuration_option('frontend_secret_word', '') }}">
+           value="{{{ \Akeeba\Engine\Platform::getInstance()->get_platform_configuration_option('frontend_secret_word', '') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_SECRETWORD_DESC')
     </p>
@@ -87,7 +87,7 @@ $config = $this->getContainer()->appConfig;
     </label>
     <input type="email" name="options[frontend_email_address]" id="frontend_email_address"
            placeholder="@lang('COM_AKEEBA_CONFIG_ARBITRARYFEEMAIL_LABEL')"
-           value="{{ $config->get('options.frontend_email_address') }}">
+           value="{{{ $config->get('options.frontend_email_address') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_ARBITRARYFEEMAIL_DESC')
     </p>
@@ -99,7 +99,7 @@ $config = $this->getContainer()->appConfig;
     </label>
     <input type="text" name="options[frontend_email_subject]" id="frontend_email_subject"
            placeholder="@lang('COM_AKEEBA_CONFIG_FEEMAILSUBJECT_DESC')"
-           value="{{ $config->get('options.frontend_email_subject') }}">
+           value="{{{ $config->get('options.frontend_email_subject') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FEEMAILSUBJECT_DESC')
     </p>
@@ -110,7 +110,7 @@ $config = $this->getContainer()->appConfig;
         @lang('COM_AKEEBA_CONFIG_FEEMAILBODY_LABEL')
     </label>
     <textarea rows="10" name="options[frontend_email_body]"
-              id="frontend_email_body">{{ $config->get('options.frontend_email_body') }}</textarea>
+              id="frontend_email_body">{{{ $config->get('options.frontend_email_body') }}}</textarea>
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FEEMAILBODY_DESC')
     </p>

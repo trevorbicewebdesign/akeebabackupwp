@@ -4,1460 +4,11234 @@
  * An AJAX-powered archive extraction tool
  *
  * @package   kickstart
- * @copyright Copyright (c)2025-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU General Public License version 3, or later
  */
 
-// PHP version check
-if (version_compare(PHP_VERSION, '7.4', 'lt'))
-{
-	$message = sprintf('This script requires PHP %s or later. You are currently using PHP %s.', AKEEBA_MIN_PHP, PHP_VERSION);
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
 
-	if (_AKEEBA_IS_WEB)
-	{
-		echo "<html lang=\"en\"><head><title>Unsupported PHP version</title></head><body><h1>Unsupported PHP version</h1><p>$me
-</p></body></html>";
-
-		exit;
-	}
-
-	echo $message;
-
-	exit(255);
-}
-
-// Normalise the locale
-function_exists('setlocale') && @setlocale(LC_ALL, 'en_US.UTF8');
-
-define('_AKEEBA_SELF_DIR', @is_link(__FILE__) ? getcwd() : __DIR__);
-define('_AKEEBA_SELF_BASENAME', basename(__FILE__));
-define('_AKEEBA_SELF_BARENAME', implode('.', array_slice(explode('.', basename(__FILE__)), 0, -1)));
-define('_AKEEBA_WEB_ENTRYPOINT', 'src/restore.php');
-define('_AKEEBA_CLI_ENTRYPOINT', 'src/nocli.php');
 define('_AKEEBA_RESTORATION', 1);
-define('_AKEEBA_IS_WINDOWS', strpos(strtoupper(PHP_OS), 'WIN') === 0);
-define(
-	'_AKEEBA_IS_WEB', @(isset($_SERVER['REQUEST_URI']) && isset($_SERVER['REQUEST_METHOD'])
-	                    && ($_SERVER['REQUEST_METHOD'] == 'GET'
-	                        || $_SERVER['REQUEST_METHOD'] == 'POST'))
-);
-define('AKEEBA_VERSION', '9.0.3');
-define('AKEEBA_DATE', '2026-03-03 09:26:42');
-define('AKEEBA_PRO', '0');
-define('AKEEBA_NAME', 'restore');
-define('AKEEBA_MIN_PHP', '7.4');
-define(
-	'AKEEBA_RUN_AS_PHP',
-	!in_array('phar', stream_get_wrappers()) || !class_exists('Phar', false) ? 1 : Phar::PHP
-);
-define(
-	'AKEEBA_MIMETYPES',
-	[
-		'dtd'   => 'text/plain',
-		'txt'   => 'text/plain',
-		'xsd'   => 'text/plain',
-		'php'   => AKEEBA_RUN_AS_PHP,
-		'inc'   => AKEEBA_RUN_AS_PHP,
-		'bmp'   => 'image/bmp',
-		'css'   => 'text/css',
-		'gif'   => 'image/gif',
-		'htm'   => 'text/html',
-		'html'  => 'text/html',
-		'htmls' => 'text/html',
-		'ico'   => 'image/x-ico',
-		'jpe'   => 'image/jpeg',
-		'jpg'   => 'image/jpeg',
-		'jpeg'  => 'image/jpeg',
-		'js'    => 'application/x-javascript',
-		'png'   => 'image/png',
-		'tif'   => 'image/tiff',
-		'tiff'  => 'image/tiff',
-		'xml'   => 'text/xml',
-	]
-);
-define('_AKEEBA_HAS_KICKTEMP', @file_exists(_AKEEBA_SELF_DIR . '/kicktemp') && @is_dir(_AKEEBA_SELF_DIR . '/kicktemp') && @is_writeable(_AKEEBA_SELF_DIR . '/kicktemp'));
+defined('DS') or define('DS', DIRECTORY_SEPARATOR);
 
-function akstrlen(?string $string): int
+// Unarchiver run states
+define('AK_STATE_NOFILE', 0); // File header not read yet
+define('AK_STATE_HEADER', 1); // File header read; ready to process data
+define('AK_STATE_DATA', 2); // Processing file data
+define('AK_STATE_DATAREAD', 3); // Finished processing file data; ready to post-process
+define('AK_STATE_POSTPROC', 4); // Post-processing
+define('AK_STATE_DONE', 5); // Done with post-processing
+
+/* Windows system detection */
+if (!defined('_AKEEBA_IS_WINDOWS'))
 {
-	if ($string === null || $string === '')
+	if (function_exists('php_uname'))
 	{
-		return 0;
+		define('_AKEEBA_IS_WINDOWS', stristr(php_uname(), 'windows'));
 	}
+	else
+	{
+		define('_AKEEBA_IS_WINDOWS', DIRECTORY_SEPARATOR == '\\');
+	}
+}
 
-	return function_exists('mb_strlen')
-		? mb_strlen($string ?? '', '8bit')
-		: count(unpack('C*', $string));
+// Get the file's root
+if (!defined('KSROOTDIR'))
+{
+	define('KSROOTDIR', __DIR__);
+}
+if (!defined('KSLANGDIR'))
+{
+	define('KSLANGDIR', KSROOTDIR);
+}
+
+// Make sure the locale is correct for basename() to work
+if (function_exists('setlocale'))
+{
+	@setlocale(LC_ALL, 'en_US.UTF8');
+}
+
+// fnmatch not available on non-POSIX systems
+// Thanks to soywiz@php.net for this usefull alternative function [http://gr2.php.net/fnmatch]
+if (!function_exists('fnmatch'))
+{
+	function fnmatch($pattern, $string)
+	{
+		return @preg_match(
+			'/^' . strtr(addcslashes($pattern, '/\\.+^$(){}=!<>|'),
+				['*' => '.*', '?' => '.?']) . '$/i', $string
+		);
+	}
+}
+
+// Unicode-safe binary data length function
+if (!function_exists('akstringlen'))
+{
+	if (function_exists('mb_strlen'))
+	{
+		function akstringlen($string)
+		{
+			return mb_strlen($string, '8bit');
+		}
+	}
+	else
+	{
+		function akstringlen($string)
+		{
+			return strlen($string);
+		}
+	}
+}
+
+if (!function_exists('aksubstr'))
+{
+	if (function_exists('mb_strlen'))
+	{
+		function aksubstr($string, $start, $length = null)
+		{
+			return mb_substr($string, $start, $length, '8bit');
+		}
+	}
+	else
+	{
+		function aksubstr($string, $start, $length = null)
+		{
+			return substr($string, $start, $length);
+		}
+	}
 }
 
 /**
- * A binary-safe strpos replacement.
+ * Gets a query parameter from GET or POST data
  *
- * @param   string|null  $haystack  The string to search in.
- * @param   string       $needle    The string to search for.
- * @param   int          $offset    The search offset.
- *
- * @return  int|false  The position of the needle, or false if not found.
+ * @param $key
+ * @param $default
  */
-function akstrpos(?string $haystack, string $needle, int $offset = 0)
+function getQueryParam($key, $default = null)
 {
-	if ($haystack === null || $needle === '')
+	$value = $default;
+
+	if (array_key_exists($key, $_REQUEST))
 	{
-		return false;
+		$value = $_REQUEST[$key];
 	}
 
-	if (function_exists('mb_strpos'))
+	return $value;
+}
+
+// Debugging function
+function debugMsg($msg)
+{
+	if (!defined('KSDEBUG'))
 	{
-		return mb_strpos($haystack, $needle, $offset, '8bit');
+		return;
 	}
 
-	// Use regex to find the position.
-	// preg_match is binary-safe as long as the /u (UTF-8) modifier is NOT used.
-	// We quote the needle to handle special regex characters.
-	$regex  = '/' . preg_quote($needle, '/') . '/';
-	$result = preg_match($regex, $haystack, $matches, PREG_OFFSET_CAPTURE, $offset);
+	$fp = fopen('debug.txt', 'a');
 
-	if ($result)
+	fwrite($fp, $msg . PHP_EOL);
+	fclose($fp);
+
+	// Echo to stdout if KSDEBUGCLI is defined
+	if (defined('KSDEBUGCLI'))
 	{
-		return $matches[0][1];
+		echo $msg . "\n";
+	}
+}
+
+/**
+ * Invalidate a file in OPcache.
+ *
+ * Only applies if the file has a .php extension.
+ *
+ * @param   string  $file  The filepath to clear from OPcache
+ *
+ * @return  boolean
+ * @since   7.1.0
+ */
+function clearFileInOPCache($file)
+{
+	static $hasOpCache = null;
+
+	if (is_null($hasOpCache))
+	{
+		$hasOpCache = ini_get('opcache.enable')
+			&& function_exists('opcache_invalidate')
+			&& (!ini_get('opcache.restrict_api') || stripos(realpath($_SERVER['SCRIPT_FILENAME']), ini_get('opcache.restrict_api')) === 0);
+	}
+
+	if ($hasOpCache && (strtolower(substr($file, -4)) === '.php'))
+	{
+		return opcache_invalidate($file, true);
 	}
 
 	return false;
 }
 
 /**
- * A binary-safe substr replacement.
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
  *
- * @param   string|null  $string  The input string.
- * @param   int          $start   The start offset.
- * @param   int|null     $length  The length of the slice.
- *
- * @return  string|false  The extracted part of the string, or false on failure.
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
  */
-function aksubstr(?string $string, int $start, ?int $length = null)
+
+/**
+ * The base class of Akeeba Engine objects. Allows for error and warnings logging
+ * and propagation. Largely based on the Joomla! 1.5 JObject class.
+ */
+abstract class AKAbstractObject
 {
-	if ($string === null)
+	/** @var    array    The queue size of the $_errors array. Set to 0 for infinite size. */
+	protected $_errors_queue_size = 0;
+	/** @var    array    The queue size of the $_warnings array. Set to 0 for infinite size. */
+	protected $_warnings_queue_size = 0;
+	/** @var    array    An array of errors */
+	private $_errors = [];
+	/** @var    array    An array of warnings */
+	private $_warnings = [];
+
+	/**
+	 * Get the most recent error message
+	 *
+	 * @param    integer $i Optional error index
+	 *
+	 * @return    string    Error message
+	 */
+	public function getError($i = null)
 	{
-		return false;
+		return $this->getItemFromArray($this->_errors, $i);
 	}
 
-	if (function_exists('mb_substr'))
+	/**
+	 * Returns the last item of a LIFO string message queue, or a specific item
+	 * if so specified.
+	 *
+	 * @param array $array An array of strings, holding messages
+	 * @param int   $i     Optional message index
+	 *
+	 * @return mixed The message string, or false if the key doesn't exist
+	 */
+	private function getItemFromArray($array, $i = null)
 	{
-		return mb_substr($string, $start, $length, '8bit');
-	}
-
-	// If length is null, we want the rest of the string.
-	if ($length === null)
-	{
-		// A simple regex to capture everything from $start to the end.
-		// We use . with the /s (dotall) modifier to include newlines.
-		$pattern = '/^.{' . $start . '}(.*)$/s';
-		if (preg_match($pattern, $string, $matches))
+		// Find the item
+		if ($i === null)
 		{
-			return $matches[1];
+			// Default, return the last item
+			$item = end($array);
+		}
+		else if (!array_key_exists($i, $array))
+		{
+			// If $i has been specified but does not exist, return false
+			return false;
+		}
+		else
+		{
+			$item = $array[$i];
 		}
 
-		return '';
+		return $item;
 	}
 
-	// Handle the case where a specific length is requested.
-	$pattern = '/^.{' . $start . '}(.{0,' . $length . '})/s';
-	if (preg_match($pattern, $string, $matches))
+	/**
+	 * Return all errors, if any
+	 *
+	 * @return    array    Array of error messages
+	 */
+	public function getErrors()
 	{
-		return $matches[1];
+		return $this->_errors;
 	}
 
-	return false;
+	/**
+	 * Resets all error messages
+	 */
+	public function resetErrors()
+	{
+		$this->_errors = [];
+	}
+
+	/**
+	 * Get the most recent warning message
+	 *
+	 * @param    integer $i Optional warning index
+	 *
+	 * @return    string    Error message
+	 */
+	public function getWarning($i = null)
+	{
+		return $this->getItemFromArray($this->_warnings, $i);
+	}
+
+	/**
+	 * Return all warnings, if any
+	 *
+	 * @return    array    Array of error messages
+	 */
+	public function getWarnings()
+	{
+		return $this->_warnings;
+	}
+
+	/**
+	 * Resets all warning messages
+	 */
+	public function resetWarnings()
+	{
+		$this->_warnings = [];
+	}
+
+	/**
+	 * Propagates errors and warnings to a foreign object. The foreign object SHOULD
+	 * implement the setError() and/or setWarning() methods but DOESN'T HAVE TO be of
+	 * AKAbstractObject type. For example, this can even be used to propagate to a
+	 * JObject instance in Joomla!. Propagated items will be removed from ourselves.
+	 *
+	 * @param object $object The object to propagate errors and warnings to.
+	 */
+	public function propagateToObject(&$object)
+	{
+		// Skip non-objects
+		if (!is_object($object))
+		{
+			return;
+		}
+
+		if (method_exists($object, 'setError'))
+		{
+			if (!empty($this->_errors))
+			{
+				foreach ($this->_errors as $error)
+				{
+					$object->setError($error);
+				}
+				$this->_errors = [];
+			}
+		}
+
+		if (method_exists($object, 'setWarning'))
+		{
+			if (!empty($this->_warnings))
+			{
+				foreach ($this->_warnings as $warning)
+				{
+					$object->setWarning($warning);
+				}
+				$this->_warnings = [];
+			}
+		}
+	}
+
+	/**
+	 * Propagates errors and warnings from a foreign object. Each propagated list is
+	 * then cleared on the foreign object, as long as it implements resetErrors() and/or
+	 * resetWarnings() methods.
+	 *
+	 * @param object $object The object to propagate errors and warnings from
+	 */
+	public function propagateFromObject(&$object)
+	{
+		if (method_exists($object, 'getErrors'))
+		{
+			$errors = $object->getErrors();
+			if (!empty($errors))
+			{
+				foreach ($errors as $error)
+				{
+					$this->setError($error);
+				}
+			}
+			if (method_exists($object, 'resetErrors'))
+			{
+				$object->resetErrors();
+			}
+		}
+
+		if (method_exists($object, 'getWarnings'))
+		{
+			$warnings = $object->getWarnings();
+			if (!empty($warnings))
+			{
+				foreach ($warnings as $warning)
+				{
+					$this->setWarning($warning);
+				}
+			}
+			if (method_exists($object, 'resetWarnings'))
+			{
+				$object->resetWarnings();
+			}
+		}
+	}
+
+	/**
+	 * Add an error message
+	 *
+	 * @param    string $error Error message
+	 */
+	public function setError($error)
+	{
+		if ($this->_errors_queue_size > 0)
+		{
+			if (count($this->_errors) >= $this->_errors_queue_size)
+			{
+				array_shift($this->_errors);
+			}
+		}
+
+		$this->_errors[] = $error;
+	}
+
+	/**
+	 * Add an error message
+	 *
+	 * @param    string $error Error message
+	 */
+	public function setWarning($warning)
+	{
+		if ($this->_warnings_queue_size > 0)
+		{
+			if (count($this->_warnings) >= $this->_warnings_queue_size)
+			{
+				array_shift($this->_warnings);
+			}
+		}
+
+		$this->_warnings[] = $warning;
+	}
+
+	/**
+	 * Sets the size of the error queue (acts like a LIFO buffer)
+	 *
+	 * @param int $newSize The new queue size. Set to 0 for infinite length.
+	 */
+	protected function setErrorsQueueSize($newSize = 0)
+	{
+		$this->_errors_queue_size = (int) $newSize;
+	}
+
+	/**
+	 * Sets the size of the warnings queue (acts like a LIFO buffer)
+	 *
+	 * @param int $newSize The new queue size. Set to 0 for infinite length.
+	 */
+	protected function setWarningsQueueSize($newSize = 0)
+	{
+		$this->_warnings_queue_size = (int) $newSize;
+	}
+
 }
 
-// Try to use the PHAR stream wrapper
-call_user_func(
-	function () {
-		// Is PHAR handling manually disabled?
-		if (_AKEEBA_HAS_KICKTEMP && @file_exists(_AKEEBA_SELF_DIR . '/kicktemp/nophar.txt'))
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * The superclass of all Akeeba Kickstart parts. The "parts" are intelligent stateful
+ * classes which perform a single procedure and have preparation, running and
+ * finalization phases. The transition between phases is handled automatically by
+ * this superclass' tick() final public method, which should be the ONLY public API
+ * exposed to the rest of the Akeeba Engine.
+ */
+abstract class AKAbstractPart extends AKAbstractObject
+{
+	/**
+	 * Indicates whether this part has finished its initialisation cycle
+	 *
+	 * @var boolean
+	 */
+	protected $isPrepared = false;
+
+	/**
+	 * Indicates whether this part has more work to do (it's in running state)
+	 *
+	 * @var boolean
+	 */
+	protected $isRunning = false;
+
+	/**
+	 * Indicates whether this part has finished its finalization cycle
+	 *
+	 * @var boolean
+	 */
+	protected $isFinished = false;
+
+	/**
+	 * Indicates whether this part has finished its run cycle
+	 *
+	 * @var boolean
+	 */
+	protected $hasRun = false;
+
+	/**
+	 * The name of the engine part (a.k.a. Domain), used in return table
+	 * generation.
+	 *
+	 * @var string
+	 */
+	protected $active_domain = "";
+
+	/**
+	 * The step this engine part is in. Used verbatim in return table and
+	 * should be set by the code in the _run() method.
+	 *
+	 * @var string
+	 */
+	protected $active_step = "";
+
+	/**
+	 * A more detailed description of the step this engine part is in. Used
+	 * verbatim in return table and should be set by the code in the _run()
+	 * method.
+	 *
+	 * @var string
+	 */
+	protected $active_substep = "";
+
+	/**
+	 * Any configuration variables, in the form of an array.
+	 *
+	 * @var array
+	 */
+	protected $_parametersArray = [];
+
+	/** @var string The database root key */
+	protected $databaseRoot = [];
+	/** @var array An array of observers */
+	protected $observers = [];
+	/** @var int Last reported warnings's position in array */
+	private $warnings_pointer = -1;
+
+	/**
+	 * The public interface to an engine part. This method takes care for
+	 * calling the correct method in order to perform the initialisation -
+	 * run - finalisation cycle of operation and return a proper response array.
+	 *
+	 * @return    array    A Response Array
+	 */
+	final public function tick()
+	{
+		// Call the right action method, depending on engine part state
+		switch ($this->getState())
+		{
+			case "init":
+				$this->_prepare();
+				break;
+			case "prepared":
+				$this->_run();
+				break;
+			case "running":
+				$this->_run();
+				break;
+			case "postrun":
+				$this->_finalize();
+				break;
+		}
+
+		// Send a Return Table back to the caller
+		$out = $this->_makeReturnTable();
+
+		return $out;
+	}
+
+	/**
+	 * Returns the state of this engine part.
+	 *
+	 * @return string The state of this engine part. It can be one of
+	 * error, init, prepared, running, postrun, finished.
+	 */
+	final public function getState()
+	{
+		if ($this->getError())
+		{
+			return "error";
+		}
+
+		if (!($this->isPrepared))
+		{
+			return "init";
+		}
+
+		if (!($this->isFinished) && !($this->isRunning) && !($this->hasRun) && ($this->isPrepared))
+		{
+			return "prepared";
+		}
+
+		if (!($this->isFinished) && $this->isRunning && !($this->hasRun))
+		{
+			return "running";
+		}
+
+		if (!($this->isFinished) && !($this->isRunning) && $this->hasRun)
+		{
+			return "postrun";
+		}
+
+		if ($this->isFinished)
+		{
+			return "finished";
+		}
+	}
+
+	/**
+	 * Runs the preparation for this part. Should set _isPrepared
+	 * to true
+	 */
+	abstract protected function _prepare();
+
+	/**
+	 * Runs the main functionality loop for this part. Upon calling,
+	 * should set the _isRunning to true. When it finished, should set
+	 * the _hasRan to true. If an error is encountered, setError should
+	 * be used.
+	 */
+	abstract protected function _run();
+
+	/**
+	 * Runs the finalisation process for this part. Should set
+	 * _isFinished to true.
+	 */
+	abstract protected function _finalize();
+
+	/**
+	 * Constructs a Response Array based on the engine part's state.
+	 *
+	 * @return array The Response Array for the current state
+	 */
+	final protected function _makeReturnTable()
+	{
+		// Get a list of warnings
+		$warnings = $this->getWarnings();
+		// Report only new warnings if there is no warnings queue size
+		if ($this->_warnings_queue_size == 0)
+		{
+			if (($this->warnings_pointer > 0) && ($this->warnings_pointer < (count($warnings))))
+			{
+				$warnings = array_slice($warnings, $this->warnings_pointer + 1);
+				$this->warnings_pointer += count($warnings);
+			}
+			else
+			{
+				$this->warnings_pointer = count($warnings);
+			}
+		}
+
+		$out = [
+			'HasRun'   => (!($this->isFinished)),
+			'Domain'   => $this->active_domain,
+			'Step'     => $this->active_step,
+			'Substep'  => $this->active_substep,
+			'Error'    => $this->getError(),
+			'Warnings' => $warnings
+		];
+
+		return $out;
+	}
+
+	/**
+	 * Returns a copy of the class's status array
+	 *
+	 * @return array
+	 */
+	public function getStatusArray()
+	{
+		return $this->_makeReturnTable();
+	}
+
+	/**
+	 * Sends any kind of setup information to the engine part. Using this,
+	 * we avoid passing parameters to the constructor of the class. These
+	 * parameters should be passed as an indexed array and should be taken
+	 * into account during the preparation process only. This function will
+	 * set the error flag if it's called after the engine part is prepared.
+	 *
+	 * @param array $parametersArray The parameters to be passed to the
+	 *                               engine part.
+	 */
+	final public function setup($parametersArray)
+	{
+		if ($this->isPrepared)
+		{
+			$this->setState('error', "Can't modify configuration after the preparation of " . $this->active_domain);
+		}
+		else
+		{
+			$this->_parametersArray = $parametersArray;
+			if (array_key_exists('root', $parametersArray))
+			{
+				$this->databaseRoot = $parametersArray['root'];
+			}
+		}
+	}
+
+	/**
+	 * Sets the engine part's internal state, in an easy to use manner
+	 *
+	 * @param    string $state        One of init, prepared, running, postrun, finished, error
+	 * @param    string $errorMessage The reported error message, should the state be set to error
+	 */
+	protected function setState($state = 'init', $errorMessage = 'Invalid setState argument')
+	{
+		switch ($state)
+		{
+			case 'init':
+				$this->isPrepared = false;
+				$this->isRunning  = false;
+				$this->isFinished = false;
+				$this->hasRun     = false;
+				break;
+
+			case 'prepared':
+				$this->isPrepared = true;
+				$this->isRunning  = false;
+				$this->isFinished = false;
+				$this->hasRun     = false;
+				break;
+
+			case 'running':
+				$this->isPrepared = true;
+				$this->isRunning  = true;
+				$this->isFinished = false;
+				$this->hasRun     = false;
+				break;
+
+			case 'postrun':
+				$this->isPrepared = true;
+				$this->isRunning  = false;
+				$this->isFinished = false;
+				$this->hasRun     = true;
+				break;
+
+			case 'finished':
+				$this->isPrepared = true;
+				$this->isRunning  = false;
+				$this->isFinished = true;
+				$this->hasRun     = false;
+				break;
+
+			case 'error':
+			default:
+				$this->setError($errorMessage);
+				break;
+		}
+	}
+
+	final public function getDomain()
+	{
+		return $this->active_domain;
+	}
+
+	final public function getStep()
+	{
+		return $this->active_step;
+	}
+
+	final public function getSubstep()
+	{
+		return $this->active_substep;
+	}
+
+	/**
+	 * Attaches an observer object
+	 *
+	 * @param AKAbstractPartObserver $obs
+	 */
+	function attach(AKAbstractPartObserver $obs)
+	{
+		$this->observers["$obs"] = $obs;
+	}
+
+	/**
+	 * Detaches an observer object
+	 *
+	 * @param AKAbstractPartObserver $obs
+	 */
+	function detach(AKAbstractPartObserver $obs)
+	{
+		unset($this->observers["$obs"]);
+	}
+
+	/**
+	 * Sets the BREAKFLAG, which instructs this engine part that the current step must break immediately,
+	 * in fear of timing out.
+	 */
+	protected function setBreakFlag()
+	{
+		AKFactory::set('volatile.breakflag', true);
+	}
+
+	final protected function setDomain($new_domain)
+	{
+		$this->active_domain = $new_domain;
+	}
+
+	final protected function setStep($new_step)
+	{
+		$this->active_step = $new_step;
+	}
+
+	final protected function setSubstep($new_substep)
+	{
+		$this->active_substep = $new_substep;
+	}
+
+	/**
+	 * Notifies observers each time something interesting happened to the part
+	 *
+	 * @param mixed $message The event object
+	 */
+	protected function notify($message)
+	{
+		foreach ($this->observers as $obs)
+		{
+			$obs->update($this, $message);
+		}
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * The base class of unarchiver classes
+ */
+abstract class AKAbstractUnarchiver extends AKAbstractPart
+{
+	/** @var array List of the names of all archive parts */
+	public $archiveList = [];
+	/** @var int The total size of all archive parts */
+	public $totalSize = [];
+	/** @var array Which files to rename */
+	public $renameFiles = [];
+	/** @var array Which directories to rename */
+	public $renameDirs = [];
+	/** @var array Which files to skip */
+	public $skipFiles = [];
+	/** @var string Archive filename */
+	protected $filename = null;
+	/** @var integer Current archive part number */
+	protected $currentPartNumber = -1;
+	/** @var integer The offset inside the current part */
+	protected $currentPartOffset = 0;
+	/** @var bool Should I restore permissions? */
+	protected $flagRestorePermissions = false;
+	/** @var AKAbstractPostproc Post processing class */
+	protected $postProcEngine = null;
+	/** @var string Absolute path to prepend to extracted files */
+	protected $addPath = '';
+	/** @var string Absolute path to remove from extracted files */
+	protected $removePath = '';
+	/** @var string|null Lexically normalised extraction root, cached across entries */
+	protected $normalisedRoot = null;
+	/** @var integer Chunk size for processing */
+	protected $chunkSize = 524288;
+
+	/** @var resource File pointer to the current archive part file */
+	protected $fp = null;
+
+	/** @var int Run state when processing the current archive file */
+	protected $runState = null;
+
+	/** @var stdClass File header data, as read by the readFileHeader() method */
+	protected $fileHeader = null;
+
+	/** @var int How much of the uncompressed data we've read so far */
+	protected $dataReadLength = 0;
+
+	/** @var array Unwriteable files in these directories are always ignored and do not cause errors when not extracted */
+	protected $ignoreDirectories = [];
+
+	/**
+	 * Wakeup function, called whenever the class is unserialized
+	 */
+	public function __wakeup()
+	{
+		if ($this->currentPartNumber >= 0)
+		{
+			$this->fp = @fopen($this->archiveList[$this->currentPartNumber], 'r');
+
+			if ((is_resource($this->fp)) && ($this->currentPartOffset > 0))
+			{
+				@fseek($this->fp, $this->currentPartOffset);
+			}
+		}
+	}
+
+	/**
+	 * Sleep function, called whenever the class is serialized
+	 */
+	public function shutdown()
+	{
+		if (is_resource($this->fp))
+		{
+			$this->currentPartOffset = @ftell($this->fp);
+			@fclose($this->fp);
+		}
+	}
+
+	/**
+	 * Is this file or directory contained in a directory we've decided to ignore
+	 * write errors for? This is useful to let the extraction work despite write
+	 * errors in the log, logs and tmp directories which MIGHT be used by the system
+	 * on some low quality hosts and Plesk-powered hosts.
+	 *
+	 * @param   string $shortFilename The relative path of the file/directory in the package
+	 *
+	 * @return  boolean  True if it belongs in an ignored directory
+	 */
+	public function isIgnoredDirectory($shortFilename)
+	{
+		// return false;
+
+		if (substr($shortFilename, -1) == '/')
+		{
+			$check = rtrim($shortFilename, '/');
+		}
+		else
+		{
+			$check = dirname($shortFilename);
+		}
+
+		return in_array($check, $this->ignoreDirectories);
+	}
+
+	/**
+	 * Implements the abstract _prepare() method
+	 */
+	final protected function _prepare()
+	{
+		if (count($this->_parametersArray) > 0)
+		{
+			foreach ($this->_parametersArray as $key => $value)
+			{
+				switch ($key)
+				{
+					// Archive's absolute filename
+					case 'filename':
+						$this->filename = $value;
+
+						// Sanity check
+						if (!empty($value))
+						{
+							$value = strtolower($value);
+
+							if (strlen($value) > 6)
+							{
+								if (
+									(substr($value, 0, 7) == 'http://')
+									|| (substr($value, 0, 8) == 'https://')
+									|| (substr($value, 0, 6) == 'ftp://')
+									|| (substr($value, 0, 7) == 'ssh2://')
+									|| (substr($value, 0, 6) == 'ssl://')
+								)
+								{
+									$this->setState('error', 'Invalid archive location');
+								}
+							}
+						}
+
+
+						break;
+
+					// Should I restore permissions?
+					case 'restore_permissions':
+						$this->flagRestorePermissions = $value;
+						break;
+
+					// Should I use FTP?
+					case 'post_proc':
+						$this->postProcEngine = AKFactory::getpostProc($value);
+						break;
+
+					// Path to add in the beginning
+					case 'add_path':
+						$this->addPath = $value;
+						$this->addPath = str_replace('\\', '/', $this->addPath);
+						$this->addPath = rtrim($this->addPath, '/');
+						if (!empty($this->addPath))
+						{
+							$this->addPath .= '/';
+						}
+						break;
+
+					// Path to remove from the beginning
+					case 'remove_path':
+						$this->removePath = $value;
+						$this->removePath = str_replace('\\', '/', $this->removePath);
+						$this->removePath = rtrim($this->removePath, '/');
+						if (!empty($this->removePath))
+						{
+							$this->removePath .= '/';
+						}
+						break;
+
+					// Which files to rename (hash array)
+					case 'rename_files':
+						$this->renameFiles = $value;
+						break;
+
+					// Which files to rename (hash array)
+					case 'rename_dirs':
+						$this->renameDirs = $value;
+						break;
+
+					// Which files to skip (indexed array)
+					case 'skip_files':
+						$this->skipFiles = $value;
+						break;
+
+					// Which directories to ignore when we can't write files in them (indexed array)
+					case 'ignoredirectories':
+						$this->ignoreDirectories = $value;
+						break;
+				}
+			}
+		}
+
+		$this->scanArchives();
+
+		$this->readArchiveHeader();
+		$errMessage = $this->getError();
+		if (!empty($errMessage))
+		{
+			$this->setState('error', $errMessage);
+		}
+		else
+		{
+			$this->runState = AK_STATE_NOFILE;
+			$this->setState('prepared');
+		}
+	}
+
+	/**
+	 * Scans for archive parts
+	 */
+	private function scanArchives()
+	{
+		if (defined('KSDEBUG'))
+		{
+			@unlink('debug.txt');
+		}
+		debugMsg('Preparing to scan archives');
+
+		$privateArchiveList = [];
+
+		// Get the components of the archive filename
+		$dirname         = dirname($this->filename);
+		$base_extension  = $this->getBaseExtension();
+		$basename        = basename($this->filename, $base_extension);
+		$this->totalSize = 0;
+
+		// Scan for multiple parts until we don't find any more of them
+		$count             = 0;
+		$found             = true;
+		$this->archiveList = [];
+		while ($found)
+		{
+			++$count;
+			$extension = substr($base_extension, 0, 2) . sprintf('%02d', $count);
+			$filename  = $dirname . DIRECTORY_SEPARATOR . $basename . $extension;
+			$found     = file_exists($filename);
+			if ($found)
+			{
+				debugMsg('- Found archive ' . $filename);
+				// Add yet another part, with a numeric-appended filename
+				$this->archiveList[] = $filename;
+
+				$filesize = @filesize($filename);
+				$this->totalSize += $filesize;
+
+				$privateArchiveList[] = [$filename, $filesize];
+			}
+			else
+			{
+				debugMsg('- Found archive ' . $this->filename);
+				// Add the last part, with the regular extension
+				$this->archiveList[] = $this->filename;
+
+				$filename = $this->filename;
+				$filesize = @filesize($filename);
+				$this->totalSize += $filesize;
+
+				$privateArchiveList[] = [$filename, $filesize];
+			}
+		}
+		debugMsg('Total archive parts: ' . $count);
+
+		$this->currentPartNumber = -1;
+		$this->currentPartOffset = 0;
+		$this->runState          = AK_STATE_NOFILE;
+
+		// Send start of file notification
+		$message                     = new stdClass;
+		$message->type               = 'totalsize';
+		$message->content            = new stdClass;
+		$message->content->totalsize = $this->totalSize;
+		$message->content->filelist  = $privateArchiveList;
+		$this->notify($message);
+	}
+
+	/**
+	 * Returns the base extension of the file, e.g. '.jpa'
+	 *
+	 * @return string
+	 */
+	private function getBaseExtension()
+	{
+		static $baseextension;
+
+		if (empty($baseextension))
+		{
+			$basename      = basename($this->filename);
+			$lastdot       = strrpos($basename, '.');
+			$baseextension = substr($basename, $lastdot);
+		}
+
+		return $baseextension;
+	}
+
+	/**
+	 * Concrete classes are supposed to use this method in order to read the archive's header and
+	 * prepare themselves to the point of being ready to extract the first file.
+	 */
+	protected abstract function readArchiveHeader();
+
+	protected function _run()
+	{
+		if ($this->getState() == 'postrun')
 		{
 			return;
 		}
 
-		if (!in_array('phar', stream_get_wrappers()) || !class_exists('Phar', false))
+		$this->setState('running');
+
+		$timer = AKFactory::getTimer();
+
+		$status = true;
+		while ($status && ($timer->getTimeLeft() > 0))
 		{
-			return;
+			switch ($this->runState)
+			{
+				case AK_STATE_NOFILE:
+					debugMsg(self::class . '::_run() - Reading file header');
+					$status = $this->readFileHeader();
+					if ($status)
+					{
+						// Send start of file notification
+						$message                        = new stdClass;
+						$message->type                  = 'startfile';
+						$message->content               = new stdClass;
+						$message->content->realfile     = $this->fileHeader->file;
+						$message->content->file         = $this->fileHeader->file;
+						$message->content->uncompressed = $this->fileHeader->uncompressed;
+
+						if (array_key_exists('realfile', get_object_vars($this->fileHeader)))
+						{
+							$message->content->realfile = $this->fileHeader->realFile;
+						}
+
+						if (array_key_exists('compressed', get_object_vars($this->fileHeader)))
+						{
+							$message->content->compressed = $this->fileHeader->compressed;
+						}
+						else
+						{
+							$message->content->compressed = 0;
+						}
+
+						debugMsg(self::class . '::_run() - Preparing to extract ' . $message->content->realfile);
+
+						$this->notify($message);
+					}
+					else
+					{
+						debugMsg(self::class . '::_run() - Could not read file header');
+					}
+					break;
+
+				case AK_STATE_HEADER:
+				case AK_STATE_DATA:
+					debugMsg(self::class . '::_run() - Processing file data');
+					$status = $this->processFileData();
+					break;
+
+				case AK_STATE_DATAREAD:
+				case AK_STATE_POSTPROC:
+					debugMsg(self::class . '::_run() - Calling post-processing class');
+					$this->postProcEngine->timestamp = $this->fileHeader->timestamp;
+					$status                          = $this->postProcEngine->process();
+					$this->propagateFromObject($this->postProcEngine);
+					$this->runState = AK_STATE_DONE;
+					break;
+
+				case AK_STATE_DONE:
+				default:
+					if ($status)
+					{
+						debugMsg(self::class . '::_run() - Finished extracting file');
+						// Send end of file notification
+						$message          = new stdClass;
+						$message->type    = 'endfile';
+						$message->content = new stdClass;
+						if (array_key_exists('realfile', get_object_vars($this->fileHeader)))
+						{
+							$message->content->realfile = $this->fileHeader->realFile;
+						}
+						else
+						{
+							$message->content->realfile = $this->fileHeader->file;
+						}
+						$message->content->file = $this->fileHeader->file;
+						if (array_key_exists('compressed', get_object_vars($this->fileHeader)))
+						{
+							$message->content->compressed = $this->fileHeader->compressed;
+						}
+						else
+						{
+							$message->content->compressed = 0;
+						}
+						$message->content->uncompressed = $this->fileHeader->uncompressed;
+						$this->notify($message);
+					}
+					$this->runState = AK_STATE_NOFILE;
+
+					break;
+			}
 		}
 
-		// A miniature router for webPhar
-		$miniRouter = function($path)
+		$error = $this->getError();
+
+		if (!$status && ($this->runState == AK_STATE_NOFILE) && empty($error))
 		{
-			// Clean the path, removing ourselves.
-			$path = ltrim($path, '/');
+			debugMsg(self::class . '::_run() - Just finished');
+			// We just finished
+			$this->setState('postrun');
 
-			if (substr($path, 0, strlen(_AKEEBA_SELF_BASENAME)) === _AKEEBA_SELF_BASENAME)
+			// Reset internal state, prevents __wakeup from trying to open a non-existent file
+			$this->currentPartNumber = -1;
+		}
+		elseif (!empty($error))
+		{
+			debugMsg(self::class . '::_run() - Halted with an error:');
+			debugMsg($error);
+			$this->setState('error', $error);
+		}
+	}
+
+	/**
+	 * Concrete classes must use this method to read the file header
+	 *
+	 * @return bool True if reading the file was successful, false if an error occurred or we reached end of archive
+	 */
+	protected abstract function readFileHeader();
+
+	/**
+	 * Concrete classes must use this method to process file data. It must set $runState to AK_STATE_DATAREAD when
+	 * it's finished processing the file data.
+	 *
+	 * @return bool True if processing the file data was successful, false if an error occurred
+	 */
+	protected abstract function processFileData();
+
+	protected function _finalize()
+	{
+		// Nothing to do
+		$this->setState('finished');
+	}
+
+	/**
+	 * Opens the next part file for reading
+	 */
+	protected function nextFile()
+	{
+		debugMsg('Current part is ' . $this->currentPartNumber . '; opening the next part');
+		++$this->currentPartNumber;
+
+		if ($this->currentPartNumber > (count($this->archiveList) - 1))
+		{
+			$this->setState('postrun');
+
+			return false;
+		}
+		else
+		{
+			if (is_resource($this->fp))
 			{
-				$path = ltrim(substr($path, strlen(_AKEEBA_SELF_BASENAME)), '/');
+				@fclose($this->fp);
+			}
+			debugMsg('Opening file ' . $this->archiveList[$this->currentPartNumber]);
+			$this->fp = @fopen($this->archiveList[$this->currentPartNumber], 'r');
+			if ($this->fp === false)
+			{
+				debugMsg('Could not open file - crash imminent');
+				$this->setError(AKText::sprintf('ERR_COULD_NOT_OPEN_ARCHIVE_PART', $this->archiveList[$this->currentPartNumber]));
+			}
+			fseek($this->fp, 0);
+			$this->currentPartOffset = 0;
+
+			return true;
+		}
+	}
+
+	/**
+	 * Returns true if we have reached the end of file
+	 *
+	 * @param $local bool True to return EOF of the local file, false (default) to return if we have reached the end of
+	 *               the archive set
+	 *
+	 * @return bool True if we have reached End Of File
+	 */
+	protected function isEOF($local = false)
+	{
+		$eof = @feof($this->fp);
+
+		if (!$eof)
+		{
+			// Border case: right at the part's end (eeeek!!!). For the life of me, I don't understand why
+			// feof() doesn't report true. It expects the fp to be positioned *beyond* the EOF to report
+			// true. Incredible! :(
+			$position = @ftell($this->fp);
+			$filesize = @filesize($this->archiveList[$this->currentPartNumber]);
+			if ($filesize <= 0)
+			{
+				// 2Gb or more files on a 32 bit version of PHP tend to get screwed up. Meh.
+				$eof = false;
+			}
+			elseif ($position >= $filesize)
+			{
+				$eof = true;
+			}
+		}
+
+		if ($local)
+		{
+			return $eof;
+		}
+		else
+		{
+			return $eof && ($this->currentPartNumber >= (count($this->archiveList) - 1));
+		}
+	}
+
+	/**
+	 * Tries to make a directory user-writable so that we can write a file to it
+	 *
+	 * @param $path string A path to a file
+	 */
+	protected function setCorrectPermissions($path)
+	{
+		static $rootDir = null;
+
+		if (is_null($rootDir))
+		{
+			$rootDir = rtrim(AKFactory::get('kickstart.setup.destdir', ''), '/\\');
+		}
+
+		$directory = rtrim(dirname($path), '/\\');
+		if ($directory != $rootDir)
+		{
+			// Is this an unwritable directory?
+			if (!is_writeable($directory))
+			{
+				$this->postProcEngine->chmod($directory, 0755);
+			}
+		}
+		$this->postProcEngine->chmod($path, 0644);
+	}
+
+	/**
+	 * Reads data from the archive and notifies the observer with the 'reading' message
+	 *
+	 * @param $fp
+	 * @param $length
+	 */
+	protected function fread($fp, $length = null)
+	{
+		if (is_numeric($length))
+		{
+			if ($length > 0)
+			{
+				$data = fread($fp, $length);
+			}
+			else
+			{
+				$data = fread($fp, PHP_INT_MAX);
+			}
+		}
+		else
+		{
+			$data = fread($fp, PHP_INT_MAX);
+		}
+		if ($data === false)
+		{
+			$data = '';
+		}
+
+		// Send start of file notification
+		$message                  = new stdClass;
+		$message->type            = 'reading';
+		$message->content         = new stdClass;
+		$message->content->length = strlen($data);
+		$this->notify($message);
+
+		return $data;
+	}
+
+	/**
+	 * Removes the configured $removePath from the path $path
+	 *
+	 * @param   string $path The path to reduce
+	 *
+	 * @return  string  The reduced path
+	 */
+	protected function removePath($path)
+	{
+		if (empty($this->removePath))
+		{
+			return $path;
+		}
+
+		if (strpos($path, $this->removePath) === 0)
+		{
+			$path = substr($path, strlen($this->removePath));
+			$path = ltrim($path, '/\\');
+		}
+
+		return $path;
+	}
+
+	/**
+	 * Normalises a path lexically: collapses '.' segments and resolves '..' segments by
+	 * string manipulation alone, without ever consulting the filesystem.
+	 *
+	 * This deliberately does NOT use realpath(). Symbolic links pointing outside the
+	 * extraction root are a legitimate and common site layout, and policing them is the
+	 * operating system's job, not ours. Resolving links here would make us refuse writes
+	 * through links the site owner put there on purpose. Confinement is therefore purely
+	 * lexical: it stops hostile paths spelled inside the archive, and leaves symlinks alone.
+	 *
+	 * A '..' which cannot be resolved is kept on a relative path, so that a path escaping
+	 * its starting point remains visibly escaping to the caller.
+	 *
+	 * @param   string $path The path to normalise
+	 *
+	 * @return  string  The lexically normalised path
+	 */
+	protected function normalisePath($path)
+	{
+		$path   = str_replace('\\', '/', $path);
+		$prefix = '';
+
+		// Remember and strip a leading slash or a Windows drive designator
+		if (preg_match('#^[a-zA-Z]:/#', $path))
+		{
+			$prefix = substr($path, 0, 3);
+			$path   = substr($path, 3);
+		}
+		elseif (substr($path, 0, 1) == '/')
+		{
+			$prefix = '/';
+			$path   = substr($path, 1);
+		}
+
+		$out = [];
+
+		foreach (explode('/', $path) as $part)
+		{
+			// Empty segments (from doubled slashes) and '.' contribute nothing
+			if (($part === '') || ($part === '.'))
+			{
+				continue;
 			}
 
-			$path = rtrim($path, '/');
-
-			// We only accept URLs with a path suffix equal to our front controller, or none at all.
-			if (empty($path) || $path === _AKEEBA_WEB_ENTRYPOINT)
+			if ($part !== '..')
 			{
-				// In both cases, force loading our front controller.
-				return _AKEEBA_WEB_ENTRYPOINT;
+				$out[] = $part;
+
+				continue;
 			}
 
-			// Explicitly block direct access to arbitrary PHP files packed in the application PHAR archive.
-			if (substr($path, -4) === '.php')
+			// '..' climbs one level, if there is a level to climb
+			if (!empty($out) && (end($out) !== '..'))
+			{
+				array_pop($out);
+
+				continue;
+			}
+
+			// We cannot climb past the root of an absolute path; on a relative path we must
+			// keep the '..' so the caller can see that the path escapes.
+			if ($prefix === '')
+			{
+				$out[] = '..';
+			}
+		}
+
+		return $prefix . implode('/', $out);
+	}
+
+	/**
+	 * Is this path contained within the extraction root?
+	 *
+	 * $path is the final, ready-to-write path of an archive entry, i.e. after removePath() has
+	 * been applied and addPath has been prepended. A relative path is taken to be relative to
+	 * the extraction root, which is how addPath-prepended paths behave.
+	 *
+	 * $archivePath is the archive's own spelling of the same entry, before addPath was
+	 * prepended, or null when the entry was not rebased onto the extraction root. It exists
+	 * because prepending addPath to an absolute entry such as /etc/passwd quietly turns it into
+	 * <root>/etc/passwd, which lands inside the root and would therefore pass the containment
+	 * test below. That is precisely the silent rewrite we refuse to perform, so an absolute
+	 * entry is rejected on its own spelling rather than on where concatenation put it.
+	 *
+	 * @param   string      $path        The final path of the archive entry
+	 * @param   string|null $archivePath The archive's own spelling of the entry, if rebased
+	 *
+	 * @return  bool  True if the entry may be written
+	 */
+	protected function isPathInRoot($path, $archivePath = null)
+	{
+		// An entry which names an absolute path is never acceptable
+		if (!empty($archivePath) && $this->isAbsolutePath($archivePath))
+		{
+			return false;
+		}
+
+		// The root does not change between entries; normalise it once, not once per file
+		if (is_null($this->normalisedRoot))
+		{
+			$root = $this->addPath;
+
+			if (empty($root))
+			{
+				$root = AKFactory::get('kickstart.setup.destdir', '');
+			}
+
+			$this->normalisedRoot = rtrim($this->normalisePath($root), '/');
+		}
+
+		$root = $this->normalisedRoot;
+		$path = str_replace('\\', '/', $path);
+
+		$isAbsolute = $this->isAbsolutePath($path);
+
+		// With no root configured, paths are relative to the current working directory. Refuse
+		// anything absolute, and anything which climbs above where it started.
+		if ($root === '')
+		{
+			if ($isAbsolute)
 			{
 				return false;
 			}
 
-			// All other files: return them if they exist; 404 if they don't exist.
-			$nominalFile = 'phar://' . __FILE__ . '/' . $path;
+			$path = $this->normalisePath($path);
 
-			return !file_exists($nominalFile) || !@is_file($nominalFile) ? false : $path;
+			return ($path !== '..') && (substr($path, 0, 3) !== '../');
+		}
 
-		};
+		// A relative entry is relative to the extraction root
+		if (!$isAbsolute)
+		{
+			$path = $root . '/' . $path;
+		}
 
-		Phar::interceptFileFuncs();
-		include 'phar://' . __FILE__ . '/src/includes/preamble.php';
-		Phar::webPhar(null, _AKEEBA_WEB_ENTRYPOINT, null, AKEEBA_MIMETYPES, $miniRouter);
-		include 'phar://' . __FILE__ . '/' . _AKEEBA_CLI_ENTRYPOINT;
+		$path = $this->normalisePath($path);
 
-		exit;
+		return ($path === $root) || (strpos($path, $root . '/') === 0);
 	}
-);
+
+	/**
+	 * Is this an absolute path? Understands both UNIX paths and Windows drive designators.
+	 *
+	 * @param   string $path The path to check
+	 *
+	 * @return  bool
+	 */
+	protected function isAbsolutePath($path)
+	{
+		$path = str_replace('\\', '/', $path);
+
+		return (substr($path, 0, 1) == '/') || (bool) preg_match('#^[a-zA-Z]:/#', $path);
+	}
+
+	/**
+	 * Am I supposed to skip the extraction of the current file? This depends on
+	 *
+	 * @return bool
+	 */
+	protected function mustSkip()
+	{
+		static $isDryRun = null;
+
+		// List of files (and patterns) to extract
+		static $extractList = null;
+
+		// Internal cache of the last file we checked and whether it must be skipped
+		static $lastFileName = '';
+		static $mustSkip = false;
+
+		// Make sure the dry run flag is, indeed, populated
+		if (is_null($isDryRun))
+		{
+			$isDryRun = AKFactory::get('kickstart.setup.dryrun', '0');
+		}
+
+		// If it's a Kickstart dry run we have to skip the extraction of the file
+		if ($isDryRun)
+		{
+			return true;
+		}
+
+		// Make sure I have a list of files and patterns to extract
+		if (is_null($extractList))
+		{
+			$extractList = $this->getExtractList();
+		}
+
+		// No list of files to extract is given; we must extract everything.
+		if (empty($extractList))
+		{
+			return false;
+		}
+
+		// I am asked about the same file again. Return the cached result.
+		if ($this->fileHeader->file == $lastFileName)
+		{
+			return $mustSkip;
+		}
+
+		// Does the current file match the extract patterns or not?
+		$lastFileName = $this->fileHeader->file;
+		$lastFileName = (strpos($lastFileName, $this->addPath) === 0) ? substr($lastFileName, strlen(rtrim($this->addPath, "\\/")) + 1) : $lastFileName;
+		$mustSkip     = !$this->matchesGlobPatterns($lastFileName, $extractList);
+
+		return $mustSkip;
+	}
+
+	protected function fuzzySignatureSearch($requiredSignatures, $sigLen)
+	{
+		if (!is_array($requiredSignatures))
+		{
+			$requiredSignatures = [$requiredSignatures];
+		}
+
+		fseek($this->fp, 0, SEEK_SET);
+
+		$stuff  = $this->fread($this->fp, 131072);
+		$maxPos = function_exists('mb_strlen') ? mb_strlen($stuff, 'binary') : strlen($stuff);
+
+		for ($i = 0; $i < $maxPos; $i++)
+		{
+			foreach ($requiredSignatures as $signature)
+			{
+				$sigBinary = function_exists('mb_substr') ? mb_substr($stuff, $i, $sigLen, 'binary') : substr($stuff, $i, $sigLen);
+
+				if ($sigBinary === $signature)
+				{
+					fseek($this->fp, $i, SEEK_SET);
+
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Get the list of files / folders to extract. The list can contain filenames or glob patterns.
+	 *
+	 * @return  array
+	 */
+	private function getExtractList()
+	{
+		$rawList = AKFactory::get('kickstart.setup.extract_list', '');
+
+		// Sometimes I could get an array, e.g. from CLI
+		if (is_array($rawList))
+		{
+			$rawList = implode("\n", $rawList);
+		}
+
+		// Remove any whitespace
+		$rawList = trim($rawList);
+
+		if (empty($rawList))
+		{
+			return [];
+		}
+
+		// Convert commas to newlines so we can support both ways to express lists
+		$rawList = str_replace(",", "\n", $rawList);
+		$rawList = trim($rawList);
+
+		// Convert the list to an array and clean it
+		$list = explode("\n", $rawList);
+		$list = array_map('trim', $list);
+
+		return array_unique($list);
+	}
+
+	/**
+	 * Tests whether the item $item matches the list of shell patterns $list.
+	 *
+	 * @param   string  $item  The file name to test
+	 * @param   array   $list  The list of glob patterns to match
+	 *
+	 * @return  bool
+	 */
+	private function matchesGlobPatterns($item, array $list)
+	{
+		if (empty($list))
+		{
+			return true;
+		}
+
+		foreach ($list as $pattern)
+		{
+			if (fnmatch($pattern, $item))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
 
 /**
- * PHAR extraction helper, for use when PHAR support is missing on the server.
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
  */
-class Kickstart_Extract_Phar
+
+/**
+ * File post processor engines base class
+ */
+abstract class AKAbstractPostproc extends AKAbstractObject
 {
-	const GZ = 0x1000;
+	/** @var int The UNIX timestamp of the file's desired modification date */
+	public $timestamp = 0;
+	/** @var string The actual file path we'll have to process */
+	protected $filename = null;
+	/** @var int The requested permissions */
+	protected $perms = 0755;
+	/** @var string The temporary file path we gave to the unarchiver engine */
+	protected $tempFilename = null;
+	/** @var string The temporary directory where the data will be stored */
+	protected $tempDir = '';
 
-	const BZ2 = 0x2000;
+	/**
+	 * Processes the current file, e.g. moves it from temp to final location by FTP
+	 */
+	abstract public function process();
 
-	const MASK = 0x3000;
+	/**
+	 * The unarchiver tells us the path to the filename it wants to extract and we give it
+	 * a different path instead.
+	 *
+	 * @param string $filename The path to the real file
+	 * @param int    $perms    The permissions we need the file to have
+	 *
+	 * @return string The path to the temporary file
+	 */
+	abstract public function processFilename($filename, $perms = 0755);
 
-	static $temp;
+	/**
+	 * Recursively creates a directory if it doesn't exist
+	 *
+	 * @param string $dirName The directory to create
+	 * @param int    $perms   The permissions to give to that directory
+	 */
+	abstract public function createDirRecursive($dirName, $perms);
 
-	static $origdir;
+	abstract public function chmod($file, $perms);
 
-	static function go($return = false)
+	abstract public function unlink($file);
+
+	abstract public function rmdir($directory);
+
+	abstract public function rename($from, $to);
+
+	/**
+	 * Returns the configured temporary directory
+	 *
+	 * @return string
+	 */
+	public function getTempDir()
 	{
-		$stubLength = self::getStubLength();
+		return $this->tempDir;
+	}
+}
 
-		$fp = fopen(__FILE__, 'rb');
-		fseek($fp, $stubLength);
-		$L = unpack('V', $a = fread($fp, 4));
-		$m = '';
 
-		do
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Descendants of this class can be used in the unarchiver's observer methods (attach, detach and notify)
+ *
+ * @author Nicholas
+ *
+ */
+abstract class AKAbstractPartObserver
+{
+	abstract public function update($object, $message);
+}
+
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2026 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+
+class AKPartNullObserver extends AKAbstractPartObserver
+{
+	public function update($object, $message)
+	{
+		// This observer does nothing.
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Direct file writer
+ */
+class AKPostprocDirect extends AKAbstractPostproc
+{
+	public function process()
+	{
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+		if ($restorePerms)
 		{
-			$read = 8192;
-
-			if ($L[1] - akstrlen($m) < 8192)
+			@chmod($this->filename, $this->perms);
+		}
+		else
+		{
+			if (@is_file($this->filename))
 			{
-				$read = $L[1] - akstrlen($m);
+				@chmod($this->filename, 0644);
 			}
-
-			$last = fread($fp, $read);
-			$m    .= $last;
-		} while (akstrlen($last) && akstrlen($m) < $L[1]);
-
-		if (akstrlen($m) < $L[1])
-		{
-			die(sprintf("Error: Corrupt file. Manifest length read was \"%s\", should be \"%s\"", akstrlen($m), $L[1]));
-		}
-
-		$info = self::_unpack($m);
-		$f    = $info['c'];
-
-		if ($f & self::GZ && !function_exists('gzinflate'))
-		{
-			die('Error: The PHP zlib extension is not enabled');
-		}
-
-		if ($f & self::BZ2 && !function_exists('bzdecompress'))
-		{
-			die('Error: The PHP bzip2 extension is not enabled');
-		}
-
-		$temp = self::tmpdir();
-
-		if (!$temp || !is_writable($temp))
-		{
-			$sessionpath = session_save_path();
-
-			if (strpos($sessionpath, ";") !== false)
+			else
 			{
-				$sessionpath = substr($sessionpath, strpos($sessionpath, ";") + 1);
+				@chmod($this->filename, 0755);
 			}
-
-			if (!file_exists($sessionpath) || !is_dir($sessionpath))
-			{
-				die('Could not locate temporary directory to extract Kickstart');
-			}
-
-			$temp = $sessionpath;
+		}
+		if ($this->timestamp > 0)
+		{
+			@touch($this->filename, $this->timestamp);
 		}
 
-		$temp          .= '/pharextract/' . _AKEEBA_SELF_BARENAME;
-		self::$temp    = $temp;
-		self::$origdir = getcwd();
-
-		@mkdir($temp, 0777, true);
-
-		$temp = realpath($temp);
-
-		if (!file_exists($temp . DIRECTORY_SEPARATOR . md5_file(__FILE__)))
+		if (@is_file($this->filename) || @is_link($this->filename))
 		{
-			self::recursiveRmdir($temp);
-			@mkdir($temp, 0777, true);
-			@file_put_contents($temp . '/' . md5_file(__FILE__), '');
+			clearFileInOPCache($this->filename);
+		}
 
-			foreach ($info['m'] as $path => $file)
+		return true;
+	}
+
+	public function processFilename($filename, $perms = 0755)
+	{
+		$this->perms    = $perms;
+		$this->filename = $filename;
+
+		return $filename;
+	}
+
+	public function createDirRecursive($dirName, $perms)
+	{
+		if (AKFactory::get('kickstart.setup.dryrun', '0'))
+		{
+			return true;
+		}
+
+		if (@mkdir($dirName, 0755, true))
+		{
+			@chmod($dirName, 0755);
+
+			return true;
+		}
+
+		$root = AKFactory::get('kickstart.setup.destdir');
+		$root = rtrim(str_replace('\\', '/', $root), '/');
+		$dir  = rtrim(str_replace('\\', '/', $dirName), '/');
+		if (strpos($dir, $root) === 0)
+		{
+			$dir = ltrim(substr($dir, strlen($root)), '/');
+			$root .= '/';
+		}
+		else
+		{
+			$root = '';
+		}
+
+		if (empty($dir))
+		{
+			return true;
+		}
+
+		$dirArray = explode('/', $dir);
+		$path     = '';
+		foreach ($dirArray as $dir)
+		{
+			$path .= $dir . '/';
+			$ret = is_dir($root . $path) ? true : @mkdir($root . $path);
+			if (!$ret)
 			{
-				$a = !file_exists(dirname($temp . '/' . $path));
-				@mkdir(dirname($temp . '/' . $path), 0777, true);
-				clearstatcache();
-
-				if ($path[strlen($path) - 1] == '/')
+				// Is this a file instead of a directory?
+				if (is_file($root . $path))
 				{
-					@mkdir($temp . '/' . $path, 0777);
+					@unlink($root . $path);
+					$ret = @mkdir($root . $path);
+				}
+				if (!$ret)
+				{
+					$this->setError(AKText::sprintf('COULDNT_CREATE_DIR', $path));
 
-					continue;
+					return false;
+				}
+			}
+			// Try to set new directory permissions to 0755
+			@chmod($root . $path, $perms);
+		}
+
+		return true;
+	}
+
+	public function chmod($file, $perms)
+	{
+		if (AKFactory::get('kickstart.setup.dryrun', '0'))
+		{
+			return true;
+		}
+
+		return @chmod($file, $perms);
+	}
+
+	public function unlink($file)
+	{
+		return @unlink($file);
+	}
+
+	public function rmdir($directory)
+	{
+		return @rmdir($directory);
+	}
+
+	public function rename($from, $to)
+	{
+		return @rename($from, $to);
+	}
+
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * FTP file writer
+ */
+class AKPostprocFTP extends AKAbstractPostproc
+{
+	/** @var bool Should I use FTP over implicit SSL? */
+	public $useSSL = false;
+	/** @var bool use Passive mode? */
+	public $passive = true;
+	/** @var string FTP host name */
+	public $host = '';
+	/** @var int FTP port */
+	public $port = 21;
+	/** @var string FTP user name */
+	public $user = '';
+	/** @var string FTP password */
+	public $pass = '';
+	/** @var string FTP initial directory */
+	public $dir = '';
+	/** @var resource The FTP handle */
+	private $handle = null;
+
+	public function __construct()
+	{
+		$this->useSSL  = AKFactory::get('kickstart.ftp.ssl', false);
+		$this->passive = AKFactory::get('kickstart.ftp.passive', true);
+		$this->host    = AKFactory::get('kickstart.ftp.host', '');
+		$this->port    = AKFactory::get('kickstart.ftp.port', 21);
+
+		if (trim($this->port) == '')
+		{
+			$this->port = 21;
+		}
+		$this->user    = AKFactory::get('kickstart.ftp.user', '');
+		$this->pass    = AKFactory::get('kickstart.ftp.pass', '');
+		$this->dir     = AKFactory::get('kickstart.ftp.dir', '');
+		$this->tempDir = AKFactory::get('kickstart.ftp.tempdir', '');
+
+		$connected = $this->connect();
+
+		if ($connected)
+		{
+			if (!empty($this->tempDir))
+			{
+				$tempDir  = rtrim($this->tempDir, '/\\') . '/';
+				$writable = $this->isDirWritable($tempDir);
+			}
+			else
+			{
+				$tempDir  = '';
+				$writable = false;
+			}
+
+			if (!$writable)
+			{
+				// Default temporary directory is the current root
+				$tempDir = KSROOTDIR;
+				if (empty($tempDir))
+				{
+					// Oh, we have no directory reported!
+					$tempDir = '.';
+				}
+				$absoluteDirToHere = $tempDir;
+				$tempDir           = rtrim(str_replace('\\', '/', $tempDir), '/');
+
+				if (!empty($tempDir))
+				{
+					$tempDir .= '/';
 				}
 
-				file_put_contents($temp . '/' . $path, self::extractFile($path, $file, $fp));
-				@chmod($temp . '/' . $path, 0666);
+				$this->tempDir = $tempDir;
+				// Is this directory writable?
+				$writable = $this->isDirWritable($tempDir);
 			}
-		}
 
-		include Kickstart_Extract_Phar::$temp . '/src/includes/preamble.php';
+			if (!$writable)
+			{
+				// Nope. Let's try creating a temporary directory in the site's root.
+				$tempDir                 = $absoluteDirToHere . '/kicktemp';
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				$this->createDirRecursive($tempDir, $trustMeIKnowWhatImDoing);
+				// Try making it writable...
+				$this->fixPermissions($tempDir);
+				$writable = $this->isDirWritable($tempDir);
+			}
 
-		if (!$return)
-		{
-			include Kickstart_Extract_Phar::$temp . DIRECTORY_SEPARATOR . _AKEEBA_CLI_ENTRYPOINT;
+			// Was the new directory writable?
+			if (!$writable)
+			{
+				// Let's see if the user has specified one
+				$userdir = AKFactory::get('kickstart.ftp.tempdir', '');
+
+				if (!empty($userdir))
+				{
+					// Is it an absolute or a relative directory?
+					$absolute = false;
+					$absolute = $absolute || (substr($userdir, 0, 1) == '/');
+					$absolute = $absolute || (substr($userdir, 1, 1) == ':');
+					$absolute = $absolute || (substr($userdir, 2, 1) == ':');
+
+					if (!$absolute)
+					{
+						// Make absolute
+						$tempDir = $absoluteDirToHere . $userdir;
+					}
+					else
+					{
+						// it's already absolute
+						$tempDir = $userdir;
+					}
+					// Does the directory exist?
+					if (is_dir($tempDir))
+					{
+						// Yeah. Is it writable?
+						$writable = $this->isDirWritable($tempDir);
+					}
+				}
+			}
+
+			$this->tempDir = $tempDir;
+
+			if (!$writable)
+			{
+				// No writable directory found!!!
+				$this->setError(AKText::_('FTP_TEMPDIR_NOT_WRITABLE'));
+			}
+			else
+			{
+				AKFactory::set('kickstart.ftp.tempdir', $tempDir);
+				$this->tempDir = $tempDir;
+			}
 		}
 	}
 
-	static function getStubLength()
+	public function connect()
 	{
-		$fp   = fopen(__FILE__, 'rb');
-		$data = fread($fp, 65536);
-
-		fclose($fp);
-
-		$locate = '__HALT_' . 'COMPILER(); ?>' . "\r\n";
-
-		return akstrpos($data, $locate) + akstrlen($locate);
-	}
-
-	static function tmpdir()
-	{
-		// Use the kicktemp directory if it already exists and is writeable.
-		if (file_exists(_AKEEBA_SELF_DIR . '/kicktemp') && is_dir(_AKEEBA_SELF_DIR . '/kicktemp') && is_writeable(_AKEEBA_SELF_DIR . '/kicktemp'))
+		// Connect to server, using SSL if so required
+		if ($this->useSSL)
 		{
-			return _AKEEBA_SELF_DIR . '/kicktemp';
+			$this->handle = @ftp_ssl_connect($this->host, $this->port);
+		}
+		else
+		{
+			$this->handle = @ftp_connect($this->host, $this->port);
 		}
 
-		if (_AKEEBA_IS_WINDOWS)
+		if ($this->handle === false)
 		{
-			if ($var = getenv('TMP') ? getenv('TMP') : getenv('TEMP'))
-			{
-				return $var;
-			}
-
-			if (is_dir('/temp') || mkdir('/temp'))
-			{
-				return realpath('/temp');
-			}
+			$this->setError(AKText::_('WRONG_FTP_HOST'));
 
 			return false;
 		}
 
-		if ($var = getenv('TMPDIR'))
+		// Login
+		if (!@ftp_login($this->handle, $this->user, $this->pass))
 		{
-			return $var;
+			$this->setError(AKText::_('WRONG_FTP_USER'));
+			@ftp_close($this->handle);
+
+			return false;
 		}
 
-		return realpath('/tmp');
+		// Change to initial directory
+		if (!@ftp_chdir($this->handle, $this->dir))
+		{
+			$this->setError(AKText::_('WRONG_FTP_PATH1'));
+			@ftp_close($this->handle);
+
+			return false;
+		}
+
+		// Enable passive mode if the user requested it
+		if ($this->passive)
+		{
+			@ftp_pasv($this->handle, true);
+		}
+		else
+		{
+			@ftp_pasv($this->handle, false);
+		}
+
+		// Try to download ourselves
+		$testFilename = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+		$tempHandle   = fopen('php://temp', 'r+');
+
+		if (@ftp_fget($this->handle, $tempHandle, $testFilename, FTP_ASCII, 0) === false)
+		{
+			$this->setError(AKText::_('WRONG_FTP_PATH2'));
+			@ftp_close($this->handle);
+			fclose($tempHandle);
+
+			return false;
+		}
+
+		fclose($tempHandle);
+
+		return true;
 	}
 
-	static function _unpack($m)
+	private function isDirWritable($dir)
 	{
-		$info     = unpack('V', aksubstr($m, 0, 4));
-		$l        = unpack('V', aksubstr($m, 10, 4));
-		$m        = aksubstr($m, 14 + $l[1]);
-		$s        = unpack('V', aksubstr($m, 0, 4));
-		$o        = 0;
-		$start    = 4 + $s[1];
-		$ret['c'] = 0;
+		$fp = @fopen($dir . '/kickstart.dat', 'w');
 
-		for ($i = 0; $i < $info[1]; $i++)
+		if ($fp === false)
 		{
-			$len                    = unpack('V', aksubstr($m, $start, 4));
-			$start                  += 4;
-			$savepath               = aksubstr($m, $start, $len[1]);
-			$start                  += $len[1];
-			$ret['m'][$savepath]    = array_values(unpack('Va/Vb/Vc/Vd/Ve/Vf', aksubstr($m, $start, 24)));
-			$ret['m'][$savepath][3] = sprintf('%u', $ret['m'][$savepath][3] & 0xffffffff);
-			$ret['m'][$savepath][7] = $o;
-			$o                      += $ret['m'][$savepath][2];
-			$start                  += 24 + $ret['m'][$savepath][5];
-			$ret['c']               |= $ret['m'][$savepath][4] & self::MASK;
+			return false;
+		}
+		else
+		{
+			@fclose($fp);
+			unlink($dir . '/kickstart.dat');
+
+			return true;
+		}
+	}
+
+	public function createDirRecursive($dirName, $perms)
+	{
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			// UNIXize the paths
+			$removePath = str_replace('\\', '/', $removePath);
+			$dirName    = str_replace('\\', '/', $dirName);
+			// Make sure they both end in a slash
+			$removePath = rtrim($removePath, '/\\') . '/';
+			$dirName    = rtrim($dirName, '/\\') . '/';
+			// Process the path removal
+			$left = substr($dirName, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$dirName = substr($dirName, strlen($removePath));
+			}
+		}
+
+		if (empty($dirName))
+		{
+			$dirName = '';
+		} // 'cause the substr() above may return FALSE.
+
+		$check = '/' . trim($this->dir, '/') . '/' . trim($dirName, '/');
+
+		if ($this->is_dir($check))
+		{
+			return true;
+		}
+
+		$alldirs     = explode('/', $dirName);
+		$previousDir = '/' . trim($this->dir);
+
+		foreach ($alldirs as $curdir)
+		{
+			$check = $previousDir . '/' . $curdir;
+
+			if (!$this->is_dir($check))
+			{
+				// Proactively try to delete a file by the same name
+				@ftp_delete($this->handle, $check);
+
+				if (@ftp_mkdir($this->handle, $check) === false)
+				{
+					// If we couldn't create the directory, attempt to fix the permissions in the PHP level and retry!
+					$this->fixPermissions($removePath . $check);
+
+					if (@ftp_mkdir($this->handle, $check) === false)
+					{
+						// Can we fall back to pure PHP mode, sire?
+						if (!@mkdir($check))
+						{
+							$this->setError(AKText::sprintf('FTP_CANT_CREATE_DIR', $check));
+
+							return false;
+						}
+						else
+						{
+							// Since the directory was built by PHP, change its permissions
+							$trustMeIKnowWhatImDoing =
+								500 + 10 + 1; // working around overzealous scanners written by bozos
+							@chmod($check, $trustMeIKnowWhatImDoing);
+
+							return true;
+						}
+					}
+				}
+
+				@ftp_chmod($this->handle, $perms, $check);
+
+			}
+
+			$previousDir = $check;
+		}
+
+		return true;
+	}
+
+	private function is_dir($dir)
+	{
+		return @ftp_chdir($this->handle, $dir);
+	}
+
+	private function fixPermissions($path)
+	{
+		// Turn off error reporting
+		if (!defined('KSDEBUG'))
+		{
+			$oldErrorReporting = @error_reporting(0);
+		}
+
+		// Get UNIX style paths
+		$relPath  = str_replace('\\', '/', $path);
+		$basePath = rtrim(str_replace('\\', '/', KSROOTDIR), '/');
+		$basePath = rtrim($basePath, '/');
+
+		if (!empty($basePath))
+		{
+			$basePath .= '/';
+		}
+
+		// Remove the leading relative root
+		if (substr($relPath, 0, strlen($basePath)) == $basePath)
+		{
+			$relPath = substr($relPath, strlen($basePath));
+		}
+
+		$dirArray  = explode('/', $relPath);
+		$pathBuilt = rtrim($basePath, '/');
+
+		foreach ($dirArray as $dir)
+		{
+			if (empty($dir))
+			{
+				continue;
+			}
+			$oldPath = $pathBuilt;
+			$pathBuilt .= '/' . $dir;
+
+			if (is_dir($oldPath . $dir))
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				@chmod($oldPath . $dir, $trustMeIKnowWhatImDoing);
+			}
+			else
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				if (@chmod($oldPath . $dir, $trustMeIKnowWhatImDoing) === false)
+				{
+					@unlink($oldPath . $dir);
+				}
+			}
+		}
+
+		// Restore error reporting
+		if (!defined('KSDEBUG'))
+		{
+			@error_reporting($oldErrorReporting);
+		}
+	}
+
+	public function __sleep()
+	{
+		if (!is_null($this->handle) && is_resource($this->handle))
+		{
+			@ftp_close($this->handle);
+		}
+
+		$this->handle = null;
+	}
+
+	public function __destruct()
+	{
+		if (!is_null($this->handle) && is_resource($this->handle))
+		{
+			@ftp_close($this->handle);
+		}
+	}
+
+
+	public function __wakeup()
+	{
+		$this->connect();
+	}
+
+	public function process()
+	{
+		if (is_null($this->tempFilename))
+		{
+			// If an empty filename is passed, it means that we shouldn't do any post processing, i.e.
+			// the entity was a directory or symlink
+			return true;
+		}
+
+		$remotePath = dirname($this->filename);
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$removePath = ltrim($removePath, "/");
+			$remotePath = ltrim($remotePath, "/");
+			$left       = substr($remotePath, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$remotePath = substr($remotePath, strlen($removePath));
+			}
+		}
+
+		$absoluteFSPath  = dirname($this->filename);
+		$relativeFTPPath = trim($remotePath, '/');
+		$absoluteFTPPath = '/' . trim($this->dir, '/') . '/' . trim($remotePath, '/');
+		$onlyFilename    = basename($this->filename);
+
+		$remoteName = $absoluteFTPPath . '/' . $onlyFilename;
+
+		$ret = @ftp_chdir($this->handle, $absoluteFTPPath);
+
+		if ($ret === false)
+		{
+			$ret = $this->createDirRecursive($absoluteFSPath, 0755);
+
+			if ($ret === false)
+			{
+				$this->setError(AKText::sprintf('FTP_COULDNT_UPLOAD', $this->filename));
+
+				return false;
+			}
+
+			$ret = @ftp_chdir($this->handle, $absoluteFTPPath);
+
+			if ($ret === false)
+			{
+				$this->setError(AKText::sprintf('FTP_COULDNT_UPLOAD', $this->filename));
+
+				return false;
+			}
+		}
+
+		$ret = @ftp_put($this->handle, $remoteName, $this->tempFilename, FTP_BINARY);
+
+		if ($ret === false)
+		{
+			// If we couldn't create the file, attempt to fix the permissions in the PHP level and retry!
+			$this->fixPermissions($this->filename);
+			$this->unlink($this->filename);
+
+			$fp = @fopen($this->tempFilename, 'r');
+
+			if ($fp !== false)
+			{
+				$ret = @ftp_fput($this->handle, $remoteName, $fp, FTP_BINARY);
+				@fclose($fp);
+			}
+			else
+			{
+				$ret = false;
+			}
+		}
+
+		@unlink($this->tempFilename);
+
+		if ($ret === false)
+		{
+			$this->setError(AKText::sprintf('FTP_COULDNT_UPLOAD', $this->filename));
+
+			return false;
+		}
+
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+
+		if ($restorePerms)
+		{
+			@ftp_chmod($this->_handle, $this->perms, $remoteName);
+		}
+		else
+		{
+			@ftp_chmod($this->_handle, 0644, $remoteName);
+		}
+
+		if (@is_file($this->filename) || @is_link($this->filename))
+		{
+			clearFileInOPCache($this->filename);
+		}
+
+		return true;
+	}
+
+	/*
+	 * Tries to fix directory/file permissions in the PHP level, so that
+	 * the FTP operation doesn't fail.
+	 * @param $path string The full path to a directory or file
+	 */
+
+	public function unlink($file)
+	{
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$left = substr($file, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$file = substr($file, strlen($removePath));
+			}
+		}
+
+		$check = '/' . trim($this->dir, '/') . '/' . trim($file, '/');
+
+		return @ftp_delete($this->handle, $check);
+	}
+
+	public function processFilename($filename, $perms = 0755)
+	{
+		// Catch some error conditions...
+		if ($this->getError())
+		{
+			return false;
+		}
+
+		// If a null filename is passed, it means that we shouldn't do any post processing, i.e.
+		// the entity was a directory or symlink
+		if (is_null($filename))
+		{
+			$this->filename     = null;
+			$this->tempFilename = null;
+
+			return null;
+		}
+
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$left = substr($filename, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$filename = substr($filename, strlen($removePath));
+			}
+		}
+
+		// Trim slash on the left
+		$filename = ltrim($filename, '/');
+
+		$this->filename     = $filename;
+		$this->tempFilename = tempnam($this->tempDir, 'kickstart-');
+		$this->perms        = $perms;
+
+		if (empty($this->tempFilename))
+		{
+			// Oops! Let's try something different
+			$this->tempFilename = $this->tempDir . '/kickstart-' . time() . '.dat';
+		}
+
+		return $this->tempFilename;
+	}
+
+	public function close()
+	{
+		@ftp_close($this->handle);
+	}
+
+	public function chmod($file, $perms)
+	{
+		return @ftp_chmod($this->handle, $perms, $file);
+	}
+
+	public function rmdir($directory)
+	{
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$left = substr($directory, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$directory = substr($directory, strlen($removePath));
+			}
+		}
+
+		$check = '/' . trim($this->dir, '/') . '/' . trim($directory, '/');
+
+		return @ftp_rmdir($this->handle, $check);
+	}
+
+	public function rename($from, $to)
+	{
+		$originalFrom = $from;
+		$originalTo   = $to;
+
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$left = substr($from, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$from = substr($from, strlen($removePath));
+			}
+		}
+
+		$from = '/' . trim($this->dir, '/') . '/' . trim($from, '/');
+
+		if (!empty($removePath))
+		{
+			$left = substr($to, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$to = substr($to, strlen($removePath));
+			}
+		}
+
+		$to = '/' . trim($this->dir, '/') . '/' . trim($to, '/');
+
+		$result = @ftp_rename($this->handle, $from, $to);
+
+		if ($result !== true)
+		{
+			return @rename($from, $to);
+		}
+		else
+		{
+			return true;
+		}
+	}
+
+}
+
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * FTP file writer
+ */
+class AKPostprocSFTP extends AKAbstractPostproc
+{
+	/** @var bool Should I use FTP over implicit SSL? */
+	public $useSSL = false;
+	/** @var bool use Passive mode? */
+	public $passive = true;
+	/** @var string FTP host name */
+	public $host = '';
+	/** @var int FTP port */
+	public $port = 21;
+	/** @var string FTP user name */
+	public $user = '';
+	/** @var string FTP password */
+	public $pass = '';
+	/** @var string FTP initial directory */
+	public $dir = '';
+
+	/** @var resource SFTP resource handle */
+	private $handle = null;
+
+	/** @var resource SSH2 connection resource handle */
+	private $_connection = null;
+
+	/** @var string Current remote directory, including the remote directory string */
+	private $_currentdir;
+
+	public function __construct()
+	{
+		$this->host = AKFactory::get('kickstart.ftp.host', '');
+		$this->port = AKFactory::get('kickstart.ftp.port', 22);
+
+		if (trim($this->port) == '')
+		{
+			$this->port = 22;
+		}
+
+		$this->user    = AKFactory::get('kickstart.ftp.user', '');
+		$this->pass    = AKFactory::get('kickstart.ftp.pass', '');
+		$this->dir     = AKFactory::get('kickstart.ftp.dir', '');
+		$this->tempDir = AKFactory::get('kickstart.ftp.tempdir', '');
+
+		$connected = $this->connect();
+
+		if ($connected)
+		{
+			if (!empty($this->tempDir))
+			{
+				$tempDir  = rtrim($this->tempDir, '/\\') . '/';
+				$writable = $this->isDirWritable($tempDir);
+			}
+			else
+			{
+				$tempDir  = '';
+				$writable = false;
+			}
+
+			if (!$writable)
+			{
+				// Default temporary directory is the current root
+				$tempDir = KSROOTDIR;
+				if (empty($tempDir))
+				{
+					// Oh, we have no directory reported!
+					$tempDir = '.';
+				}
+				$absoluteDirToHere = $tempDir;
+				$tempDir           = rtrim(str_replace('\\', '/', $tempDir), '/');
+				if (!empty($tempDir))
+				{
+					$tempDir .= '/';
+				}
+				$this->tempDir = $tempDir;
+				// Is this directory writable?
+				$writable = $this->isDirWritable($tempDir);
+			}
+
+			if (!$writable)
+			{
+				// Nope. Let's try creating a temporary directory in the site's root.
+				$tempDir                 = $absoluteDirToHere . '/kicktemp';
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				$this->createDirRecursive($tempDir, $trustMeIKnowWhatImDoing);
+				// Try making it writable...
+				$this->fixPermissions($tempDir);
+				$writable = $this->isDirWritable($tempDir);
+			}
+
+			// Was the new directory writable?
+			if (!$writable)
+			{
+				// Let's see if the user has specified one
+				$userdir = AKFactory::get('kickstart.ftp.tempdir', '');
+				if (!empty($userdir))
+				{
+					// Is it an absolute or a relative directory?
+					$absolute = false;
+					$absolute = $absolute || (substr($userdir, 0, 1) == '/');
+					$absolute = $absolute || (substr($userdir, 1, 1) == ':');
+					$absolute = $absolute || (substr($userdir, 2, 1) == ':');
+					if (!$absolute)
+					{
+						// Make absolute
+						$tempDir = $absoluteDirToHere . $userdir;
+					}
+					else
+					{
+						// it's already absolute
+						$tempDir = $userdir;
+					}
+					// Does the directory exist?
+					if (is_dir($tempDir))
+					{
+						// Yeah. Is it writable?
+						$writable = $this->isDirWritable($tempDir);
+					}
+				}
+			}
+			$this->tempDir = $tempDir;
+
+			if (!$writable)
+			{
+				// No writable directory found!!!
+				$this->setError(AKText::_('SFTP_TEMPDIR_NOT_WRITABLE'));
+			}
+			else
+			{
+				AKFactory::set('kickstart.ftp.tempdir', $tempDir);
+				$this->tempDir = $tempDir;
+			}
+		}
+	}
+
+	public function connect()
+	{
+		$this->_connection = false;
+
+		if (!function_exists('ssh2_connect'))
+		{
+			$this->setError(AKText::_('SFTP_NO_SSH2'));
+
+			return false;
+		}
+
+		$this->_connection = @ssh2_connect($this->host, $this->port);
+
+		if (!@ssh2_auth_password($this->_connection, $this->user, $this->pass))
+		{
+			$this->setError(AKText::_('SFTP_WRONG_USER'));
+
+			$this->_connection = false;
+
+			return false;
+		}
+
+		$this->handle = @ssh2_sftp($this->_connection);
+
+		// I must have an absolute directory
+		if (!$this->dir)
+		{
+			$this->setError(AKText::_('SFTP_WRONG_STARTING_DIR'));
+
+			return false;
+		}
+
+		// Change to initial directory
+		if (!$this->sftp_chdir('/'))
+		{
+			$this->setError(AKText::_('SFTP_WRONG_STARTING_DIR'));
+
+			unset($this->_connection);
+			unset($this->handle);
+
+			return false;
+		}
+
+		// Try to download ourselves
+		$testFilename = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+		$basePath     = '/' . trim($this->dir, '/');
+
+		if (@fopen("ssh2.sftp://{$this->handle}$basePath/$testFilename", 'r+') === false)
+		{
+			$this->setError(AKText::_('SFTP_WRONG_STARTING_DIR'));
+
+			unset($this->_connection);
+			unset($this->handle);
+
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Changes to the requested directory in the remote server. You give only the
+	 * path relative to the initial directory and it does all the rest by itself,
+	 * including doing nothing if the remote directory is the one we want.
+	 *
+	 * @param   string $dir The (realtive) remote directory
+	 *
+	 * @return  bool True if successful, false otherwise.
+	 */
+	private function sftp_chdir($dir)
+	{
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+		if (!empty($removePath))
+		{
+			// UNIXize the paths
+			$removePath = str_replace('\\', '/', $removePath);
+			$dir        = str_replace('\\', '/', $dir);
+
+			// Make sure they both end in a slash
+			$removePath = rtrim($removePath, '/\\') . '/';
+			$dir        = rtrim($dir, '/\\') . '/';
+
+			// Process the path removal
+			$left = substr($dir, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$dir = substr($dir, strlen($removePath));
+			}
+		}
+
+		if (empty($dir))
+		{
+			// Because the substr() above may return FALSE.
+			$dir = '';
+		}
+
+		// Calculate "real" (absolute) SFTP path
+		$realdir = substr($this->dir, -1) == '/' ? substr($this->dir, 0, strlen($this->dir) - 1) : $this->dir;
+		$realdir .= '/' . $dir;
+		$realdir = substr($realdir, 0, 1) == '/' ? $realdir : '/' . $realdir;
+
+		if ($this->_currentdir == $realdir)
+		{
+			// Already there, do nothing
+			return true;
+		}
+
+		$result = @ssh2_sftp_stat($this->handle, $realdir);
+
+		if ($result === false)
+		{
+			return false;
+		}
+		else
+		{
+			// Update the private "current remote directory" variable
+			$this->_currentdir = $realdir;
+
+			return true;
+		}
+	}
+
+	private function isDirWritable($dir)
+	{
+		if (@fopen("ssh2.sftp://{$this->handle}$dir/kickstart.dat", 'w') === false)
+		{
+			return false;
+		}
+		else
+		{
+			@ssh2_sftp_unlink($this->handle, $dir . '/kickstart.dat');
+
+			return true;
+		}
+	}
+
+	public function createDirRecursive($dirName, $perms)
+	{
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+		if (!empty($removePath))
+		{
+			// UNIXize the paths
+			$removePath = str_replace('\\', '/', $removePath);
+			$dirName    = str_replace('\\', '/', $dirName);
+			// Make sure they both end in a slash
+			$removePath = rtrim($removePath, '/\\') . '/';
+			$dirName    = rtrim($dirName, '/\\') . '/';
+			// Process the path removal
+			$left = substr($dirName, 0, strlen($removePath));
+			if ($left == $removePath)
+			{
+				$dirName = substr($dirName, strlen($removePath));
+			}
+		}
+		if (empty($dirName))
+		{
+			$dirName = '';
+		} // 'cause the substr() above may return FALSE.
+
+		$check = '/' . trim($this->dir, '/ ') . '/' . trim($dirName, '/');
+
+		if ($this->is_dir($check))
+		{
+			return true;
+		}
+
+		$alldirs     = explode('/', $dirName);
+		$previousDir = '/' . trim($this->dir, '/ ');
+
+		foreach ($alldirs as $curdir)
+		{
+			if (!$curdir)
+			{
+				continue;
+			}
+
+			$check = $previousDir . '/' . $curdir;
+
+			if (!$this->is_dir($check))
+			{
+				// Proactively try to delete a file by the same name
+				@ssh2_sftp_unlink($this->handle, $check);
+
+				if (@ssh2_sftp_mkdir($this->handle, $check) === false)
+				{
+					// If we couldn't create the directory, attempt to fix the permissions in the PHP level and retry!
+					$this->fixPermissions($check);
+
+					if (@ssh2_sftp_mkdir($this->handle, $check) === false)
+					{
+						// Can we fall back to pure PHP mode, sire?
+						if (!@mkdir($check))
+						{
+							$this->setError(AKText::sprintf('FTP_CANT_CREATE_DIR', $check));
+
+							return false;
+						}
+						else
+						{
+							// Since the directory was built by PHP, change its permissions
+							$trustMeIKnowWhatImDoing =
+								500 + 10 + 1; // working around overzealous scanners written by bozos
+							@chmod($check, $trustMeIKnowWhatImDoing);
+
+							return true;
+						}
+					}
+				}
+
+				@ssh2_sftp_chmod($this->handle, $check, $perms);
+			}
+
+			$previousDir = $check;
+		}
+
+		return true;
+	}
+
+	private function is_dir($dir)
+	{
+		return $this->sftp_chdir($dir);
+	}
+
+	private function fixPermissions($path)
+	{
+		// Turn off error reporting
+		if (!defined('KSDEBUG'))
+		{
+			$oldErrorReporting = @error_reporting(0);
+		}
+
+		// Get UNIX style paths
+		$relPath  = str_replace('\\', '/', $path);
+		$basePath = rtrim(str_replace('\\', '/', KSROOTDIR), '/');
+		$basePath = rtrim($basePath, '/');
+
+		if (!empty($basePath))
+		{
+			$basePath .= '/';
+		}
+
+		// Remove the leading relative root
+		if (substr($relPath, 0, strlen($basePath)) == $basePath)
+		{
+			$relPath = substr($relPath, strlen($basePath));
+		}
+
+		$dirArray  = explode('/', $relPath);
+		$pathBuilt = rtrim($basePath, '/');
+
+		foreach ($dirArray as $dir)
+		{
+			if (empty($dir))
+			{
+				continue;
+			}
+
+			$oldPath = $pathBuilt;
+			$pathBuilt .= '/' . $dir;
+
+			if (is_dir($oldPath . '/' . $dir))
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				@chmod($oldPath . '/' . $dir, $trustMeIKnowWhatImDoing);
+			}
+			else
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				if (@chmod($oldPath . '/' . $dir, $trustMeIKnowWhatImDoing) === false)
+				{
+					@unlink($oldPath . $dir);
+				}
+			}
+		}
+
+		// Restore error reporting
+		if (!defined('KSDEBUG'))
+		{
+			@error_reporting($oldErrorReporting);
+		}
+	}
+
+	function __wakeup()
+	{
+		$this->connect();
+	}
+
+	/*
+	 * Tries to fix directory/file permissions in the PHP level, so that
+	 * the FTP operation doesn't fail.
+	 * @param $path string The full path to a directory or file
+	 */
+
+	public function process()
+	{
+		if (is_null($this->tempFilename))
+		{
+			// If an empty filename is passed, it means that we shouldn't do any post processing, i.e.
+			// the entity was a directory or symlink
+			return true;
+		}
+
+		$remotePath      = dirname($this->filename);
+		$absoluteFSPath  = dirname($this->filename);
+		$absoluteFTPPath = '/' . trim($this->dir, '/') . '/' . trim($remotePath, '/');
+		$onlyFilename    = basename($this->filename);
+
+		$remoteName = $absoluteFTPPath . '/' . $onlyFilename;
+
+		$ret = $this->sftp_chdir($absoluteFTPPath);
+
+		if ($ret === false)
+		{
+			$ret = $this->createDirRecursive($absoluteFSPath, 0755);
+
+			if ($ret === false)
+			{
+				$this->setError(AKText::sprintf('SFTP_COULDNT_UPLOAD', $this->filename));
+
+				return false;
+			}
+
+			$ret = $this->sftp_chdir($absoluteFTPPath);
+
+			if ($ret === false)
+			{
+				$this->setError(AKText::sprintf('SFTP_COULDNT_UPLOAD', $this->filename));
+
+				return false;
+			}
+		}
+
+		// Create the file
+		$ret = $this->write($this->tempFilename, $remoteName);
+
+		// If I got a -1 it means that I wasn't able to open the file, so I have to stop here
+		if ($ret === -1)
+		{
+			$this->setError(AKText::sprintf('SFTP_COULDNT_UPLOAD', $this->filename));
+
+			return false;
+		}
+
+		if ($ret === false)
+		{
+			// If we couldn't create the file, attempt to fix the permissions in the PHP level and retry!
+			$this->fixPermissions($this->filename);
+			$this->unlink($this->filename);
+
+			$ret = $this->write($this->tempFilename, $remoteName);
+		}
+
+		@unlink($this->tempFilename);
+
+		if ($ret === false)
+		{
+			$this->setError(AKText::sprintf('SFTP_COULDNT_UPLOAD', $this->filename));
+
+			return false;
+		}
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+
+		if ($restorePerms)
+		{
+			$this->chmod($remoteName, $this->perms);
+		}
+		else
+		{
+			$this->chmod($remoteName, 0644);
+		}
+
+		if (@is_file($this->filename) || @is_link($this->filename))
+		{
+			clearFileInOPCache($this->filename);
+		}
+
+		return true;
+	}
+
+	private function write($local, $remote)
+	{
+		$fp      = @fopen("ssh2.sftp://{$this->handle}$remote", 'w');
+		$localfp = @fopen($local, 'r');
+
+		if ($fp === false)
+		{
+			return -1;
+		}
+
+		if ($localfp === false)
+		{
+			@fclose($fp);
+
+			return -1;
+		}
+
+		$res = true;
+
+		while (!feof($localfp) && ($res !== false))
+		{
+			$buffer = @fread($localfp, 65567);
+			$res    = @fwrite($fp, $buffer);
+		}
+
+		@fclose($fp);
+		@fclose($localfp);
+
+		return $res;
+	}
+
+	public function unlink($file)
+	{
+		$check = '/' . trim($this->dir, '/') . '/' . trim($file, '/');
+
+		return @ssh2_sftp_unlink($this->handle, $check);
+	}
+
+	public function chmod($file, $perms)
+	{
+		return @ssh2_sftp_chmod($this->handle, $file, $perms);
+	}
+
+	public function processFilename($filename, $perms = 0755)
+	{
+		// Catch some error conditions...
+		if ($this->getError())
+		{
+			return false;
+		}
+
+		// If a null filename is passed, it means that we shouldn't do any post processing, i.e.
+		// the entity was a directory or symlink
+		if (is_null($filename))
+		{
+			$this->filename     = null;
+			$this->tempFilename = null;
+
+			return null;
+		}
+
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+		if (!empty($removePath))
+		{
+			$left = substr($filename, 0, strlen($removePath));
+			if ($left == $removePath)
+			{
+				$filename = substr($filename, strlen($removePath));
+			}
+		}
+
+		// Trim slash on the left
+		$filename = ltrim($filename, '/');
+
+		$this->filename     = $filename;
+		$this->tempFilename = tempnam($this->tempDir, 'kickstart-');
+		$this->perms        = $perms;
+
+		if (empty($this->tempFilename))
+		{
+			// Oops! Let's try something different
+			$this->tempFilename = $this->tempDir . '/kickstart-' . time() . '.dat';
+		}
+
+		return $this->tempFilename;
+	}
+
+	public function close()
+	{
+		unset($this->_connection);
+		unset($this->handle);
+	}
+
+	public function rmdir($directory)
+	{
+		$check = '/' . trim($this->dir, '/') . '/' . trim($directory, '/');
+
+		return @ssh2_sftp_rmdir($this->handle, $check);
+	}
+
+	public function rename($from, $to)
+	{
+		$from = '/' . trim($this->dir, '/') . '/' . trim($from, '/');
+		$to   = '/' . trim($this->dir, '/') . '/' . trim($to, '/');
+
+		$result = @ssh2_sftp_rename($this->handle, $from, $to);
+
+		if ($result !== true)
+		{
+			return @rename($from, $to);
+		}
+		else
+		{
+			return true;
+		}
+	}
+
+}
+
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Hybrid direct / FTP mode file writer
+ */
+class AKPostprocHybrid extends AKAbstractPostproc
+{
+
+	/** @var bool Should I use the FTP layer? */
+	public $useFTP = false;
+
+	/** @var bool Should I use FTP over implicit SSL? */
+	public $useSSL = false;
+
+	/** @var bool use Passive mode? */
+	public $passive = true;
+
+	/** @var string FTP host name */
+	public $host = '';
+
+	/** @var int FTP port */
+	public $port = 21;
+
+	/** @var string FTP user name */
+	public $user = '';
+
+	/** @var string FTP password */
+	public $pass = '';
+
+	/** @var string FTP initial directory */
+	public $dir = '';
+
+	/** @var resource The FTP handle */
+	private $handle = null;
+
+	/** @var null The FTP connection handle */
+	private $_handle = null;
+
+	/**
+	 * Public constructor. Tries to connect to the FTP server.
+	 */
+	public function __construct()
+	{
+		$this->useFTP  = true;
+		$this->useSSL  = AKFactory::get('kickstart.ftp.ssl', false);
+		$this->passive = AKFactory::get('kickstart.ftp.passive', true);
+		$this->host    = AKFactory::get('kickstart.ftp.host', '');
+		$this->port    = AKFactory::get('kickstart.ftp.port', 21);
+		$this->user    = AKFactory::get('kickstart.ftp.user', '');
+		$this->pass    = AKFactory::get('kickstart.ftp.pass', '');
+		$this->dir     = AKFactory::get('kickstart.ftp.dir', '');
+		$this->tempDir = AKFactory::get('kickstart.ftp.tempdir', '');
+
+		if (trim($this->port) == '')
+		{
+			$this->port = 21;
+		}
+
+		// If FTP is not configured, skip it altogether
+		if (empty($this->host) || empty($this->user) || empty($this->pass))
+		{
+			$this->useFTP = false;
+		}
+
+		// Try to connect to the FTP server
+		$connected = $this->connect();
+
+		// If the connection fails, skip FTP altogether
+		if (!$connected)
+		{
+			$this->useFTP = false;
+		}
+
+		if ($connected)
+		{
+			if (!empty($this->tempDir))
+			{
+				$tempDir  = rtrim($this->tempDir, '/\\') . '/';
+				$writable = $this->isDirWritable($tempDir);
+			}
+			else
+			{
+				$tempDir  = '';
+				$writable = false;
+			}
+
+			if (!$writable)
+			{
+				// Default temporary directory is the current root
+				$tempDir = KSROOTDIR;
+				if (empty($tempDir))
+				{
+					// Oh, we have no directory reported!
+					$tempDir = '.';
+				}
+				$absoluteDirToHere = $tempDir;
+				$tempDir           = rtrim(str_replace('\\', '/', $tempDir), '/');
+				if (!empty($tempDir))
+				{
+					$tempDir .= '/';
+				}
+				$this->tempDir = $tempDir;
+				// Is this directory writable?
+				$writable = $this->isDirWritable($tempDir);
+			}
+
+			if (!$writable)
+			{
+				// Nope. Let's try creating a temporary directory in the site's root.
+				$tempDir                 = $absoluteDirToHere . '/kicktemp';
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				$this->createDirRecursive($tempDir, $trustMeIKnowWhatImDoing);
+				// Try making it writable...
+				$this->fixPermissions($tempDir);
+				$writable = $this->isDirWritable($tempDir);
+			}
+
+			// Was the new directory writable?
+			if (!$writable)
+			{
+				// Let's see if the user has specified one
+				$userdir = AKFactory::get('kickstart.ftp.tempdir', '');
+				if (!empty($userdir))
+				{
+					// Is it an absolute or a relative directory?
+					$absolute = false;
+					$absolute = $absolute || (substr($userdir, 0, 1) == '/');
+					$absolute = $absolute || (substr($userdir, 1, 1) == ':');
+					$absolute = $absolute || (substr($userdir, 2, 1) == ':');
+					if (!$absolute)
+					{
+						// Make absolute
+						$tempDir = $absoluteDirToHere . $userdir;
+					}
+					else
+					{
+						// it's already absolute
+						$tempDir = $userdir;
+					}
+					// Does the directory exist?
+					if (is_dir($tempDir))
+					{
+						// Yeah. Is it writable?
+						$writable = $this->isDirWritable($tempDir);
+					}
+				}
+			}
+			$this->tempDir = $tempDir;
+
+			if (!$writable)
+			{
+				// No writable directory found!!!
+				$this->setError(AKText::_('FTP_TEMPDIR_NOT_WRITABLE'));
+			}
+			else
+			{
+				AKFactory::set('kickstart.ftp.tempdir', $tempDir);
+				$this->tempDir = $tempDir;
+			}
+		}
+	}
+
+	/**
+	 * Tries to connect to the FTP server
+	 *
+	 * @return bool
+	 */
+	public function connect()
+	{
+		if (!$this->useFTP)
+		{
+			return false;
+		}
+
+		// Connect to server, using SSL if so required
+		if ($this->useSSL)
+		{
+			$this->handle = @ftp_ssl_connect($this->host, $this->port);
+		}
+		else
+		{
+			$this->handle = @ftp_connect($this->host, $this->port);
+		}
+		if ($this->handle === false)
+		{
+			$this->setError(AKText::_('WRONG_FTP_HOST'));
+
+			return false;
+		}
+
+		// Login
+		if (!@ftp_login($this->handle, $this->user, $this->pass))
+		{
+			$this->setError(AKText::_('WRONG_FTP_USER'));
+			@ftp_close($this->handle);
+
+			return false;
+		}
+
+		// Change to initial directory
+		if (!@ftp_chdir($this->handle, $this->dir))
+		{
+			$this->setError(AKText::_('WRONG_FTP_PATH1'));
+			@ftp_close($this->handle);
+
+			return false;
+		}
+
+		// Enable passive mode if the user requested it
+		if ($this->passive)
+		{
+			@ftp_pasv($this->handle, true);
+		}
+		else
+		{
+			@ftp_pasv($this->handle, false);
+		}
+
+		// Try to download ourselves
+		$testFilename = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+		$tempHandle   = fopen('php://temp', 'r+');
+
+		if (@ftp_fget($this->handle, $tempHandle, $testFilename, FTP_ASCII, 0) === false)
+		{
+			$this->setError(AKText::_('WRONG_FTP_PATH2'));
+			@ftp_close($this->handle);
+			fclose($tempHandle);
+
+			return false;
+		}
+
+		fclose($tempHandle);
+
+		return true;
+	}
+
+	/**
+	 * Is the directory writeable?
+	 *
+	 * @param string $dir The directory ti check
+	 *
+	 * @return bool
+	 */
+	private function isDirWritable($dir)
+	{
+		$fp = @fopen($dir . '/kickstart.dat', 'w');
+
+		if ($fp === false)
+		{
+			return false;
+		}
+
+		@fclose($fp);
+		unlink($dir . '/kickstart.dat');
+
+		return true;
+	}
+
+	/**
+	 * Create a directory, recursively
+	 *
+	 * @param string $dirName The directory to create
+	 * @param int    $perms   The permissions to give to the directory
+	 *
+	 * @return bool
+	 */
+	public function createDirRecursive($dirName, $perms)
+	{
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			// UNIXize the paths
+			$removePath = str_replace('\\', '/', $removePath);
+			$dirName    = str_replace('\\', '/', $dirName);
+			// Make sure they both end in a slash
+			$removePath = rtrim($removePath, '/\\') . '/';
+			$dirName    = rtrim($dirName, '/\\') . '/';
+			// Process the path removal
+			$left = substr($dirName, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$dirName = substr($dirName, strlen($removePath));
+			}
+		}
+
+		// 'cause the substr() above may return FALSE.
+		if (empty($dirName))
+		{
+			$dirName = '';
+		}
+
+		$check   = '/' . trim($this->dir, '/') . '/' . trim($dirName, '/');
+		$checkFS = $removePath . trim($dirName, '/');
+
+		if ($this->is_dir($check))
+		{
+			return true;
+		}
+
+		$alldirs       = explode('/', $dirName);
+		$previousDir   = '/' . trim($this->dir);
+		$previousDirFS = rtrim($removePath, '/\\');
+
+		foreach ($alldirs as $curdir)
+		{
+			$check   = $previousDir . '/' . $curdir;
+			$checkFS = $previousDirFS . '/' . $curdir;
+
+			if (!is_dir($checkFS) && !$this->is_dir($check))
+			{
+				// Proactively try to delete a file by the same name
+				if (!@unlink($checkFS) && $this->useFTP)
+				{
+					@ftp_delete($this->handle, $check);
+				}
+
+				$createdDir = @mkdir($checkFS, 0755);
+
+				if (!$createdDir && $this->useFTP)
+				{
+					$createdDir = @ftp_mkdir($this->handle, $check);
+				}
+
+				if ($createdDir === false)
+				{
+					// If we couldn't create the directory, attempt to fix the permissions in the PHP level and retry!
+					$this->fixPermissions($checkFS);
+
+					$createdDir = @mkdir($checkFS, 0755);
+					if (!$createdDir && $this->useFTP)
+					{
+						$createdDir = @ftp_mkdir($this->handle, $check);
+					}
+
+					if ($createdDir === false)
+					{
+						$this->setError(AKText::sprintf('FTP_CANT_CREATE_DIR', $check));
+
+						return false;
+					}
+				}
+
+				if (!@chmod($checkFS, $perms) && $this->useFTP)
+				{
+					@ftp_chmod($this->handle, $perms, $check);
+				}
+			}
+
+			$previousDir   = $check;
+			$previousDirFS = $checkFS;
+		}
+
+		return true;
+	}
+
+	private function is_dir($dir)
+	{
+		if ($this->useFTP)
+		{
+			return @ftp_chdir($this->handle, $dir);
+		}
+
+		return false;
+	}
+
+	/**
+	 * Tries to fix directory/file permissions in the PHP level, so that
+	 * the FTP operation doesn't fail.
+	 *
+	 * @param $path string The full path to a directory or file
+	 */
+	private function fixPermissions($path)
+	{
+		// Turn off error reporting
+		if (!defined('KSDEBUG'))
+		{
+			$oldErrorReporting = error_reporting(0);
+		}
+
+		// Get UNIX style paths
+		$relPath  = str_replace('\\', '/', $path);
+		$basePath = rtrim(str_replace('\\', '/', KSROOTDIR), '/');
+		$basePath = rtrim($basePath, '/');
+
+		if (!empty($basePath))
+		{
+			$basePath .= '/';
+		}
+
+		// Remove the leading relative root
+		if (substr($relPath, 0, strlen($basePath)) == $basePath)
+		{
+			$relPath = substr($relPath, strlen($basePath));
+		}
+
+		$dirArray  = explode('/', $relPath);
+		$pathBuilt = rtrim($basePath, '/');
+
+		foreach ($dirArray as $dir)
+		{
+			if (empty($dir))
+			{
+				continue;
+			}
+
+			$oldPath = $pathBuilt;
+			$pathBuilt .= '/' . $dir;
+
+			if (is_dir($oldPath . $dir))
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				@chmod($oldPath . $dir, $trustMeIKnowWhatImDoing);
+			}
+			else
+			{
+				$trustMeIKnowWhatImDoing = 500 + 10 + 1; // working around overzealous scanners written by bozos
+				if (@chmod($oldPath . $dir, $trustMeIKnowWhatImDoing) === false)
+				{
+					@unlink($oldPath . $dir);
+				}
+			}
+		}
+
+		// Restore error reporting
+		if (!defined('KSDEBUG'))
+		{
+			@error_reporting($oldErrorReporting);
+		}
+	}
+
+	/**
+	 * Called after unserialisation, tries to reconnect to FTP
+	 */
+	public function __wakeup()
+	{
+		if ($this->useFTP)
+		{
+			$this->connect();
+		}
+	}
+
+	public function __sleep()
+	{
+		if ($this->useFTP)
+		{
+			if (!is_null($this->_handle) && is_resource($this->_handle))
+			{
+				@ftp_close($this->_handle);
+			}
+		}
+
+		$this->_handle = null;
+	}
+
+
+	public function __destruct()
+	{
+		if ($this->useFTP)
+		{
+			if (!is_null($this->handle) && is_resource($this->handle))
+			{
+				@ftp_close($this->handle);
+			}
+		}
+	}
+
+	/**
+	 * Post-process an extracted file, using FTP or direct file writes to move it
+	 *
+	 * @return bool
+	 */
+	public function process()
+	{
+		if (is_null($this->tempFilename))
+		{
+			// If an empty filename is passed, it means that we shouldn't do any post processing, i.e.
+			// the entity was a directory or symlink
+			return true;
+		}
+
+		$remotePath = dirname($this->filename);
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+		$root       = rtrim($removePath, '/\\');
+
+		if (!empty($removePath))
+		{
+			$removePath = ltrim($removePath, "/");
+			$remotePath = ltrim($remotePath, "/");
+			$left       = substr($remotePath, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$remotePath = substr($remotePath, strlen($removePath));
+			}
+		}
+
+		$absoluteFSPath  = dirname($this->filename);
+		$relativeFTPPath = trim($remotePath, '/');
+		$absoluteFTPPath = '/' . trim($this->dir, '/') . '/' . trim($remotePath, '/');
+		$onlyFilename    = basename($this->filename);
+
+		$remoteName = $absoluteFTPPath . '/' . $onlyFilename;
+
+		// Does the directory exist?
+		if (!is_dir($root . '/' . $absoluteFSPath))
+		{
+			$ret = $this->createDirRecursive($absoluteFSPath, 0755);
+
+			if (($ret === false) && ($this->useFTP))
+			{
+				$ret = @ftp_chdir($this->handle, $absoluteFTPPath);
+			}
+
+			if ($ret === false)
+			{
+				$this->setError(AKText::sprintf('FTP_COULDNT_UPLOAD', $this->filename));
+
+				return false;
+			}
+		}
+
+		if ($this->useFTP)
+		{
+			$ret = @ftp_chdir($this->handle, $absoluteFTPPath);
+		}
+
+		// Try copying directly
+		$ret = @copy($this->tempFilename, $root . '/' . $this->filename);
+
+		if ($ret === false)
+		{
+			$this->fixPermissions($this->filename);
+			$this->unlink($this->filename);
+
+			$ret = @copy($this->tempFilename, $root . '/' . $this->filename);
+		}
+
+		if ($this->useFTP && ($ret === false))
+		{
+			$ret = @ftp_put($this->handle, $remoteName, $this->tempFilename, FTP_BINARY);
+
+			if ($ret === false)
+			{
+				// If we couldn't create the file, attempt to fix the permissions in the PHP level and retry!
+				$this->fixPermissions($this->filename);
+				$this->unlink($this->filename);
+
+				$fp = @fopen($this->tempFilename, 'r');
+				if ($fp !== false)
+				{
+					$ret = @ftp_fput($this->handle, $remoteName, $fp, FTP_BINARY);
+					@fclose($fp);
+				}
+				else
+				{
+					$ret = false;
+				}
+			}
+		}
+
+		@unlink($this->tempFilename);
+
+		if ($ret === false)
+		{
+			$this->setError(AKText::sprintf('FTP_COULDNT_UPLOAD', $this->filename));
+
+			return false;
+		}
+
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+		$perms        = $restorePerms ? $this->perms : 0644;
+
+		$ret = @chmod($root . '/' . $this->filename, $perms);
+
+		if ($this->useFTP && ($ret === false))
+		{
+			@ftp_chmod($this->_handle, $perms, $remoteName);
+		}
+
+		if (@is_file($this->filename) || @is_link($this->filename))
+		{
+			clearFileInOPCache($this->filename);
+		}
+
+		return true;
+	}
+
+	public function unlink($file)
+	{
+		$ret = @unlink($file);
+
+		if (!$ret && $this->useFTP)
+		{
+			$removePath = AKFactory::get('kickstart.setup.destdir', '');
+			if (!empty($removePath))
+			{
+				$left = substr($file, 0, strlen($removePath));
+				if ($left == $removePath)
+				{
+					$file = substr($file, strlen($removePath));
+				}
+			}
+
+			$check = '/' . trim($this->dir, '/') . '/' . trim($file, '/');
+
+			$ret = @ftp_delete($this->handle, $check);
 		}
 
 		return $ret;
 	}
 
-	static function extractFile($path, $entry, $fp)
+	/**
+	 * Create a temporary filename
+	 *
+	 * @param string $filename The original filename
+	 * @param int    $perms    The file permissions
+	 *
+	 * @return string
+	 */
+	public function processFilename($filename, $perms = 0755)
 	{
-		$data = '';
-		$c    = $entry[2];
-
-		while ($c)
-		{
-			if ($c < 8192)
-			{
-				$data .= @fread($fp, $c);
-				$c    = 0;
-
-				break;
-			}
-
-			$c    -= 8192;
-			$data .= @fread($fp, 8192);
-		}
-
-		if ($entry[4] & self::GZ)
-		{
-			$data = gzinflate($data);
-		}
-		elseif ($entry[4] & self::BZ2)
-		{
-			$data = bzdecompress($data);
-		}
-
-		if (strlen($data) != $entry[0])
-		{
-			die(sprintf("Kickstart is corrupt. Size error extracting file: %s != %s", strlen($data), $entry[0]));
-		}
-
-		if ($entry[3] != sprintf("%u", crc32($data) & 0xffffffff))
-		{
-			die("Kickstart is corrupt. Invalid checksum extracting file.");
-		}
-
-		return $data;
-	}
-
-	public static function recursiveRmdir(string $directory): bool
-	{
-		$directory = rtrim($directory, '/');
-
-		if (!file_exists($directory) || !is_dir($directory) || !is_readable($directory))
+		// Catch some error conditions...
+		if ($this->getError())
 		{
 			return false;
 		}
 
-		$di = new DirectoryIterator($directory);
-
-		foreach ($di as $item)
+		// If a null filename is passed, it means that we shouldn't do any post processing, i.e.
+		// the entity was a directory or symlink
+		if (is_null($filename))
 		{
-			if ($item->isDot())
-			{
-				continue;
-			}
+			$this->filename     = null;
+			$this->tempFilename = null;
 
-			if ($item->isDir())
-			{
-				self::recursiveRmdir($item->getPathname());
-
-				continue;
-			}
-
-			unlink($item->getPathname());
+			return null;
 		}
 
-		return rmdir($directory);
+		// Strip absolute filesystem path to website's root
+		$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+		if (!empty($removePath))
+		{
+			$left = substr($filename, 0, strlen($removePath));
+
+			if ($left == $removePath)
+			{
+				$filename = substr($filename, strlen($removePath));
+			}
+		}
+
+		// Trim slash on the left
+		$filename = ltrim($filename, '/');
+
+		$this->filename     = $filename;
+		$this->tempFilename = tempnam($this->tempDir, 'kickstart-');
+		$this->perms        = $perms;
+
+		if (empty($this->tempFilename))
+		{
+			// Oops! Let's try something different
+			$this->tempFilename = $this->tempDir . '/kickstart-' . time() . '.dat';
+		}
+
+		return $this->tempFilename;
+	}
+
+	/**
+	 * Closes the FTP connection
+	 */
+	public function close()
+	{
+		if (!$this->useFTP)
+		{
+			@ftp_close($this->handle);
+		}
+	}
+
+	public function chmod($file, $perms)
+	{
+		if (AKFactory::get('kickstart.setup.dryrun', '0'))
+		{
+			return true;
+		}
+
+		$ret = @chmod($file, $perms);
+
+		if (!$ret && $this->useFTP)
+		{
+			// Strip absolute filesystem path to website's root
+			$removePath = AKFactory::get('kickstart.setup.destdir', '');
+
+			if (!empty($removePath))
+			{
+				$left = substr($file, 0, strlen($removePath));
+
+				if ($left == $removePath)
+				{
+					$file = substr($file, strlen($removePath));
+				}
+			}
+
+			// Trim slash on the left
+			$file = ltrim($file, '/');
+
+			$ret = @ftp_chmod($this->handle, $perms, $file);
+		}
+
+		return $ret;
+	}
+
+	public function rmdir($directory)
+	{
+		$ret = @rmdir($directory);
+
+		if (!$ret && $this->useFTP)
+		{
+			$removePath = AKFactory::get('kickstart.setup.destdir', '');
+			if (!empty($removePath))
+			{
+				$left = substr($directory, 0, strlen($removePath));
+				if ($left == $removePath)
+				{
+					$directory = substr($directory, strlen($removePath));
+				}
+			}
+
+			$check = '/' . trim($this->dir, '/') . '/' . trim($directory, '/');
+
+			$ret = @ftp_rmdir($this->handle, $check);
+		}
+
+		return $ret;
+	}
+
+	public function rename($from, $to)
+	{
+		$ret = @rename($from, $to);
+
+		if (!$ret && $this->useFTP)
+		{
+			$originalFrom = $from;
+			$originalTo   = $to;
+
+			$removePath = AKFactory::get('kickstart.setup.destdir', '');
+			if (!empty($removePath))
+			{
+				$left = substr($from, 0, strlen($removePath));
+				if ($left == $removePath)
+				{
+					$from = substr($from, strlen($removePath));
+				}
+			}
+			$from = '/' . trim($this->dir, '/') . '/' . trim($from, '/');
+
+			if (!empty($removePath))
+			{
+				$left = substr($to, 0, strlen($removePath));
+				if ($left == $removePath)
+				{
+					$to = substr($to, strlen($removePath));
+				}
+			}
+			$to = '/' . trim($this->dir, '/') . '/' . trim($to, '/');
+
+			$ret = @ftp_rename($this->handle, $from, $to);
+		}
+
+		return $ret;
 	}
 }
 
-// Web controller
-call_user_func(
-	function () {
-		if (!_AKEEBA_IS_WEB)
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * JPA archive extraction class
+ */
+class AKUnarchiverJPA extends AKAbstractUnarchiver
+{
+	protected $archiveHeaderData = [];
+
+	protected function readArchiveHeader()
+	{
+		debugMsg('Preparing to read archive header');
+		// Initialize header data array
+		$this->archiveHeaderData = new stdClass();
+
+		// Open the first part
+		debugMsg('Opening the first part');
+		$this->nextFile();
+
+		// Fail for unreadable files
+		if ($this->fp === false)
 		{
-			return;
+			debugMsg('Could not open the first part');
+
+			return false;
 		}
 
-		Kickstart_Extract_Phar::go(true);
+		// Fuzzy check for the start of archive.
+		debugMsg('Fuzzy checking for archive signature');
 
-		header("Cache-Control: no-cache, must-revalidate");
-		header("Pragma: no-cache");
+		$sigFound = $this->fuzzySignatureSearch([
+			'JPA',
+		], 3);
 
-		$basename = basename(__FILE__);
-
-		if (!strpos($_SERVER['REQUEST_URI'], $basename))
+		if (!$sigFound)
 		{
-			include Kickstart_Extract_Phar::$temp . DIRECTORY_SEPARATOR . _AKEEBA_WEB_ENTRYPOINT;
+			debugMsg('Cannot find a valid archive signature in the first 128Kb of the first part file');
 
-			return;
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'jpa', 'j'));
+
+			return false;
 		}
 
-		$pt = substr($_SERVER['REQUEST_URI'], strpos($_SERVER['REQUEST_URI'], $basename) + strlen($basename));
+		debugMsg(sprintf('File signature found, position %d', ftell($this->fp)));
 
-		if (!$pt || $pt == '/')
+		// Read the signature
+		$sig = fread($this->fp, 3);
+
+		if ($sig != 'JPA')
 		{
-			// Fudge the request path to always load Kickstart's front controller.
-			$pt = _AKEEBA_WEB_ENTRYPOINT;
+			// Not a JPA file
+			debugMsg('Invalid archive signature');
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'jpa', 'j'));
+
+			return false;
 		}
 
-		// Make sure the file exists
-		$a = @realpath(Kickstart_Extract_Phar::$temp . DIRECTORY_SEPARATOR . $pt);
-		// Forbid direct access to .php files; only the front controller must be web-accessible.
-		$z = substr($pt, -4) === '.php';
+		// Read and parse header length
+		$header_length_array = unpack('v', fread($this->fp, 2));
+		$header_length       = $header_length_array[1];
 
-		if ($z || !$a || strlen(dirname($a)) < strlen(Kickstart_Extract_Phar::$temp))
+		// Read and parse the known portion of header data (14 bytes)
+		$bin_data    = fread($this->fp, 14);
+		$header_data = unpack('Cmajor/Cminor/Vcount/Vuncsize/Vcsize', $bin_data);
+
+		// Temporary array with all the data we read
+		$temp = [
+			'signature'        => $sig,
+			'length'           => $header_length,
+			'major'            => $header_data['major'],
+			'minor'            => $header_data['minor'],
+			'filecount'        => $header_data['count'],
+			'uncompressedsize' => $header_data['uncsize'],
+			'compressedsize'   => $header_data['csize'],
+			'unknowndata'      => '',
+		];
+
+		// Load additional header data
+		$rest_length = $header_length - 19;
+		$junk        = '';
+
+		while ($rest_length > 8)
 		{
-			header('HTTP/1.0 404 Not Found');
-			echo "<html lang=\"en\">\n <head>\n  <title>File Not Found<title>\n </head>\n <body>\n  <h1>404 - File Not Found</h1>\n </body>\n</html>";
-			exit;
-		}
+			// Read the extra length signature and size
+			$extraSig    = fread($this->fp, 4);
+			$binData     = fread($this->fp, 2);
+			$extraHeader = unpack('vlength', $binData);
+			$length      = $extraHeader['length'] - 2;
 
-		$b = pathinfo($a);
+			$rest_length -= 6 + $length;
 
-		if (!isset($b['extension']))
-		{
-			header('Content-Type: text/plain');
-			header('Content-Length: ' . filesize($a));
-			readfile($a);
-			exit;
-		}
-
-		if (isset(AKEEBA_MIMETYPES[$b['extension']]))
-		{
-			if (AKEEBA_MIMETYPES[$b['extension']] === 1)
+			switch ($extraSig)
 			{
-				include $a;
-				exit;
+				case "\x4A\x50\x01\x01":
+					$moreBinData        = fread($this->fp, $length);
+					$moreExtraHeader    = unpack('vtotalParts', $moreBinData);
+					$temp['totalParts'] = $moreExtraHeader['totalParts'];
+					break;
+
+				case "\x4A\x50\x01\x02":
+					$moreBinData              = fread($this->fp, $length);
+
+					// Only decode on 64-bit versions of PHP
+					if (PHP_INT_SIZE >= 8)
+					{
+						$moreExtraHeader          = unpack('Puncompressed/Pcompressed', $moreBinData);
+						$header_data['uncsize']   = $moreExtraHeader['uncompressed'];
+						$header_data['csize']     = $moreExtraHeader['compressed'];
+						$temp['uncompressedsize'] = $moreExtraHeader['uncompressed'];
+						$temp['compressedsize']   = $moreExtraHeader['compressed'];
+					}
+
+					break;
+
+				default:
+					$moreBinData = fread($this->fp, $length);
+					$junk        .= $extraSig . $binData . $moreBinData;
+					break;
+			}
+		}
+
+		if ($rest_length > 0)
+		{
+			$junk .= fread($this->fp, $rest_length);
+		}
+		else
+		{
+			$junk .= '';
+		}
+
+		// Array-to-object conversion
+		foreach ($temp as $key => $value)
+		{
+			$this->archiveHeaderData->{$key} = $value;
+		}
+
+		debugMsg('Header data:');
+		debugMsg('Length              : ' . $header_length);
+		debugMsg('Major               : ' . $header_data['major']);
+		debugMsg('Minor               : ' . $header_data['minor']);
+		debugMsg('File count          : ' . $header_data['count']);
+		debugMsg('Uncompressed size   : ' . $header_data['uncsize']);
+		debugMsg('Compressed size     : ' . $header_data['csize']);
+		debugMsg('Total Parts         : ' . (isset($header_data['totalParts']) ? $header_data['totalParts'] : '1'));
+
+		$this->currentPartOffset = @ftell($this->fp);
+
+		$this->dataReadLength = 0;
+
+		return true;
+	}
+
+	/**
+	 * Concrete classes must use this method to read the file header
+	 *
+	 * @return bool True if reading the file was successful, false if an error occurred or we reached end of archive
+	 */
+	protected function readFileHeader()
+	{
+		// If the current part is over, proceed to the next part please
+		if ($this->isEOF(true))
+		{
+			debugMsg('Archive part EOF; moving to next file');
+			$this->nextFile();
+		}
+
+		$this->currentPartOffset = ftell($this->fp);
+
+		debugMsg("Reading file signature; part {$this->currentPartNumber}, offset {$this->currentPartOffset}");
+		// Get and decode Entity Description Block
+		$signature = fread($this->fp, 3);
+
+		$this->fileHeader            = new stdClass();
+		$this->fileHeader->timestamp = 0;
+
+		// Check signature
+		if ($signature != 'JPF')
+		{
+			if ($this->isEOF(true))
+			{
+				// This file is finished; make sure it's the last one
+				$gotNextFile = $this->nextFile();
+
+				if (!$gotNextFile && $this->getState() !== 'postrun')
+				{
+					debugMsg(sprintf('Cannot open file %s for part #%d', $this->archiveList[$this->currentPartNumber] ?: '(unknown)', $this->currentPartNumber));
+
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_OFFSET_ZERO',
+						$this->archiveList[$this->currentPartNumber] ?: '(unknown)',
+						$this->currentPartNumber,
+						'jpa',
+						'j'
+					));
+
+					return false;
+				}
+
+				if (!$this->isEOF(false))
+				{
+					debugMsg('Invalid file signature before end of archive encountered');
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER',
+						$this->currentPartNumber,
+						$this->currentPartOffset,
+						'jpa',
+						'j'
+					));
+
+					return false;
+				}
+
+				// We're just finished
+				return false;
+			}
+			else
+			{
+				$screwed = true;
+
+				if (AKFactory::get('kickstart.setup.ignoreerrors', false))
+				{
+					debugMsg('Invalid file block signature; launching heuristic file block signature scanner');
+					$screwed = !$this->heuristicFileHeaderLocator();
+
+					if (!$screwed)
+					{
+						$signature = 'JPF';
+					}
+					else
+					{
+						debugMsg('Heuristics failed. Brace yourself for the imminent crash.');
+					}
+				}
+
+				if ($screwed)
+				{
+					// This is not a file block! The archive is corrupt.
+					debugMsg('Invalid file block signature');
+
+					if (count($this->archiveList) > 1)
+					{
+						$this->setError(AKText::sprintf(
+							'INVALID_FILE_HEADER_MULTIPART',
+							$this->currentPartNumber,
+							$this->currentPartOffset,
+							'jpa',
+							'j'
+						));
+
+						return false;
+					}
+
+					$this->setError(AKText::sprintf('INVALID_FILE_HEADER', $this->currentPartNumber, $this->currentPartOffset));
+
+					return false;
+				}
+			}
+		}
+		// This a JPA Entity Block. Process the header.
+
+		$isBannedFile = false;
+
+		// Read length of EDB and of the Entity Path Data
+		$length_array = unpack('vblocksize/vpathsize', fread($this->fp, 4));
+		// Read the path data
+		if ($length_array['pathsize'] > 0)
+		{
+			$file = fread($this->fp, $length_array['pathsize']);
+		}
+		else
+		{
+			$file = '';
+		}
+
+		// Handle file renaming
+		$isRenamed = false;
+		if (is_array($this->renameFiles) && (count($this->renameFiles) > 0))
+		{
+			if (array_key_exists($file, $this->renameFiles))
+			{
+				$file      = $this->renameFiles[$file];
+				$isRenamed = true;
+			}
+		}
+
+		// Handle directory renaming
+		$isDirRenamed = false;
+		if (is_array($this->renameDirs) && (count($this->renameDirs) > 0))
+		{
+			if (array_key_exists(dirname($file), $this->renameDirs))
+			{
+				$file         = rtrim($this->renameDirs[dirname($file)], '/') . '/' . basename($file);
+				$isRenamed    = true;
+				$isDirRenamed = true;
+			}
+		}
+
+		// Read and parse the known data portion
+		$bin_data    = fread($this->fp, 14);
+		$header_data = unpack('Ctype/Ccompression/Vcompsize/Vuncompsize/Vperms', $bin_data);
+		// Read any unknown data
+		$restBytes = $length_array['blocksize'] - (21 + $length_array['pathsize']);
+
+		if ($restBytes > 0)
+		{
+			// Start reading the extra fields
+			while ($restBytes >= 4)
+			{
+				$extra_header_data      = fread($this->fp, 4);
+				$extra_header           = unpack('vsignature/vlength', $extra_header_data);
+				$restBytes              -= 4;
+				$extra_header['length'] -= 4;
+
+				if ($extra_header['length'] > 0)
+				{
+					switch ($extra_header['signature'])
+					{
+						case 256:
+							// File modified timestamp
+							$bindata                     = fread($this->fp, $extra_header['length']);
+							$restBytes                   -= $extra_header['length'];
+							$timestamps                  = unpack('Vmodified', substr($bindata, 0, 4));
+							$filectime                   = $timestamps['modified'];
+							$this->fileHeader->timestamp = $filectime;
+							break;
+
+						case 512:
+							$bindata                   = fread($this->fp, $extra_header['length']);
+							$restBytes                 -= $extra_header['length'];
+
+							// Only decode on 64-bit versions of PHP
+							if (PHP_INT_SIZE >= 8)
+							{
+								$sizes                     = unpack('Pclen/Punclen', $bindata);
+								$header_data['compsize']   = $sizes['clen'];
+								$header_data['uncompsize'] = $sizes['unclen'];
+							}
+							break;
+
+						default:
+							// Unknown field
+							$junk      = fread($this->fp, $extra_header['length']);
+							$restBytes -= $extra_header['length'];
+							break;
+					}
+				}
+
 			}
 
-			if (AKEEBA_MIMETYPES[$b['extension']] === 2)
+			if ($restBytes > 0)
 			{
-				highlight_file($a);
-				exit;
+				$junk = fread($this->fp, $restBytes);
+			}
+		}
+
+		$compressionType = $header_data['compression'];
+
+		// Populate the return array
+		$this->fileHeader->file         = $file;
+		$this->fileHeader->compressed   = $header_data['compsize'];
+		$this->fileHeader->uncompressed = $header_data['uncompsize'];
+
+		switch ($header_data['type'])
+		{
+			case 0:
+				$this->fileHeader->type = 'dir';
+				break;
+
+			case 1:
+				$this->fileHeader->type = 'file';
+				break;
+
+			case 2:
+				$this->fileHeader->type = 'link';
+				break;
+		}
+
+		switch ($compressionType)
+		{
+			case 0:
+				$this->fileHeader->compression = 'none';
+				break;
+			case 1:
+				$this->fileHeader->compression = 'gzip';
+				break;
+			case 2:
+				$this->fileHeader->compression = 'bzip2';
+				break;
+		}
+
+		$this->fileHeader->permissions = $header_data['perms'];
+
+		// Find hard-coded banned files
+		if ((basename($this->fileHeader->file) == ".") || (basename($this->fileHeader->file) == ".."))
+		{
+			$isBannedFile = true;
+		}
+
+		// Also try to find banned files passed in class configuration
+		if ((count($this->skipFiles) > 0) && (!$isRenamed))
+		{
+			if (in_array($this->fileHeader->file, $this->skipFiles))
+			{
+				$isBannedFile = true;
+			}
+		}
+
+		// If we have a banned file, let's skip it
+		if ($isBannedFile)
+		{
+			debugMsg('Skipping file ' . $this->fileHeader->file);
+			// Advance the file pointer, skipping exactly the size of the compressed data
+			$seekleft = $this->fileHeader->compressed;
+			while ($seekleft > 0)
+			{
+				// Ensure that we can seek past archive part boundaries
+				$curSize = @filesize($this->archiveList[$this->currentPartNumber]);
+				$curPos  = @ftell($this->fp);
+				$canSeek = $curSize - $curPos;
+				if ($canSeek > $seekleft)
+				{
+					$canSeek = $seekleft;
+				}
+				@fseek($this->fp, $canSeek, SEEK_CUR);
+				$seekleft -= $canSeek;
+				if ($seekleft)
+				{
+					$this->nextFile();
+				}
 			}
 
-			header('Content-Type: ' . AKEEBA_MIMETYPES[$b['extension']]);
-			header('Content-Length: ' . filesize($a));
-			readfile($a);
-			exit;
+			$this->currentPartOffset = @ftell($this->fp);
+			$this->runState          = AK_STATE_DONE;
+
+			return true;
+		}
+
+		// Remove the removePath, if any
+		$this->fileHeader->file = $this->removePath($this->fileHeader->file);
+
+		// Last chance to prepend a path to the filename
+		$archivePath = null;
+
+		if (!empty($this->addPath) && !$isDirRenamed)
+		{
+			$archivePath            = $this->fileHeader->file;
+			$this->fileHeader->file = $this->addPath . $this->fileHeader->file;
+		}
+
+		// Refuse to extract an entry which resolves outside the extraction root. We reject
+		// instead of rewriting the path: a silently corrected path hides a hostile archive,
+		// whereas a hard stop puts it in front of the person doing the restoration.
+		if (!$this->isPathInRoot($this->fileHeader->file, $archivePath))
+		{
+			debugMsg('Entry outside the extraction root: ' . $this->fileHeader->file);
+			$this->setError(AKText::sprintf('ERR_PATH_OUTSIDE_ROOT', $this->fileHeader->file));
+
+			return false;
+		}
+
+		// Get the translated path name
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+
+		if (!$this->mustSkip())
+		{
+			if ($this->fileHeader->type == 'file')
+			{
+				// Regular file; ask the postproc engine to process its filename
+				if ($restorePerms)
+				{
+					$this->fileHeader->realFile =
+						$this->postProcEngine->processFilename($this->fileHeader->file, $this->fileHeader->permissions);
+				}
+				else
+				{
+					$this->fileHeader->realFile = $this->postProcEngine->processFilename($this->fileHeader->file);
+				}
+			}
+			elseif ($this->fileHeader->type == 'dir')
+			{
+				$dir = $this->fileHeader->file;
+
+				// Directory; just create it
+				if ($restorePerms)
+				{
+					$this->postProcEngine->createDirRecursive($dir, $this->fileHeader->permissions);
+				}
+				else
+				{
+					$this->postProcEngine->createDirRecursive($dir, 0755);
+				}
+
+				$this->postProcEngine->processFilename(null);
+			}
+			else
+			{
+				// Symlink; do not post-process
+				$this->postProcEngine->processFilename(null);
+			}
+
+			$this->createDirectory();
+		}
+
+		// Header is read
+		$this->runState = AK_STATE_HEADER;
+
+		$this->dataReadLength = 0;
+
+		return true;
+	}
+
+	protected function heuristicFileHeaderLocator()
+	{
+		$ret     = false;
+		$fullEOF = false;
+
+		while (!$ret && !$fullEOF)
+		{
+			$this->currentPartOffset = @ftell($this->fp);
+
+			if ($this->isEOF(true))
+			{
+				$this->nextFile();
+			}
+
+			if ($this->isEOF(false))
+			{
+				$fullEOF = true;
+				continue;
+			}
+
+			// Read 512Kb
+			$chunk     = fread($this->fp, 524288);
+			$size_read = mb_strlen($chunk, '8bit');
+			//$pos = strpos($chunk, 'JPF');
+			$pos = mb_strpos($chunk, 'JPF', 0, '8bit');
+
+			if ($pos !== false)
+			{
+				// We found it!
+				$this->currentPartOffset += $pos + 3;
+				@fseek($this->fp, $this->currentPartOffset, SEEK_SET);
+				$ret = true;
+			}
+			else
+			{
+				// Not yet found :(
+				$this->currentPartOffset = @ftell($this->fp);
+			}
+		}
+
+		return $ret;
+	}
+
+	/**
+	 * Creates the directory this file points to
+	 */
+	protected function createDirectory()
+	{
+		if ($this->mustSkip())
+		{
+			return true;
+		}
+
+		// Do we need to create a directory?
+		if (empty($this->fileHeader->realFile))
+		{
+			$this->fileHeader->realFile = $this->fileHeader->file;
+		}
+
+		$lastSlash = strrpos($this->fileHeader->realFile, '/');
+		$dirName   = substr($this->fileHeader->realFile, 0, $lastSlash);
+		$perms     = $this->flagRestorePermissions ? $this->fileHeader->permissions : 0755;
+		$ignore    = AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($dirName);
+
+		if (($this->postProcEngine->createDirRecursive($dirName, $perms) == false) && (!$ignore))
+		{
+			$this->setError(AKText::sprintf('COULDNT_CREATE_DIR', $dirName));
+
+			return false;
+		}
+		else
+		{
+			return true;
 		}
 	}
+
+	/**
+	 * Concrete classes must use this method to process file data. It must set $runState to AK_STATE_DATAREAD when
+	 * it's finished processing the file data.
+	 *
+	 * @return bool True if processing the file data was successful, false if an error occurred
+	 */
+	protected function processFileData()
+	{
+		switch ($this->fileHeader->type)
+		{
+			case 'dir':
+				return $this->processTypeDir();
+				break;
+
+			case 'link':
+				return $this->processTypeLink();
+				break;
+
+			case 'file':
+				switch ($this->fileHeader->compression)
+				{
+					case 'none':
+						return $this->processTypeFileUncompressed();
+						break;
+
+					case 'gzip':
+					case 'bzip2':
+						return $this->processTypeFileCompressedSimple();
+						break;
+
+				}
+				break;
+
+			default:
+				debugMsg('Unknown file type ' . $this->fileHeader->type);
+				break;
+		}
+	}
+
+	/**
+	 * Process the file data of a directory entry
+	 *
+	 * @return bool
+	 */
+	private function processTypeDir()
+	{
+		// Directory entries in the JPA do not have file data, therefore we're done processing the entry
+		$this->runState = AK_STATE_DATAREAD;
+
+		return true;
+	}
+
+	/**
+	 * Process the file data of a link entry
+	 *
+	 * @return bool
+	 */
+	private function processTypeLink()
+	{
+		$readBytes   = 0;
+		$toReadBytes = 0;
+		$leftBytes   = $this->fileHeader->compressed;
+		$data        = '';
+
+		while ($leftBytes > 0)
+		{
+			$toReadBytes     = ($leftBytes > $this->chunkSize) ? $this->chunkSize : $leftBytes;
+			$mydata          = $this->fread($this->fp, $toReadBytes);
+			$reallyReadBytes = akstringlen($mydata);
+			$data            .= $mydata;
+			$leftBytes       -= $reallyReadBytes;
+
+			if ($reallyReadBytes < $toReadBytes)
+			{
+				// We read less than requested! Why? Did we hit local EOF?
+				if ($this->isEOF(true) && !$this->isEOF(false))
+				{
+					// Yeap. Let's go to the next file
+					$this->nextFile();
+				}
+				else
+				{
+					debugMsg('End of local file before reading all data with no more parts left. The archive is corrupt or truncated.');
+					// Nope. The archive is corrupt
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+			}
+		}
+
+		$filename = isset($this->fileHeader->realFile) ? $this->fileHeader->realFile : $this->fileHeader->file;
+
+		if (!$this->mustSkip())
+		{
+			// Try to remove an existing file or directory by the same name
+			if (file_exists($filename))
+			{
+				@unlink($filename);
+				@rmdir($filename);
+			}
+
+			// Remove any trailing slash
+			if (substr($filename, -1) == '/')
+			{
+				$filename = substr($filename, 0, -1);
+			}
+			// Create the symlink - only possible within PHP context. There's no support built in the FTP protocol, so no postproc use is possible here :(
+			@symlink($data, $filename);
+		}
+
+		$this->runState = AK_STATE_DATAREAD;
+
+		return true; // No matter if the link was created!
+	}
+
+	private function processTypeFileUncompressed()
+	{
+		// Uncompressed files are being processed in small chunks, to avoid timeouts
+		if (($this->dataReadLength == 0) && !$this->mustSkip())
+		{
+			// Before processing file data, ensure permissions are adequate
+			$this->setCorrectPermissions($this->fileHeader->file);
+
+			clearstatcache($this->fileHeader->file);
+		}
+
+		// Open the output file
+		if (!$this->mustSkip())
+		{
+			$ignore =
+				AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($this->fileHeader->file);
+
+			if ($this->dataReadLength == 0)
+			{
+				$outfp = @fopen($this->fileHeader->realFile, 'w');
+			}
+			else
+			{
+				$outfp = @fopen($this->fileHeader->realFile, 'a');
+			}
+
+			// Can we write to the file?
+			if (($outfp === false) && (!$ignore))
+			{
+				// An error occurred
+				debugMsg('Could not write to output file');
+				$this->setError(AKText::sprintf('COULDNT_WRITE_FILE', $this->fileHeader->realFile));
+
+				return false;
+			}
+		}
+
+		// Does the file have any data, at all?
+		if ($this->fileHeader->compressed == 0)
+		{
+			// No file data!
+			if (!$this->mustSkip() && is_resource($outfp))
+			{
+				@fclose($outfp);
+			}
+
+			$this->runState = AK_STATE_DATAREAD;
+
+			return true;
+		}
+
+		// Reference to the global timer
+		$timer = AKFactory::getTimer();
+
+		$toReadBytes = 0;
+		$leftBytes   = $this->fileHeader->compressed - $this->dataReadLength;
+
+		// Loop while there's data to read and enough time to do it
+		while (($leftBytes > 0) && ($timer->getTimeLeft() > 0))
+		{
+			$toReadBytes          = ($leftBytes > $this->chunkSize) ? $this->chunkSize : $leftBytes;
+			$data                 = $this->fread($this->fp, $toReadBytes);
+			$reallyReadBytes      = akstringlen($data);
+			$leftBytes            -= $reallyReadBytes;
+			$this->dataReadLength += $reallyReadBytes;
+
+			if ($reallyReadBytes < $toReadBytes)
+			{
+				// We read less than requested! Why? Did we hit local EOF?
+				if ($this->isEOF(true) && !$this->isEOF(false))
+				{
+					// Yeap. Let's go to the next file
+					$this->nextFile();
+				}
+				else
+				{
+					// Nope. The archive is corrupt
+					debugMsg('Not enough data in file. The archive is truncated or corrupt.');
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+			}
+
+			if (!$this->mustSkip())
+			{
+				if (is_resource($outfp))
+				{
+					@fwrite($outfp, $data);
+				}
+			}
+		}
+
+		// Close the file pointer
+		if (!$this->mustSkip())
+		{
+			if (is_resource($outfp))
+			{
+				@fclose($outfp);
+			}
+		}
+
+		// Was this a pre-timeout bail out?
+		if ($leftBytes > 0)
+		{
+			$this->runState = AK_STATE_DATA;
+		}
+		else
+		{
+			// Oh! We just finished!
+			$this->runState       = AK_STATE_DATAREAD;
+			$this->dataReadLength = 0;
+		}
+
+		return true;
+	}
+
+	private function processTypeFileCompressedSimple()
+	{
+		if (!$this->mustSkip())
+		{
+			// Before processing file data, ensure permissions are adequate
+			$this->setCorrectPermissions($this->fileHeader->file);
+
+			clearstatcache($this->fileHeader->file);
+
+			// Open the output file
+			$outfp = @fopen($this->fileHeader->realFile, 'w');
+
+			// Can we write to the file?
+			$ignore =
+				AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($this->fileHeader->file);
+
+			if (($outfp === false) && (!$ignore))
+			{
+				// An error occurred
+				debugMsg('Could not write to output file');
+				$this->setError(AKText::sprintf('COULDNT_WRITE_FILE', $this->fileHeader->realFile));
+
+				return false;
+			}
+		}
+
+		// Does the file have any data, at all?
+		if ($this->fileHeader->compressed == 0)
+		{
+			// No file data!
+			if (!$this->mustSkip())
+			{
+				if (is_resource($outfp))
+				{
+					@fclose($outfp);
+				}
+			}
+			$this->runState = AK_STATE_DATAREAD;
+
+			return true;
+		}
+
+		// Simple compressed files are processed as a whole; we can't do chunk processing
+		$zipData = $this->fread($this->fp, $this->fileHeader->compressed);
+		while (akstringlen($zipData) < $this->fileHeader->compressed)
+		{
+			// End of local file before reading all data, but have more archive parts?
+			if ($this->isEOF(true) && !$this->isEOF(false))
+			{
+				// Yeap. Read from the next file
+				$this->nextFile();
+				$bytes_left = $this->fileHeader->compressed - akstringlen($zipData);
+				$zipData    .= $this->fread($this->fp, $bytes_left);
+			}
+			else
+			{
+				debugMsg('End of local file before reading all data with no more parts left. The archive is corrupt or truncated.');
+				$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+				return false;
+			}
+		}
+
+		if ($this->fileHeader->compression == 'gzip')
+		{
+			$unzipData = gzinflate($zipData);
+		}
+		elseif ($this->fileHeader->compression == 'bzip2')
+		{
+			$unzipData = bzdecompress($zipData);
+		}
+		unset($zipData);
+
+		// Write to the file.
+		if (!$this->mustSkip() && is_resource($outfp))
+		{
+			@fwrite($outfp, $unzipData, $this->fileHeader->uncompressed);
+			@fclose($outfp);
+		}
+		unset($unzipData);
+
+		$this->runState = AK_STATE_DATAREAD;
+
+		return true;
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * ZIP archive extraction class
+ *
+ * Since the file data portion of ZIP and JPA are similarly structured (it's empty for dirs,
+ * linked node name for symlinks, dumped binary data for no compressions and dumped gzipped
+ * binary data for gzip compression) we just have to subclass AKUnarchiverJPA and change the
+ * header reading bits. Reusable code ;)
+ */
+class AKUnarchiverZIP extends AKUnarchiverJPA
+{
+	public $expectDataDescriptor = false;
+
+	protected function readArchiveHeader()
+	{
+		debugMsg('Preparing to read archive header');
+		// Initialize header data array
+		$this->archiveHeaderData = new stdClass();
+
+		// Open the first part
+		debugMsg('Opening the first part');
+		$this->nextFile();
+
+		// Fail for unreadable files
+		if ($this->fp === false)
+		{
+			debugMsg('The first part is not readable');
+
+			return false;
+		}
+
+		// Fuzzy check for the start of archive.
+		debugMsg('Fuzzy checking for archive signature');
+
+		$sigFound = $this->fuzzySignatureSearch([
+			pack('V', 0x08074b50), // Multi-part ZIP
+			pack('V', 0x30304b50), // Multi-part ZIP (alternate)
+			pack('V', 0x04034b50)  // Single file
+		], 4);
+
+		if (!$sigFound)
+		{
+			debugMsg('Cannot find a valid archive signature in the first 128Kb of the first part file');
+
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'zip', 'z'));
+
+			return false;
+		}
+
+		debugMsg(sprintf('File signature found, position %d', ftell($this->fp)));
+
+		// Read a possible multipart signature
+		$sigBinary  = fread($this->fp, 4);
+		$headerData = unpack('Vsig', $sigBinary);
+
+		// Roll back if it's not a multipart archive
+		if ($headerData['sig'] == 0x04034b50)
+		{
+			debugMsg('The archive is not multipart');
+			fseek($this->fp, -4, SEEK_CUR);
+		}
+		else
+		{
+			debugMsg('The archive is multipart');
+		}
+
+		$multiPartSigs = [
+			0x08074b50, // Multi-part ZIP
+			0x30304b50, // Multi-part ZIP (alternate)
+			0x04034b50  // Single file
+		];
+		if (!in_array($headerData['sig'], $multiPartSigs))
+		{
+			debugMsg('Invalid header signature ' . dechex($headerData['sig']));
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'zip', 'z'));
+
+			return false;
+		}
+
+		$this->currentPartOffset = @ftell($this->fp);
+		debugMsg('Current part offset after reading header: ' . $this->currentPartOffset);
+
+		$this->dataReadLength = 0;
+
+		return true;
+	}
+
+	/**
+	 * Concrete classes must use this method to read the file header
+	 *
+	 * @return bool True if reading the file was successful, false if an error occurred or we reached end of archive
+	 */
+	protected function readFileHeader()
+	{
+		// If the current part is over, proceed to the next part please
+		if ($this->isEOF(true))
+		{
+			debugMsg('Opening next archive part');
+			$gotNextFile = $this->nextFile();
+		}
+
+		$this->currentPartOffset = ftell($this->fp);
+
+		if ($this->expectDataDescriptor)
+		{
+			// The last file had bit 3 of the general purpose bit flag set. This means that we have a
+			// 12 byte data descriptor we need to skip. To make things worse, there might also be a 4
+			// byte optional data descriptor header (0x08074b50).
+			$junk = @fread($this->fp, 4);
+			$junk = unpack('Vsig', $junk);
+			if ($junk['sig'] == 0x08074b50)
+			{
+				// Yes, there was a signature
+				$junk = @fread($this->fp, 12);
+				debugMsg('Data descriptor (w/ header) skipped at ' . (ftell($this->fp) - 12));
+			}
+			else
+			{
+				// No, there was no signature, just read another 8 bytes
+				$junk = @fread($this->fp, 8);
+				debugMsg('Data descriptor (w/out header) skipped at ' . (ftell($this->fp) - 8));
+			}
+
+			// And check for EOF, too
+			if ($this->isEOF(true))
+			{
+				debugMsg('EOF before reading header');
+
+				$gotNextFile = $this->nextFile();
+			}
+		}
+
+		// Get and decode Local File Header
+		$headerBinary = fread($this->fp, 30);
+		$headerData   =
+			unpack('Vsig/C2ver/vbitflag/vcompmethod/vlastmodtime/vlastmoddate/Vcrc/Vcompsize/Vuncomp/vfnamelen/veflen', $headerBinary);
+
+		// Check signature
+		if (!($headerData['sig'] == 0x04034b50))
+		{
+			debugMsg('Not a file signature at ' . (ftell($this->fp) - 4));
+
+			// The signature is not the one used for files. Is this a central directory record (i.e. we're done)?
+			if ($headerData['sig'] == 0x02014b50)
+			{
+				debugMsg('EOCD signature at ' . (ftell($this->fp) - 4));
+				// End of ZIP file detected. We'll just skip to the end of file...
+				while ($this->nextFile())
+				{
+				};
+				@fseek($this->fp, 0, SEEK_END); // Go to EOF
+				return false;
+			}
+			else
+			{
+				if (isset($gotNextFile) && !$gotNextFile && $this->getState() !== 'postrun')
+				{
+					debugMsg(sprintf('Cannot open file %s for part #%d', $this->archiveList[$this->currentPartNumber] ?: '(unknown)', $this->currentPartNumber));
+
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_OFFSET_ZERO',
+						$this->archiveList[$this->currentPartNumber] ?: '(unknown)',
+						$this->currentPartNumber,
+						'zip',
+						'z'
+					));
+
+					return false;
+				}
+
+				if ($this->currentPartOffset === 0 && $this->currentPartNumber > 0)
+				{
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_MULTIPART',
+						$this->currentPartNumber,
+						$this->currentPartOffset,
+						'jpa',
+						'j'
+					));
+
+					return false;
+				}
+
+				debugMsg('Invalid signature ' . dechex($headerData['sig']) . ' at ' . ftell($this->fp));
+
+				if (count($this->archiveList) > 1)
+				{
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_MULTIPART',
+						$this->currentPartNumber,
+						$this->currentPartOffset,
+						'zip',
+						'z'
+					));
+
+					return false;
+				}
+
+				$this->setError(AKText::sprintf(
+					'INVALID_FILE_HEADER',
+					$this->currentPartNumber,
+					$this->currentPartOffset,
+					'zip',
+					'z'
+				));
+
+				return false;
+			}
+		}
+
+		// If bit 3 of the bitflag is set, expectDataDescriptor is true
+		$this->expectDataDescriptor = ($headerData['bitflag'] & 4) == 4;
+
+		$this->fileHeader            = new stdClass();
+		$this->fileHeader->timestamp = 0;
+
+		// Read the last modified data and time
+		$lastmodtime = $headerData['lastmodtime'];
+		$lastmoddate = $headerData['lastmoddate'];
+
+		if ($lastmoddate && $lastmodtime)
+		{
+			// ----- Extract time
+			$v_hour    = ($lastmodtime & 0xF800) >> 11;
+			$v_minute  = ($lastmodtime & 0x07E0) >> 5;
+			$v_seconde = ($lastmodtime & 0x001F) * 2;
+
+			// ----- Extract date
+			$v_year  = (($lastmoddate & 0xFE00) >> 9) + 1980;
+			$v_month = ($lastmoddate & 0x01E0) >> 5;
+			$v_day   = $lastmoddate & 0x001F;
+
+			// ----- Get UNIX date format
+			$this->fileHeader->timestamp = @mktime($v_hour, $v_minute, $v_seconde, $v_month, $v_day, $v_year);
+		}
+
+		$isBannedFile = false;
+
+		$this->fileHeader->compressed   = $headerData['compsize'];
+		$this->fileHeader->uncompressed = $headerData['uncomp'];
+		$nameFieldLength                = $headerData['fnamelen'];
+		$extraFieldLength               = $headerData['eflen'];
+
+		// Read filename field
+		$this->fileHeader->file = fread($this->fp, $nameFieldLength);
+
+		// Handle file renaming
+		$isRenamed = false;
+		if (is_array($this->renameFiles) && (count($this->renameFiles) > 0))
+		{
+			if (array_key_exists($this->fileHeader->file, $this->renameFiles))
+			{
+				$this->fileHeader->file = $this->renameFiles[$this->fileHeader->file];
+				$isRenamed              = true;
+			}
+		}
+
+		// Handle directory renaming
+		$isDirRenamed = false;
+		if (is_array($this->renameDirs) && (count($this->renameDirs) > 0))
+		{
+			if (array_key_exists(dirname($this->fileHeader->file), $this->renameDirs))
+			{
+				$file         =
+					rtrim($this->renameDirs[dirname($this->fileHeader->file)], '/') . '/' . basename($this->fileHeader->file);
+				$isRenamed    = true;
+				$isDirRenamed = true;
+			}
+		}
+
+		// Read extra field if present
+		if ($extraFieldLength > 0)
+		{
+			$extrafield = fread($this->fp, $extraFieldLength);
+		}
+
+		debugMsg('*' . ftell($this->fp) . ' IS START OF ' . $this->fileHeader->file . ' (' . $this->fileHeader->compressed . ' bytes)');
+
+
+		// Decide filetype -- Check for directories
+		$this->fileHeader->type = 'file';
+		if (strrpos($this->fileHeader->file, '/') == strlen($this->fileHeader->file) - 1)
+		{
+			$this->fileHeader->type = 'dir';
+		}
+		// Decide filetype -- Check for symbolic links
+		if (($headerData['ver1'] == 10) && ($headerData['ver2'] == 3))
+		{
+			$this->fileHeader->type = 'link';
+		}
+
+		switch ($headerData['compmethod'])
+		{
+			case 0:
+				$this->fileHeader->compression = 'none';
+				break;
+			case 8:
+				$this->fileHeader->compression = 'gzip';
+				break;
+		}
+
+		// Find hard-coded banned files
+		if ((basename($this->fileHeader->file) == ".") || (basename($this->fileHeader->file) == ".."))
+		{
+			$isBannedFile = true;
+		}
+
+		// Also try to find banned files passed in class configuration
+		if ((count($this->skipFiles) > 0) && (!$isRenamed))
+		{
+			if (in_array($this->fileHeader->file, $this->skipFiles))
+			{
+				$isBannedFile = true;
+			}
+		}
+
+		// If we have a banned file, let's skip it
+		if ($isBannedFile)
+		{
+			// Advance the file pointer, skipping exactly the size of the compressed data
+			$seekleft = $this->fileHeader->compressed;
+			while ($seekleft > 0)
+			{
+				// Ensure that we can seek past archive part boundaries
+				$curSize = @filesize($this->archiveList[$this->currentPartNumber]);
+				$curPos  = @ftell($this->fp);
+				$canSeek = $curSize - $curPos;
+				if ($canSeek > $seekleft)
+				{
+					$canSeek = $seekleft;
+				}
+				@fseek($this->fp, $canSeek, SEEK_CUR);
+				$seekleft -= $canSeek;
+				if ($seekleft)
+				{
+					$this->nextFile();
+				}
+			}
+
+			$this->currentPartOffset = @ftell($this->fp);
+			$this->runState          = AK_STATE_DONE;
+
+			return true;
+		}
+
+		// Remove the removePath, if any
+		$this->fileHeader->file = $this->removePath($this->fileHeader->file);
+
+		// Last chance to prepend a path to the filename
+		$archivePath = null;
+
+		if (!empty($this->addPath) && !$isDirRenamed)
+		{
+			$archivePath            = $this->fileHeader->file;
+			$this->fileHeader->file = $this->addPath . $this->fileHeader->file;
+		}
+
+		// Refuse to extract an entry which resolves outside the extraction root. We reject
+		// instead of rewriting the path: a silently corrected path hides a hostile archive,
+		// whereas a hard stop puts it in front of the person doing the restoration.
+		if (!$this->isPathInRoot($this->fileHeader->file, $archivePath))
+		{
+			debugMsg('Entry outside the extraction root: ' . $this->fileHeader->file);
+			$this->setError(AKText::sprintf('ERR_PATH_OUTSIDE_ROOT', $this->fileHeader->file));
+
+			return false;
+		}
+
+		// Get the translated path name
+		if (!$this->mustSkip())
+		{
+			if ($this->fileHeader->type == 'file')
+			{
+				$this->fileHeader->realFile = $this->postProcEngine->processFilename($this->fileHeader->file);
+			}
+			elseif ($this->fileHeader->type == 'dir')
+			{
+				$this->fileHeader->timestamp = 0;
+
+				$dir = $this->fileHeader->file;
+
+				$this->postProcEngine->createDirRecursive($dir, 0755);
+				$this->postProcEngine->processFilename(null);
+			}
+			else
+			{
+				// Symlink; do not post-process
+				$this->fileHeader->timestamp = 0;
+				$this->postProcEngine->processFilename(null);
+			}
+
+			$this->createDirectory();
+		}
+
+		// Header is read
+		$this->runState = AK_STATE_HEADER;
+
+		return true;
+	}
+
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * JPS archive extraction class
+ */
+class AKUnarchiverJPS extends AKUnarchiverJPA
+{
+	/**
+	 * Header data for the archive
+	 *
+	 * @var   array
+	 */
+	protected $archiveHeaderData = [];
+
+	/**
+	 * Plaintext password from which the encryption key will be derived with PBKDF2
+	 *
+	 * @var   string
+	 */
+	protected $password = '';
+
+	/**
+	 * Which hash algorithm should I use for key derivation with PBKDF2.
+	 *
+	 * @var   string
+	 */
+	private $pbkdf2Algorithm = 'sha1';
+
+	/**
+	 * How many iterations should I use for key derivation with PBKDF2
+	 *
+	 * @var   int
+	 */
+	private $pbkdf2Iterations = 1000;
+
+	/**
+	 * Should I use a static salt for key derivation with PBKDF2?
+	 *
+	 * @var   bool
+	 */
+	private $pbkdf2UseStaticSalt = 0;
+
+	/**
+	 * Static salt for key derivation with PBKDF2
+	 *
+	 * @var   string
+	 */
+	private $pbkdf2StaticSalt = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+	/**
+	 * How much compressed data I have read since the last file header read
+	 *
+	 * @var   int
+	 */
+	private $compressedSizeReadSinceLastFileHeader = 0;
+
+	public function __construct()
+	{
+		$this->password = AKFactory::get('kickstart.jps.password', '');
+	}
+
+	public function __wakeup()
+	{
+		parent::__wakeup();
+
+		// Make sure the decryption is all set up (required!)
+		AKEncryptionAES::setPbkdf2Algorithm($this->pbkdf2Algorithm);
+		AKEncryptionAES::setPbkdf2Iterations($this->pbkdf2Iterations);
+		AKEncryptionAES::setPbkdf2UseStaticSalt($this->pbkdf2UseStaticSalt);
+		AKEncryptionAES::setPbkdf2StaticSalt($this->pbkdf2StaticSalt);
+	}
+
+
+	protected function readArchiveHeader()
+	{
+		// Initialize header data array
+		$this->archiveHeaderData = new stdClass();
+
+		// Open the first part
+		$this->nextFile();
+
+		// Fail for unreadable files
+		if ($this->fp === false)
+		{
+			return false;
+		}
+
+		// Fuzzy check for the start of archive.
+		debugMsg('Fuzzy checking for archive signature');
+
+		$sigFound = $this->fuzzySignatureSearch([
+			'JPS'
+		], 3);
+
+		if (!$sigFound)
+		{
+			debugMsg('Cannot find a valid archive signature in the first 128Kb of the first part file');
+
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'jps', 'j'));
+
+			return false;
+		}
+
+		debugMsg(sprintf('File signature found, position %d', ftell($this->fp)));
+
+		// Read the signature
+		$sig = fread($this->fp, 3);
+
+		if ($sig != 'JPS')
+		{
+			// Not a JPS file
+			$this->setError(AKText::sprintf('ERR_INVALID_ARCHIVE_LONG', 'jps', 'j'));
+
+			return false;
+		}
+
+		// Read and parse the known portion of header data (5 bytes)
+		$bin_data    = fread($this->fp, 5);
+		$header_data = unpack('Cmajor/Cminor/cspanned/vextra', $bin_data);
+
+		// Is this a v2 archive?
+		$versionHumanReadable = $header_data['major'] . '.' . $header_data['minor'];
+		$isV2Archive = version_compare($versionHumanReadable, '2.0', 'ge');
+
+		// Load any remaining header data
+		$rest_length = $header_data['extra'];
+
+		if ($isV2Archive && $rest_length)
+		{
+			// V2 archives only have one kind of extra header
+			if (!$this->readKeyExpansionExtraHeader())
+			{
+				return false;
+			}
+		}
+		elseif ($rest_length > 0)
+		{
+			$junk = fread($this->fp, $rest_length);
+		}
+
+		// Temporary array with all the data we read
+		$temp = [
+			'signature' => $sig,
+			'major'     => $header_data['major'],
+			'minor'     => $header_data['minor'],
+			'spanned'   => $header_data['spanned']
+		];
+		// Array-to-object conversion
+		foreach ($temp as $key => $value)
+		{
+			$this->archiveHeaderData->{$key} = $value;
+		}
+
+		$this->currentPartOffset = @ftell($this->fp);
+
+		$this->dataReadLength = 0;
+
+		return true;
+	}
+
+	/**
+	 * Concrete classes must use this method to read the file header
+	 *
+	 * @return bool True if reading the file was successful, false if an error occurred or we reached end of archive
+	 */
+	protected function readFileHeader()
+	{
+		// If the current part is over, proceed to the next part please
+		if ($this->isEOF(true))
+		{
+			$this->nextFile();
+		}
+
+		$this->currentPartOffset = ftell($this->fp);
+
+		// Get and decode Entity Description Block
+		$signature = fread($this->fp, 3);
+
+		// Check for end-of-archive siganture
+		if ($signature == 'JPE')
+		{
+			$this->setState('postrun');
+
+			return true;
+		}
+
+		$this->fileHeader            = new stdClass();
+		$this->fileHeader->timestamp = 0;
+
+		// Check signature
+		if ($signature != 'JPF')
+		{
+			if ($this->isEOF(true))
+			{
+				// This file is finished; make sure it's the last one
+				$gotNextFile = $this->nextFile();
+
+				if (!$gotNextFile && $this->getState() !== 'postrun')
+				{
+					debugMsg(sprintf('Cannot open file %s for part #%d', $this->archiveList[$this->currentPartNumber] ?: '(unknown)', $this->currentPartNumber));
+
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_OFFSET_ZERO',
+						$this->archiveList[$this->currentPartNumber] ?: '(unknown)',
+						$this->currentPartNumber,
+						'jps',
+						'j'
+					));
+
+					return false;
+				}
+
+				if (!$this->isEOF(false))
+				{
+					$this->setError(AKText::sprintf('INVALID_FILE_HEADER', $this->currentPartNumber, $this->currentPartOffset));
+
+					return false;
+				}
+
+				// We're just finished
+				return false;
+			}
+			else
+			{
+				fseek($this->fp, -6, SEEK_CUR);
+				$signature = fread($this->fp, 3);
+				if ($signature == 'JPE')
+				{
+					return false;
+				}
+
+				if (count($this->archiveList) > 1)
+				{
+					$this->setError(AKText::sprintf(
+						'INVALID_FILE_HEADER_MULTIPART',
+						$this->currentPartNumber,
+						$this->currentPartOffset,
+						'jps',
+						'j'
+					));
+
+					return false;
+				}
+
+				$this->setError(AKText::sprintf(
+					'INVALID_FILE_HEADER',
+					$this->currentPartNumber,
+					$this->currentPartOffset,
+					'jps',
+					'j'
+				));
+
+				return false;
+			}
+		}
+
+		// This a JPS Entity Block. Process the header.
+
+		$isBannedFile = false;
+
+		// Make sure the decryption is all set up
+		AKEncryptionAES::setPbkdf2Algorithm($this->pbkdf2Algorithm);
+		AKEncryptionAES::setPbkdf2Iterations($this->pbkdf2Iterations);
+		AKEncryptionAES::setPbkdf2UseStaticSalt($this->pbkdf2UseStaticSalt);
+		AKEncryptionAES::setPbkdf2StaticSalt($this->pbkdf2StaticSalt);
+
+		// Read and decrypt the header
+		$edbhData = fread($this->fp, 4);
+		$edbh     = unpack('vencsize/vdecsize', $edbhData);
+		$bin_data = fread($this->fp, $edbh['encsize']);
+
+		// Add the header length to the data read
+		$this->compressedSizeReadSinceLastFileHeader += $edbh['encsize'] + 4;
+
+		// Decrypt and truncate
+		$bin_data = AKEncryptionAES::AESDecryptCBC($bin_data, $this->password);
+		$bin_data = substr($bin_data, 0, $edbh['decsize']);
+
+		// Read length of EDB and of the Entity Path Data
+		$length_array = unpack('vpathsize', substr($bin_data, 0, 2));
+		// Read the path data
+		$file = substr($bin_data, 2, $length_array['pathsize']);
+
+		// Handle file renaming
+		$isRenamed = false;
+		if (is_array($this->renameFiles) && (count($this->renameFiles) > 0))
+		{
+			if (array_key_exists($file, $this->renameFiles))
+			{
+				$file      = $this->renameFiles[$file];
+				$isRenamed = true;
+			}
+		}
+
+		// Handle directory renaming
+		$isDirRenamed = false;
+		if (is_array($this->renameDirs) && (count($this->renameDirs) > 0))
+		{
+			if (array_key_exists(dirname($file), $this->renameDirs))
+			{
+				$file         = rtrim($this->renameDirs[dirname($file)], '/') . '/' . basename($file);
+				$isRenamed    = true;
+				$isDirRenamed = true;
+			}
+		}
+
+		// Read and parse the known data portion
+		$bin_data    = substr($bin_data, 2 + $length_array['pathsize']);
+		$header_data = unpack('Ctype/Ccompression/Vuncompsize/Vperms/Vfilectime', $bin_data);
+
+		$this->fileHeader->timestamp = $header_data['filectime'];
+		$compressionType             = $header_data['compression'];
+
+		// Populate the return array
+		$this->fileHeader->file         = $file;
+		$this->fileHeader->uncompressed = $header_data['uncompsize'];
+		switch ($header_data['type'])
+		{
+			case 0:
+				$this->fileHeader->type = 'dir';
+				break;
+
+			case 1:
+				$this->fileHeader->type = 'file';
+				break;
+
+			case 2:
+				$this->fileHeader->type = 'link';
+				break;
+		}
+		switch ($compressionType)
+		{
+			case 0:
+				$this->fileHeader->compression = 'none';
+				break;
+			case 1:
+				$this->fileHeader->compression = 'gzip';
+				break;
+			case 2:
+				$this->fileHeader->compression = 'bzip2';
+				break;
+		}
+		$this->fileHeader->permissions = $header_data['perms'];
+
+		// Find hard-coded banned files
+		if ((basename($this->fileHeader->file) == ".") || (basename($this->fileHeader->file) == ".."))
+		{
+			$isBannedFile = true;
+		}
+
+		// Also try to find banned files passed in class configuration
+		if ((count($this->skipFiles) > 0) && (!$isRenamed))
+		{
+			if (in_array($this->fileHeader->file, $this->skipFiles))
+			{
+				$isBannedFile = true;
+			}
+		}
+
+		// If we have a banned file, let's skip it
+		if ($isBannedFile)
+		{
+			$done = false;
+			while (!$done)
+			{
+				// Read the Data Chunk Block header
+				$binMiniHead = fread($this->fp, 8);
+				if (in_array(substr($binMiniHead, 0, 3), ['JPF', 'JPE']))
+				{
+					// Not a Data Chunk Block header, I am done skipping the file
+					@fseek($this->fp, -8, SEEK_CUR); // Roll back the file pointer
+					$done = true; // Mark as done
+					continue; // Exit loop
+				}
+				else
+				{
+					// Skip forward by the amount of compressed data
+					$miniHead = unpack('Vencsize/Vdecsize', $binMiniHead);
+					@fseek($this->fp, $miniHead['encsize'], SEEK_CUR);
+					$this->compressedSizeReadSinceLastFileHeader += 8 + $miniHead['encsize'];
+				}
+			}
+
+			$this->currentPartOffset                     = @ftell($this->fp);
+			$this->runState                              = AK_STATE_DONE;
+			$this->fileHeader->compressed                = $this->compressedSizeReadSinceLastFileHeader;
+			$this->compressedSizeReadSinceLastFileHeader = 0;
+
+			return true;
+		}
+
+		// Remove the removePath, if any
+		$this->fileHeader->file = $this->removePath($this->fileHeader->file);
+
+		// Last chance to prepend a path to the filename
+		$archivePath = null;
+
+		if (!empty($this->addPath) && !$isDirRenamed)
+		{
+			$archivePath            = $this->fileHeader->file;
+			$this->fileHeader->file = $this->addPath . $this->fileHeader->file;
+		}
+
+		// Refuse to extract an entry which resolves outside the extraction root. We reject
+		// instead of rewriting the path: a silently corrected path hides a hostile archive,
+		// whereas a hard stop puts it in front of the person doing the restoration.
+		if (!$this->isPathInRoot($this->fileHeader->file, $archivePath))
+		{
+			debugMsg('Entry outside the extraction root: ' . $this->fileHeader->file);
+			$this->setError(AKText::sprintf('ERR_PATH_OUTSIDE_ROOT', $this->fileHeader->file));
+
+			return false;
+		}
+
+		// Get the translated path name
+		$restorePerms = AKFactory::get('kickstart.setup.restoreperms', false);
+
+		if (!$this->mustSkip())
+		{
+			if ($this->fileHeader->type == 'file')
+			{
+				// Regular file; ask the postproc engine to process its filename
+				if ($restorePerms)
+				{
+					$this->fileHeader->realFile =
+						$this->postProcEngine->processFilename($this->fileHeader->file, $this->fileHeader->permissions);
+				}
+				else
+				{
+					$this->fileHeader->realFile = $this->postProcEngine->processFilename($this->fileHeader->file);
+				}
+			}
+			elseif ($this->fileHeader->type == 'dir')
+			{
+				$dir                        = $this->fileHeader->file;
+				$this->fileHeader->realFile = $dir;
+
+				// Directory; just create it
+				if ($restorePerms)
+				{
+					$this->postProcEngine->createDirRecursive($this->fileHeader->file, $this->fileHeader->permissions);
+				}
+				else
+				{
+					$this->postProcEngine->createDirRecursive($this->fileHeader->file, 0755);
+				}
+
+				$this->postProcEngine->processFilename(null);
+			}
+			else
+			{
+				// Symlink; do not post-process
+				$this->postProcEngine->processFilename(null);
+			}
+
+			$this->createDirectory();
+		}
+
+
+		$this->fileHeader->compressed                = $this->compressedSizeReadSinceLastFileHeader;
+		$this->compressedSizeReadSinceLastFileHeader = 0;
+
+		// Header is read
+		$this->runState = AK_STATE_HEADER;
+
+		$this->dataReadLength = 0;
+
+		return true;
+	}
+
+	/**
+	 * Creates the directory this file points to
+	 */
+	protected function createDirectory()
+	{
+		if ($this->mustSkip())
+		{
+			return true;
+		}
+
+		// Do we need to create a directory?
+		$lastSlash = strrpos($this->fileHeader->realFile, '/');
+		$dirName   = substr($this->fileHeader->realFile, 0, $lastSlash);
+		$perms     = 0755;
+		$ignore    = AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($dirName);
+
+		if (($this->postProcEngine->createDirRecursive($dirName, $perms) == false) && (!$ignore))
+		{
+			$this->setError(AKText::sprintf('COULDNT_CREATE_DIR', $dirName));
+
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Concrete classes must use this method to process file data. It must set $runState to AK_STATE_DATAREAD when
+	 * it's finished processing the file data.
+	 *
+	 * @return bool True if processing the file data was successful, false if an error occurred
+	 */
+	protected function processFileData()
+	{
+		switch ($this->fileHeader->type)
+		{
+			case 'dir':
+				return $this->processTypeDir();
+				break;
+
+			case 'link':
+				return $this->processTypeLink();
+				break;
+
+			case 'file':
+				switch ($this->fileHeader->compression)
+				{
+					case 'none':
+						return $this->processTypeFileUncompressed();
+						break;
+
+					case 'gzip':
+					case 'bzip2':
+						return $this->processTypeFileCompressedSimple();
+						break;
+
+				}
+				break;
+		}
+	}
+
+	/**
+	 * Process the file data of a directory entry
+	 *
+	 * @return bool
+	 */
+	private function processTypeDir()
+	{
+		// Directory entries in the JPA do not have file data, therefore we're done processing the entry
+		$this->runState = AK_STATE_DATAREAD;
+
+		return true;
+	}
+
+	/**
+	 * Process the file data of a link entry
+	 *
+	 * @return bool
+	 */
+	private function processTypeLink()
+	{
+
+		// Does the file have any data, at all?
+		if ($this->fileHeader->uncompressed == 0)
+		{
+			// No file data!
+			$this->runState = AK_STATE_DATAREAD;
+
+			return true;
+		}
+
+		// Read the mini header
+		$binMiniHeader   = fread($this->fp, 8);
+		$reallyReadBytes = akstringlen($binMiniHeader);
+
+		if ($reallyReadBytes < 8)
+		{
+			// We read less than requested! Why? Did we hit local EOF?
+			if ($this->isEOF(true) && !$this->isEOF(false))
+			{
+				// Yeap. Let's go to the next file
+				$this->nextFile();
+				// Retry reading the header
+				$binMiniHeader   = fread($this->fp, 8);
+				$reallyReadBytes = akstringlen($binMiniHeader);
+				// Still not enough data? If so, the archive is corrupt or missing parts.
+				if ($reallyReadBytes < 8)
+				{
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+			}
+			else
+			{
+				// Nope. The archive is corrupt
+				$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+				return false;
+			}
+		}
+
+		// Read the encrypted data
+		$miniHeader      = unpack('Vencsize/Vdecsize', $binMiniHeader);
+		$toReadBytes     = $miniHeader['encsize'];
+		$data            = $this->fread($this->fp, $toReadBytes);
+		$reallyReadBytes = akstringlen($data);
+		$this->compressedSizeReadSinceLastFileHeader += 8 + $miniHeader['encsize'];
+
+		if ($reallyReadBytes < $toReadBytes)
+		{
+			// We read less than requested! Why? Did we hit local EOF?
+			if ($this->isEOF(true) && !$this->isEOF(false))
+			{
+				// Yeap. Let's go to the next file
+				$this->nextFile();
+				// Read the rest of the data
+				$toReadBytes -= $reallyReadBytes;
+				$restData        = $this->fread($this->fp, $toReadBytes);
+				$reallyReadBytes = akstringlen($data);
+				if ($reallyReadBytes < $toReadBytes)
+				{
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+				$data .= $restData;
+			}
+			else
+			{
+				// Nope. The archive is corrupt
+				$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+				return false;
+			}
+		}
+
+		// Decrypt the data
+		$data = AKEncryptionAES::AESDecryptCBC($data, $this->password);
+
+		// Is the length of the decrypted data less than expected?
+		$data_length = akstringlen($data);
+		if ($data_length < $miniHeader['decsize'])
+		{
+			$this->setError(AKText::_('ERR_INVALID_JPS_PASSWORD'));
+
+			return false;
+		}
+
+		// Trim the data
+		$data = substr($data, 0, $miniHeader['decsize']);
+
+		if (!$this->mustSkip())
+		{
+			// Try to remove an existing file or directory by the same name
+			if (file_exists($this->fileHeader->file))
+			{
+				@unlink($this->fileHeader->file);
+				@rmdir($this->fileHeader->file);
+			}
+			// Remove any trailing slash
+			if (substr($this->fileHeader->file, -1) == '/')
+			{
+				$this->fileHeader->file = substr($this->fileHeader->file, 0, -1);
+			}
+			// Create the symlink - only possible within PHP context. There's no support built in the FTP protocol, so no postproc use is possible here :(
+			@symlink($data, $this->fileHeader->file);
+		}
+
+		$this->runState = AK_STATE_DATAREAD;
+
+		return true; // No matter if the link was created!
+	}
+
+	private function processTypeFileUncompressed()
+	{
+		// Uncompressed files are being processed in small chunks, to avoid timeouts
+		if (($this->dataReadLength == 0) && !$this->mustSkip())
+		{
+			// Before processing file data, ensure permissions are adequate
+			$this->setCorrectPermissions($this->fileHeader->file);
+
+			clearstatcache($this->fileHeader->file);
+		}
+
+		// Open the output file
+		if (!$this->mustSkip())
+		{
+			$ignore =
+				AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($this->fileHeader->file);
+			if ($this->dataReadLength == 0)
+			{
+				$outfp = @fopen($this->fileHeader->realFile, 'w');
+			}
+			else
+			{
+				$outfp = @fopen($this->fileHeader->realFile, 'a');
+			}
+
+			// Can we write to the file?
+			if (($outfp === false) && (!$ignore))
+			{
+				// An error occurred
+				$this->setError(AKText::sprintf('COULDNT_WRITE_FILE', $this->fileHeader->realFile));
+
+				return false;
+			}
+		}
+
+		// Does the file have any data, at all?
+		if ($this->fileHeader->uncompressed == 0)
+		{
+			// No file data!
+			if (!$this->mustSkip() && is_resource($outfp))
+			{
+				@fclose($outfp);
+			}
+			$this->runState = AK_STATE_DATAREAD;
+
+			return true;
+		}
+
+		$this->setError('An uncompressed file was detected; this is not supported by this archive extraction utility');
+
+		return false;
+	}
+
+	private function processTypeFileCompressedSimple()
+	{
+		$timer = AKFactory::getTimer();
+
+		// Files are being processed in small chunks, to avoid timeouts
+		if (($this->dataReadLength == 0) && !$this->mustSkip())
+		{
+			// Before processing file data, ensure permissions are adequate
+			$this->setCorrectPermissions($this->fileHeader->file);
+
+			clearstatcache($this->fileHeader->file);
+		}
+
+		// Open the output file
+		if (!$this->mustSkip())
+		{
+			// Open the output file
+			$outfp = @fopen($this->fileHeader->realFile, 'w');
+
+			// Can we write to the file?
+			$ignore =
+				AKFactory::get('kickstart.setup.ignoreerrors', false) || $this->isIgnoredDirectory($this->fileHeader->file);
+			if (($outfp === false) && (!$ignore))
+			{
+				// An error occurred
+				$this->setError(AKText::sprintf('COULDNT_WRITE_FILE', $this->fileHeader->realFile));
+
+				return false;
+			}
+		}
+
+		// Does the file have any data, at all?
+		if ($this->fileHeader->uncompressed == 0)
+		{
+			// No file data!
+			if (!$this->mustSkip())
+			{
+				if (is_resource($outfp))
+				{
+					@fclose($outfp);
+				}
+			}
+			$this->runState = AK_STATE_DATAREAD;
+
+			return true;
+		}
+
+		$leftBytes = $this->fileHeader->uncompressed - $this->dataReadLength;
+
+		// Loop while there's data to write and enough time to do it
+		while (($leftBytes > 0) && ($timer->getTimeLeft() > 0))
+		{
+			// Read the mini header
+			$binMiniHeader   = fread($this->fp, 8);
+			$reallyReadBytes = akstringlen($binMiniHeader);
+			if ($reallyReadBytes < 8)
+			{
+				// We read less than requested! Why? Did we hit local EOF?
+				if ($this->isEOF(true) && !$this->isEOF(false))
+				{
+					// Yeap. Let's go to the next file
+					$this->nextFile();
+					// Retry reading the header
+					$binMiniHeader   = fread($this->fp, 8);
+					$reallyReadBytes = akstringlen($binMiniHeader);
+					// Still not enough data? If so, the archive is corrupt or missing parts.
+					if ($reallyReadBytes < 8)
+					{
+						$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+						return false;
+					}
+				}
+				else
+				{
+					// Nope. The archive is corrupt
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+			}
+
+			// Read the encrypted data
+			$miniHeader      = unpack('Vencsize/Vdecsize', $binMiniHeader);
+			$toReadBytes     = $miniHeader['encsize'];
+			$data            = $this->fread($this->fp, $toReadBytes);
+			$reallyReadBytes = akstringlen($data);
+
+			$this->compressedSizeReadSinceLastFileHeader += $miniHeader['encsize'] + 8;
+
+			if ($reallyReadBytes < $toReadBytes)
+			{
+				// We read less than requested! Why? Did we hit local EOF?
+				if ($this->isEOF(true) && !$this->isEOF(false))
+				{
+					// Yeap. Let's go to the next file
+					$this->nextFile();
+					// Read the rest of the data
+					$toReadBytes -= $reallyReadBytes;
+					$restData        = $this->fread($this->fp, $toReadBytes);
+					$reallyReadBytes = akstringlen($restData);
+					if ($reallyReadBytes < $toReadBytes)
+					{
+						$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+						return false;
+					}
+					if (akstringlen($data) == 0)
+					{
+						$data = $restData;
+					}
+					else
+					{
+						$data .= $restData;
+					}
+				}
+				else
+				{
+					// Nope. The archive is corrupt
+					$this->setError(AKText::_('ERR_CORRUPT_ARCHIVE'));
+
+					return false;
+				}
+			}
+
+			// Decrypt the data
+			$data = AKEncryptionAES::AESDecryptCBC($data, $this->password);
+
+			// Is the length of the decrypted data less than expected?
+			$data_length = akstringlen($data);
+			if ($data_length < $miniHeader['decsize'])
+			{
+				$this->setError(AKText::_('ERR_INVALID_JPS_PASSWORD'));
+
+				return false;
+			}
+
+			// Trim the data
+			$data = substr($data, 0, $miniHeader['decsize']);
+
+			// Decompress
+			$data    = gzinflate($data);
+			$unc_len = akstringlen($data);
+
+			// Write the decrypted data
+			if (!$this->mustSkip())
+			{
+				if (is_resource($outfp))
+				{
+					@fwrite($outfp, $data, akstringlen($data));
+				}
+			}
+
+			// Update the read length
+			$this->dataReadLength += $unc_len;
+			$leftBytes = $this->fileHeader->uncompressed - $this->dataReadLength;
+		}
+
+		// Close the file pointer
+		if (!$this->mustSkip())
+		{
+			if (is_resource($outfp))
+			{
+				@fclose($outfp);
+			}
+		}
+
+		// Was this a pre-timeout bail out?
+		if ($leftBytes > 0)
+		{
+			$this->runState = AK_STATE_DATA;
+		}
+		else
+		{
+			// Oh! We just finished!
+			$this->runState       = AK_STATE_DATAREAD;
+			$this->dataReadLength = 0;
+		}
+
+		return true;
+	}
+
+	private function readKeyExpansionExtraHeader()
+	{
+		$signature = fread($this->fp, 4);
+
+		if ($signature != "JH\x00\x01")
+		{
+			// Not a valid JPS file
+			$this->setError(AKText::_('ERR_NOT_A_JPS_FILE'));
+
+			return false;
+		}
+
+		$bin_data    = fread($this->fp, 8);
+		$header_data = unpack('vlength/Calgo/Viterations/CuseStaticSalt', $bin_data);
+
+		if ($header_data['length'] != 76)
+		{
+			// Not a valid JPS file
+			$this->setError(AKText::_('ERR_NOT_A_JPS_FILE'));
+
+			return false;
+		}
+
+		switch ($header_data['algo'])
+		{
+			case 0:
+				$algorithm = 'sha1';
+				break;
+
+			case 1:
+				$algorithm = 'sha256';
+				break;
+
+			case 2:
+				$algorithm = 'sha512';
+				break;
+
+			default:
+				// Not a valid JPS file
+				$this->setError(AKText::_('ERR_NOT_A_JPS_FILE'));
+
+				return false;
+				break;
+		}
+
+		$this->pbkdf2Algorithm     = $algorithm;
+		$this->pbkdf2Iterations    = $header_data['iterations'];
+		$this->pbkdf2UseStaticSalt = $header_data['useStaticSalt'];
+		$this->pbkdf2StaticSalt    = fread($this->fp, 64);
+
+		return true;
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Timer class
+ */
+class AKCoreTimer extends AKAbstractObject
+{
+	/** @var int Maximum execution time allowance per step */
+	private $max_exec_time = null;
+
+	/** @var int Timestamp of execution start */
+	private $start_time = null;
+
+	/**
+	 * Public constructor, creates the timer object and calculates the execution time limits
+	 *
+	 * @return  void
+	 */
+	public function __construct()
+	{
+		// Initialize start time
+		$this->start_time = $this->microtime_float();
+
+		// Get configured max time per step and bias
+		$config_max_exec_time = AKFactory::get('kickstart.tuning.max_exec_time', 14);
+		$bias                 = AKFactory::get('kickstart.tuning.run_time_bias', 75) / 100;
+
+		// Get PHP's maximum execution time (our upper limit)
+		if (@function_exists('ini_get'))
+		{
+			$php_max_exec_time = @ini_get("maximum_execution_time");
+			if ((!is_numeric($php_max_exec_time)) || ($php_max_exec_time == 0))
+			{
+				// If we have no time limit, set a hard limit of about 10 seconds
+				// (safe for Apache and IIS timeouts, verbose enough for users)
+				$php_max_exec_time = 14;
+			}
+		}
+		else
+		{
+			// If ini_get is not available, use a rough default
+			$php_max_exec_time = 14;
+		}
+
+		// Apply an arbitrary correction to counter CMS load time
+		$php_max_exec_time--;
+
+		// Apply bias
+		$php_max_exec_time    = $php_max_exec_time * $bias;
+		$config_max_exec_time = $config_max_exec_time * $bias;
+
+		// Use the most appropriate time limit value
+		if ($config_max_exec_time > $php_max_exec_time)
+		{
+			$this->max_exec_time = $php_max_exec_time;
+		}
+		else
+		{
+			$this->max_exec_time = $config_max_exec_time;
+		}
+	}
+
+	/**
+	 * Returns the current timestampt in decimal seconds
+	 */
+	private function microtime_float()
+	{
+		list($usec, $sec) = explode(" ", microtime());
+
+		return ((float) $usec + (float) $sec);
+	}
+
+	/**
+	 * Wake-up function to reset internal timer when we get unserialized
+	 */
+	public function __wakeup()
+	{
+		// Re-initialize start time on wake-up
+		$this->start_time = $this->microtime_float();
+	}
+
+	/**
+	 * Gets the number of seconds left, before we hit the "must break" threshold
+	 *
+	 * @return float
+	 */
+	public function getTimeLeft()
+	{
+		return $this->max_exec_time - $this->getRunningTime();
+	}
+
+	/**
+	 * Gets the time elapsed since object creation/unserialization, effectively how
+	 * long Akeeba Engine has been processing data
+	 *
+	 * @return float
+	 */
+	public function getRunningTime()
+	{
+		return $this->microtime_float() - $this->start_time;
+	}
+
+	/**
+	 * Enforce the minimum execution time
+	 */
+	public function enforce_min_exec_time()
+	{
+		// Try to get a sane value for PHP's maximum_execution_time INI parameter
+		if (@function_exists('ini_get'))
+		{
+			$php_max_exec = @ini_get("maximum_execution_time");
+		}
+		else
+		{
+			$php_max_exec = 10;
+		}
+		if (($php_max_exec == "") || ($php_max_exec == 0))
+		{
+			$php_max_exec = 10;
+		}
+		// Decrease $php_max_exec time by 500 msec we need (approx.) to tear down
+		// the application, as well as another 500msec added for rounding
+		// error purposes. Also make sure this is never gonna be less than 0.
+		$php_max_exec = max($php_max_exec * 1000 - 1000, 0);
+
+		// Get the "minimum execution time per step" Akeeba Backup configuration variable
+		$minexectime = AKFactory::get('kickstart.tuning.min_exec_time', 0);
+		if (!is_numeric($minexectime))
+		{
+			$minexectime = 0;
+		}
+
+		// Make sure we are not over PHP's time limit!
+		if ($minexectime > $php_max_exec)
+		{
+			$minexectime = $php_max_exec;
+		}
+
+		// Get current running time
+		$elapsed_time = $this->getRunningTime() * 1000;
+		$minexectime = 1000.0 * $minexectime;
+
+		// Only run a sleep delay if we haven't reached the minexectime execution time
+		if (($minexectime > $elapsed_time) && ($elapsed_time > 0))
+		{
+			$sleep_msec = (int)($minexectime - $elapsed_time);
+
+			if (function_exists('usleep'))
+			{
+				usleep(1000 * $sleep_msec);
+			}
+			elseif (function_exists('time_nanosleep'))
+			{
+				$sleep_sec  = floor($sleep_msec / 1000);
+				$sleep_nsec = 1000000 * ($sleep_msec - ($sleep_sec * 1000));
+				time_nanosleep($sleep_sec, $sleep_nsec);
+			}
+			elseif (function_exists('time_sleep_until'))
+			{
+				$until_timestamp = time() + $sleep_msec / 1000;
+				time_sleep_until($until_timestamp);
+			}
+			elseif (function_exists('sleep'))
+			{
+				$sleep_sec = ceil($sleep_msec / 1000);
+				sleep($sleep_sec);
+			}
+		}
+	}
+
+	/**
+	 * Reset the timer. It should only be used in CLI mode!
+	 */
+	public function resetTime()
+	{
+		$this->start_time = $this->microtime_float();
+	}
+
+	/**
+	 * @param int $max_exec_time
+	 */
+	public function setMaxExecTime($max_exec_time)
+	{
+		$this->max_exec_time = $max_exec_time;
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2024-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * PHP 8.4+ workaround for standalone MD5 and SHA-1 functions.
+ *
+ * PHP 8.4 deprecates the standalone md5(), md5_file(), sha1(), and sha1_file() functions. This trait creates shims
+ * which use the hash() and hash_file() functions instead where available.
+ *
+ * IMPORTANT! PHP 7.4 made the ext/hash extension mandatory. These shims are here only as a backwards compatibility aid.
+ * Eventually, we need to remove them, replacing their use by the direct use of hash() and hash_file().
+ *
+ * @deprecated 9.0
+ */
+abstract class AKUtilsHash
+{
+	/**
+	 * @deprecated 9.0 Use hash() instead
+	 */
+	public static function md5($string, $binary = false)
+	{
+		static $shouldUseHash = null;
+
+		if ($shouldUseHash === null)
+		{
+			$shouldUseHash = function_exists('hash')
+			                 && function_exists('hash_algos')
+			                 && in_array('md5', hash_algos());
+		}
+
+		return $shouldUseHash ? hash('md5', $string, $binary) : md5($string, $binary);
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+
+class AKUtilsHtaccess extends AKAbstractObject
+{
+	/**
+	 * Extract the PHP handler configuration from a .htaccess file.
+	 *
+	 * This method supports AddHandler lines and SetHandler blocks.
+	 *
+	 * @param   string  $htaccess
+	 *
+	 * @return  string|null  NULL when not found
+	 */
+	public static function extractHandler($htaccess)
+	{
+		// Normalize the .htaccess
+		$htaccess = self::normalizeHtaccess($htaccess);
+
+		// Look for SetHandler and AddHandler in Files and FilesMatch containers
+		foreach (['Files', 'FilesMatch'] as $container)
+		{
+			$result = self::extractContainer($container, $htaccess);
+
+			if (!is_null($result))
+			{
+				return $result;
+			}
+		}
+
+		// Fallback: extract an AddHandler line
+		$found = preg_match('#^AddHandler\s?.*\.php.*$#mi', $htaccess, $matches);
+
+		if ($found >= 1)
+		{
+			return $matches[0];
+		}
+
+		return null;
+	}
+
+	/**
+	 * Extracts a Files or FilesMatch container with an AddHandler or SetHandler line
+	 *
+	 * @param   string  $container  "Files" or "FilesMatch"
+	 * @param   string  $htaccess   The .htaccess file content
+	 *
+	 * @return  string|null  NULL when not found
+	 */
+	protected static function extractContainer($container, $htaccess)
+	{
+		// Try to find the opening container tag e.g. <Files....>
+		$pattern = sprintf('#<%s\s*.*\.php.*>#m', $container);
+		$found   = preg_match($pattern, $htaccess, $matches, PREG_OFFSET_CAPTURE);
+
+		if (!$found)
+		{
+			return null;
+		}
+
+		// Get the rest of the .htaccess sample
+		$openContainer = $matches[0][0];
+		$htaccess      = trim(substr($htaccess, $matches[0][1] + strlen($matches[0][0])));
+
+		// Try to find the closing container tag
+		$pattern = sprintf('#</%s\s*>#m', $container);
+		$found   = preg_match($pattern, $htaccess, $matches, PREG_OFFSET_CAPTURE);
+
+		if (!$found)
+		{
+			return null;
+		}
+
+		// Get the rest of the .htaccess sample
+		$htaccess       = trim(substr($htaccess, 0, $matches[$found - 1][1]));
+		$closeContainer = $matches[$found - 1][0];
+
+		if (empty($htaccess))
+		{
+			return null;
+		}
+
+		// Now we'll explode remaining lines and find the first SetHandler or AddHandler line
+		$lines = array_map('trim', explode("\n", $htaccess));
+		$lines = array_filter($lines, function ($line) {
+			return preg_match('#(Add|Set)Handler\s?#i', $line) >= 1;
+		});
+
+		if (empty($lines))
+		{
+			return null;
+		}
+
+		return $openContainer . "\n" . array_shift($lines) . "\n" . $closeContainer;
+	}
+
+	/**
+	 * Normalize the .htaccess file content, making it suitable for handler extraction
+	 *
+	 * @param   string  $htaccess  The original file
+	 *
+	 * @return  string  The normalized file
+	 */
+	private static function normalizeHtaccess($htaccess)
+	{
+		// Convert all newlines into UNIX style
+		$htaccess = str_replace("\r\n", "\n", $htaccess);
+		$htaccess = str_replace("\r", "\n", $htaccess);
+
+		// Return only non-comment, non-empty lines
+		$isNonEmptyNonComment = function ($line) {
+			$line = trim($line);
+
+			return !empty($line) && (substr($line, 0, 1) !== '#');
+		};
+
+		$lines = array_map('trim', explode("\n", $htaccess));
+
+		return implode("\n", array_filter($lines, $isNonEmptyNonComment));
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * A filesystem scanner which uses opendir()
+ */
+class AKUtilsLister extends AKAbstractObject
+{
+	public function &getFiles($folder, $pattern = '*')
+	{
+		// Initialize variables
+		$arr   = [];
+		$false = false;
+
+		if (!is_dir($folder))
+		{
+			return $false;
+		}
+
+		$handle = @opendir($folder);
+		// If directory is not accessible, just return FALSE
+		if ($handle === false)
+		{
+			$this->setWarning('Unreadable directory ' . $folder);
+
+			return $false;
+		}
+
+		while (($file = @readdir($handle)) !== false)
+		{
+			if (!fnmatch($pattern, $file))
+			{
+				continue;
+			}
+
+			if (($file != '.') && ($file != '..'))
+			{
+				$ds    =
+					($folder == '') || ($folder == '/') || (@substr($folder, -1) == '/') || (@substr($folder, -1) == DIRECTORY_SEPARATOR) ?
+						'' : DIRECTORY_SEPARATOR;
+				$dir   = $folder . $ds . $file;
+				$isDir = is_dir($dir);
+				if (!$isDir)
+				{
+					$arr[] = $dir;
+				}
+			}
+		}
+		@closedir($handle);
+
+		return $arr;
+	}
+
+	public function &getFolders($folder, $pattern = '*')
+	{
+		// Initialize variables
+		$arr   = [];
+		$false = false;
+
+		if (!is_dir($folder))
+		{
+			return $false;
+		}
+
+		$handle = @opendir($folder);
+		// If directory is not accessible, just return FALSE
+		if ($handle === false)
+		{
+			$this->setWarning('Unreadable directory ' . $folder);
+
+			return $false;
+		}
+
+		while (($file = @readdir($handle)) !== false)
+		{
+			if (!fnmatch($pattern, $file))
+			{
+				continue;
+			}
+
+			if (($file != '.') && ($file != '..'))
+			{
+				$ds    =
+					($folder == '') || ($folder == '/') || (@substr($folder, -1) == '/') || (@substr($folder, -1) == DIRECTORY_SEPARATOR) ?
+						'' : DIRECTORY_SEPARATOR;
+				$dir   = $folder . $ds . $file;
+				$isDir = is_dir($dir);
+				if ($isDir)
+				{
+					$arr[] = $dir;
+				}
+			}
+		}
+		@closedir($handle);
+
+		return $arr;
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * A filesystem zapper - removes all files and folders under a root
+ */
+class AKUtilsZapper extends AKAbstractPart
+{
+	/** @var array Directories left to be deleted */
+	private $directory_list;
+
+	/** @var array Files left to be deleted */
+	private $file_list;
+
+	/**
+	 * Have we finished scanning all subdirectories of the current directory?
+	 *
+	 * @var   boolean
+	 */
+	private $done_subdir_scanning = false;
+
+	/**
+	 * Have we finished scanning all files of the current directory?
+	 *
+	 * @var   boolean
+	 */
+	private $done_file_scanning = true;
+
+	/**
+	 * Is the current directory completely excluded?
+	 *
+	 * @var boolean
+	 */
+	private $excluded_folder = false;
+
+	/** @var   integer  How many files have been processed in the current step */
+	private $processed_files_counter;
+
+	/** @var   string  Current directory being scanned */
+	private $current_directory;
+
+	/** @var   string  Current root directory being processed */
+	private $root = '';
+
+	/** @var   integer  Total files to process */
+	private $total_files = 0;
+
+	/** @var   integer  Total files already processed */
+	private $done_files = 0;
+
+	/** @var   integer  Total folders to process */
+	private $total_folders = 0;
+
+	/** @var   integer  Total folders already processed */
+	private $done_folders = 0;
+
+	/** @var array Absolute filesystem patterns to never delete (e.g. /var/www/html/*.jpa) */
+	private $excluded = [];
+
+	/** @var bool Are we in a dry-run? */
+	private $dryRun = false;
+
+	/**
+	 * Implements the _prepare() abstract method
+	 *
+	 * Configuration parameters:
+	 *
+	 * root      The root under which we are going to be deleting files
+	 * excluded  Absolute filesystem patterns to never delete (e.g. /var/www/html/*.jpa)
+	 *
+	 * @return  void
+	 */
+	protected function _prepare()
+	{
+		debugMsg(self::class . " :: Starting _prepare()");
+
+		$defaultExcluded = $this->getDefaultExclusions();
+
+		$parameters = array_merge([
+			'root'     => rtrim(AKFactory::get('kickstart.setup.destdir'), '/' . DIRECTORY_SEPARATOR),
+			'excluded' => $defaultExcluded,
+            'dryRun'   => AKFactory::get('kickstart.setup.dryrun', false)
+		], $this->_parametersArray);
+
+		$this->root                 = $parameters['root'];
+		$this->excluded             = $parameters['excluded'];
+		$this->directory_list[]     = $this->root;
+		$this->done_subdir_scanning = true;
+		$this->done_file_scanning   = true;
+		$this->total_files          = 0;
+		$this->done_files           = 0;
+		$this->total_folders        = 0;
+		$this->done_folders         = 0;
+		$this->dryRun               = $parameters['dryRun'];
+
+		if (empty($this->root))
+		{
+			$error = "The folder to delete was not specified.";
+
+			debugMsg(self::class . " :: " . $error);
+			$this->setError($error);
+
+			return;
+		}
+
+		if (!is_dir($this->root))
+		{
+			$error = sprintf("Folder %s does not exist", $this->root);
+
+			debugMsg(self::class . " :: " . $error);
+			$this->setError($error);
+
+			return;
+		}
+
+		$this->setState('prepared');
+
+		debugMsg(self::class . " :: prepared");
+	}
+
+	protected function _run()
+	{
+		if ($this->getState() == 'postrun')
+		{
+			debugMsg(self::class . " :: Already finished");
+			$this->setStep("-");
+			$this->setSubstep("");
+
+			return true;
+		}
+
+		// If I'm done scanning files and subdirectories and there are no more files to pack get the next
+		// directory. This block is triggered in the first step in a new root.
+		if (empty($this->file_list) && $this->done_subdir_scanning && $this->done_file_scanning)
+		{
+			$this->progressMarkFolderDone();
+
+			if (!$this->getNextDirectory())
+			{
+			    $this->setState('postrun');
+				return true;
+			}
+		}
+
+		// If I'm not done scanning for files and the file list is empty then scan for more files
+		if (!$this->done_file_scanning && empty($this->file_list))
+		{
+			$this->scanFiles();
+		}
+		// If I have files left, delete them
+		elseif (!empty($this->file_list))
+		{
+			$this->delete_files();
+		}
+		// If I'm not done scanning subdirectories, go ahead and scan some more of them
+		elseif (!$this->done_subdir_scanning)
+		{
+			$this->scanSubdirs();
+		}
+
+		// Do I have an error?
+		if ($this->getError())
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Implements the _finalize() abstract method
+	 *
+	 */
+	protected function _finalize()
+	{
+		// No finalization is required
+		$this->setState('finished');
+	}
+
+	// ============================================================================================
+	// PRIVATE METHODS
+	// ============================================================================================
+
+	/**
+	 * Gets the next directory to scan from the stack. It also applies folder
+	 * filters (directory exclusion, subdirectory exclusion, file exclusion),
+	 * updating the operation toggle properties of the class.
+	 *
+	 * @return   boolean  True if we found a directory, false if the directory
+	 *                    stack is empty. It also returns true if the folder is
+	 *                    filtered (we are told to skip it)
+	 */
+	private function getNextDirectory()
+	{
+		// Reset the file / folder scanning positions
+		$this->done_file_scanning   = false;
+		$this->done_subdir_scanning = false;
+		$this->excluded_folder      = false;
+
+		if (count($this->directory_list) == 0)
+		{
+			// No directories left to scan
+			return false;
+		}
+
+		// Get and remove the last entry from the $directory_list array
+		$this->current_directory = array_pop($this->directory_list);
+		$this->setStep($this->current_directory);
+		$this->processed_files_counter = 0;
+
+		// Apply directory exclusion filters
+		if ($this->isFiltered($this->current_directory))
+		{
+			debugMsg("Skipping directory " . $this->current_directory);
+			$this->done_subdir_scanning = true;
+			$this->done_file_scanning   = true;
+			$this->excluded_folder      = true;
+
+			return true;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Try to delete some files from the $file_list
+	 *
+	 * @return   boolean   True if there were files deleted , false otherwise
+	 *                     (empty filelist or fatal error)
+	 */
+	protected function delete_files()
+	{
+		// Get a reference to the archiver and the timer classes
+		$timer = AKFactory::getTimer();
+
+		// Normal file removal loop; we keep on processing the file list, removing files as we go.
+		if (count($this->file_list) == 0)
+		{
+			// No files left to pack. Return true and let the engine loop
+			$this->progressMarkFolderDone();
+
+			return true;
+		}
+
+		debugMsg("Deleting files");
+
+		$numberOfFiles = 0;
+		$postProc = AKFactory::getPostProc();
+
+		while ((count($this->file_list) > 0))
+		{
+			$file = @array_shift($this->file_list);
+
+			$numberOfFiles++;
+
+			// Remove the file
+            $this->setSubstep($file);
+            $this->notify((object) [
+                'type' => 'deleteFile',
+                'file' => $file
+            ]);
+
+            if (!$this->dryRun)
+            {
+                $postProc->unlink($file);
+	            clearFileInOPCache($file);
+            }
+
+			// Mark a done file
+			$this->progressMarkFileDone();
+
+			if ($this->getError())
+			{
+				return false;
+			}
+
+			// I am running out of time.
+			if ($timer->getTimeLeft() <= 0)
+			{
+				return true;
+			}
+		}
+
+		// True if we have more files, false if we're done packing
+		return (count($this->file_list) > 0);
+	}
+
+	protected function progressAddFile()
+	{
+		$this->total_files++;
+	}
+
+	protected function progressMarkFileDone()
+	{
+		$this->done_files++;
+	}
+
+	protected function progressAddFolder()
+	{
+		$this->total_folders++;
+	}
+
+	protected function progressMarkFolderDone()
+	{
+        debugMsg("Deleting directory " . $this->current_directory);
+
+        $this->setSubstep($this->current_directory);
+        $this->notify((object) [
+            'type' => 'deleteFolder',
+            'file' => $this->current_directory
+        ]);
+
+        if (!$this->dryRun)
+        {
+            /**
+             * The scanner goes from shallow to deep directory. However this means that when it scans
+             * <root>/foo/bar/baz/bat
+             * it will only be able to remove the 'bat' directory, thus leaving foo/bar/baz on the disk. The following
+             * method will check if the directory is a subdirectory of the site root and work its way up the tree until
+             * it finds the site root. Therefore it will end up deleting the parent folders as well.
+             */
+            $this->deleteParentFolders($this->current_directory);
+        }
+	}
+
+	/**
+	 * Returns the site root, the translated site root and the translated current directory
+	 *
+	 * @return array
+	 */
+	protected function getCleanDirectoryComponents()
+	{
+		$root            = $this->root;
+		$translated_root = $root;
+		$dir             = TrimTrailingSlash($this->current_directory);
+
+		if (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN')
+		{
+			$translated_root = TranslateWinPath($translated_root);
+			$dir             = TranslateWinPath($dir);
+		}
+
+		if (substr($dir, 0, strlen($translated_root)) == $translated_root)
+		{
+			$dir = substr($dir, strlen($translated_root));
+		}
+		elseif (in_array(substr($translated_root, -1), ['/', '\\']))
+		{
+			$new_translated_root = rtrim($translated_root, '/\\');
+
+			if (substr($dir, 0, strlen($new_translated_root)) == $new_translated_root)
+			{
+				$dir = substr($dir, strlen($new_translated_root));
+			}
+		}
+
+		if (substr($dir, 0, 1) == '/')
+		{
+			$dir = substr($dir, 1);
+		}
+
+		return [$root, $translated_root, $dir];
+	}
+
+	/**
+	 * Steps the subdirectory scanning of the current directory
+	 *
+	 * @return  boolean  True on success, false on fatal error
+	 */
+	protected function scanSubdirs()
+	{
+		$lister = new AKUtilsLister();
+
+		[$root, $translated_root, $dir] = $this->getCleanDirectoryComponents();
+
+		debugMsg("Scanning directories of " . $this->current_directory);
+
+		// Get subdirectories
+		$subdirectories = $lister->getFolders($this->current_directory);
+
+		// Error propagation
+		$this->propagateFromObject($lister);
+
+		// Error control
+		if ($this->getError())
+		{
+			return false;
+		}
+
+		// Start adding the subdirectories
+		if (!empty($subdirectories) && is_array($subdirectories))
+		{
+			// Treat symlinks to directories as simple symlink files
+			foreach ($subdirectories as $subdirectory)
+			{
+				if (is_link($subdirectory))
+				{
+					// Symlink detected; apply directory filters to it
+					if (empty($dir))
+					{
+						$dirSlash = $dir;
+					}
+					else
+					{
+						$dirSlash = $dir . '/';
+					}
+
+					$check = $dirSlash . basename($subdirectory);
+					debugMsg("Directory symlink detected: $check");
+
+					if (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN')
+					{
+						$check = TranslateWinPath($check);
+					}
+
+					$check = $translated_root . '/' . $check;
+
+					// Check for excluded symlinks
+					if ($this->isFiltered($check))
+					{
+						debugMsg("Skipping directory symlink " . $check);
+
+						continue;
+					}
+
+					debugMsg('Adding folder symlink: ' . $check);
+
+					$this->file_list[] = $subdirectory;
+					$this->progressAddFile();
+				}
+
+				$this->directory_list[] = $subdirectory;
+				$this->progressAddFolder();
+			}
+		}
+
+		$this->done_subdir_scanning = true;
+
+		return true;
+	}
+
+	/**
+	 * Steps the files scanning of the current directory
+	 *
+	 * @return  boolean  True on success, false on fatal error
+	 */
+	protected function scanFiles()
+	{
+		$lister = new AKUtilsLister();
+
+		[$root, $translated_root, $dir] = $this->getCleanDirectoryComponents();
+
+		debugMsg("Scanning files of " . $this->current_directory);
+		$this->processed_files_counter = 0;
+
+		// Get file listing
+		$fileList = $lister->getFiles($this->current_directory);
+
+		// Error propagation
+		$this->propagateFromObject($lister);
+
+		// Error control
+		if ($this->getError())
+		{
+			return false;
+		}
+
+		// Do I have an unreadable directory?
+		if (($fileList === false))
+		{
+			$this->setWarning('Unreadable directory ' . $this->current_directory);
+
+			$this->done_file_scanning = true;
+
+			return true;
+		}
+
+		// Directory was readable, process the file list
+		if (is_array($fileList) && !empty($fileList))
+		{
+			// Add required trailing slash to $dir
+			if (!empty($dir))
+			{
+				$dir .= '/';
+			}
+
+			// Scan all directory entries
+			foreach ($fileList as $fileName)
+			{
+				$check = $dir . basename($fileName);
+
+				if (strtoupper(substr(PHP_OS, 0, 3)) == 'WIN')
+				{
+					$check = TranslateWinPath($check);
+				}
+
+				$check        = $translated_root . '/' . $check;
+				$skipThisFile = $this->isFiltered($check);
+
+				if ($skipThisFile)
+				{
+					debugMsg("Skipping file $fileName");
+
+					continue;
+				}
+
+				$this->file_list[] = $fileName;
+				$this->processed_files_counter++;
+				$this->progressAddFile();
+			}
+		}
+
+		$this->done_file_scanning = true;
+
+		return true;
+	}
+
+	/**
+	 * Is a file or folder filtered (protected from deletion)
+	 *
+	 * @param   string  $fileOrFolder
+	 *
+	 * @return  bool
+	 */
+	private function isFiltered($fileOrFolder)
+	{
+		foreach ($this->excluded as $pattern)
+		{
+			if (fnmatch($pattern, $fileOrFolder))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Get the default exceptions from deletion
+	 *
+	 * @return  array
+	 */
+	private function getDefaultExclusions()
+	{
+		$ret     = [];
+		$destDir = AKFactory::get('kickstart.setup.destdir');
+
+		/**
+		 * Exclude Kickstart / restore.php itself. Otherwise it'd crash!
+		 */
+		$myName = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+		$ret[] = KSROOTDIR . '/' . $myName;
+
+		/**
+		 * Cheat: exclude the directory used in development (see source/buildscripts/kickstart_test.php)
+		 *
+		 * This directory contains the non-concatenated source code for Kickstart. We need to keep it protected.
+		 */
+		if (defined('MINIBUILD') && (MINIBUILD != $destDir))
+		{
+			$ret[] = TranslateWinPath(MINIBUILD);
+		}
+
+		/**
+		 * Exclude the backup archive directory if it's not the site's root. This prevents mindlessly deleting all your
+		 * backups before you restore from a previous backup which might not be the one you actually wanted. I will call
+		 * this feature "clumsy-proofing".
+		 */
+		$backupArchive   = AKFactory::get('kickstart.setup.sourcefile');
+		$backupDirectory = AKFactory::get('kickstart.setup.sourcepath');
+		$backupDirectory = empty($backupDirectory) ? dirname($backupArchive) : $backupDirectory;
+
+		if ($backupDirectory != $destDir)
+		{
+			$ret[] = TranslateWinPath($backupDirectory);
+		}
+
+		/**
+		 * Exclude the backup archive files
+		 *
+		 * This obviously only makes sense when the backup archives are stored in the extraction target folder which is
+		 * the most common use of Kickstart. In this case the backups folder is not excluded above.
+		 */
+		$plainBackupName = basename($backupArchive, '.jpa');
+		$plainBackupName = basename($plainBackupName, '.jps');
+		$plainBackupName = basename($plainBackupName, '.zip');
+		$ret[]           = TranslateWinPath($backupDirectory . '/' . $plainBackupName) . '.*';
+
+		/**
+		 * Exclude Kickstart language files. Only applies in Kickstart mode.
+		 */
+		if (defined('KICKSTART'))
+		{
+			$langDir        = defined('KSLANGDIR') ? KSLANGDIR : KSROOTDIR;
+			$myName         = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+			$iniFilePattern = basename($myName, '.php') . '.*.ini';
+
+			if ($langDir != KSROOTDIR)
+            {
+                $ret[] = KSLANGDIR;
+            }
+
+            $ret[]   = $langDir . '/' . $iniFilePattern;
+            $ret[]   = KSROOTDIR . '/' . $iniFilePattern;
+		}
+
+		// Exclude the Kickstart temporary directory, if one is used by the post-processing engine
+		$postProc = AKFactory::getPostProc();
+		$tempDir  = $postProc->getTempDir();
+
+		if (!empty($tempDir) && (realpath($tempDir) != realpath($destDir)))
+		{
+			$ret[] = TranslateWinPath($tempDir);
+		}
+
+		/**
+		 * Exclude the configured Skipped Files ('kickstart.setup.skipfiles'). Also exclude the various restoration.php
+		 * files if we are in restore.php mode and the files are present. These are required for the integrated
+		 * restoration to actually work :)
+		 */
+		$skippedFiles = AKFactory::get('kickstart.setup.skipfiles', [
+			basename(__FILE__), 'kickstart.php', 'htaccess.bak', 'php.ini.bak',
+		]);
+
+		if (!defined('KICKSTART'))
+		{
+			// In restore.php mode we have to exclude the various restoration.php files
+			$skippedFiles = array_merge([
+				// Akeeba Backup for Joomla!
+				'administrator/components/com_akeeba/restoration.php',
+				'administrator/components/com_akeebabackup/restoration.php',
+				// Joomla! Update
+				'administrator/components/com_joomlaupdate/restoration.php',
+				// Akeeba Backup for WordPress
+				'wp-content/plugins/akeebabackupwp/app/restoration.php',
+				'wp-content/plugins/akeebabackupcorewp/app/restoration.php',
+				'wp-content/plugins/akeebabackup/app/restoration.php',
+				'wp-content/plugins/akeebabackupwpcore/app/restoration.php',
+				// Akeeba Solo
+				'app/restoration.php',
+			], $skippedFiles);
+		}
+
+		foreach ($skippedFiles as $file)
+		{
+			$checkFile = $destDir . '/' . $file;
+
+			if (file_exists($checkFile))
+			{
+				$ret[] = TranslateWinPath($checkFile);
+			}
+		}
+
+		/**
+		 * Exclude .htaccess if the stealth feature is enabled. Otherwise we'd unset the stealth mode.
+		 * Exclude it even if we have any AddHandler directive, otherwise the site will be borked if the user
+		 * chooses not to rename the .htaccess file
+		 */
+		if (AKFactory::get('kickstart.stealth.enable') || AKFactory::get('kickstart.setup.phphandlers', []))
+		{
+			$ret[] = $destDir . '/.htaccess';
+		}
+
+		// Remove any duplicate lines
+        $ret = array_unique($ret);
+
+		return $ret;
+	}
+
+    /**
+     * Recursively delete an empty folder and any of its empty parent folders.
+     *
+     * @param   string  $folder  The folder to deletes
+     */
+	private function deleteParentFolders($folder)
+    {
+        // Don't try to delete an empty folder or the filesystem root
+        if (empty($folder) || ($folder == '/'))
+        {
+            return;
+        }
+
+        $folder = TranslateWinPath($folder);
+        $root   = TranslateWinPath($this->root);
+
+        // Don't try to delete the site's root
+        if ($folder === $root)
+        {
+            return;
+        }
+
+        // Delete the leaf folder
+        $postProc = AKFactory::getPostProc();
+        $postProc->rmdir($folder);
+
+        // If the leaf folder is not under the site's root don't delete its parents
+        if (strpos($folder, $root) !== 0)
+        {
+            return;
+        }
+
+        // Get and recursively delete the parent folder
+        $this->deleteParentFolders(dirname($folder));
+    }
+}
+
+/**
+ * Runs the Zapper and returns a status table. The Zapper only runs if the feature is enabled (kickstart.setup.zapbefore
+ * is 1) and there are more Zapper steps to run (its state is not postrun). If any of these conditions is not met we
+ * return boolean false.
+ *
+ * @param   AKAbstractPartObserver  $observer  The observer to attach to the Zapper instance
+ *
+ * @return  bool|array  Boolean false or a status array
+ */
+function runZapper(AKAbstractPartObserver $observer)
+{
+	// This method should only run in restore.php mode or when we have Kickstart Professional.
+	$isKickstart = defined('KICKSTART');
+	$isPro       = defined('KICKSTARTPRO') ? KICKSTARTPRO : false;
+	$isDebug     = defined('KSDEBUG') ? KSDEBUG : false;
+
+	if ($isKickstart && (!$isPro && !$isDebug))
+	{
+		return false;
+	}
+
+	// Is the feature enabled?
+    $enabled = AKFactory::get('kickstart.setup.zapbefore', 0);
+
+    if (!$enabled)
+    {
+        return false;
+    }
+
+    // Do I still have work to do?
+    $zapper = AKFactory::getZapper();
+
+    if ($zapper->getState() == 'finished')
+    {
+        return false;
+    }
+
+    // Attach the observer
+    if (is_object($observer))
+    {
+        $zapper->attach($observer);
+    }
+
+    // Run a step, create and return a status array
+	$timer = AKFactory::getTimer();
+
+    while ($timer->getTimeLeft() > 0)
+    {
+	    $ret = $zapper->tick();
+
+	    if ($ret['Error'] != '')
+	    {
+	    	break;
+	    }
+    }
+
+    $retArray = [
+        'status'  => true,
+        'message' => null,
+        'done' => false,
+    ];
+
+    if ($ret['Error'] != '')
+    {
+        $retArray['status']  = false;
+        $retArray['done']    = true;
+        $retArray['message'] = $ret['Error'];
+    }
+    else
+    {
+        $retArray['files']    = 0;
+        $retArray['bytesIn']  = 0;
+        $retArray['bytesOut'] = 0;
+        $retArray['factory']  = AKFactory::serialize();
+        $retArray['lastfile'] = 'Deleting: ' . $zapper->getSubstep();
+    }
+
+	$timer->enforce_min_exec_time();
+
+    return $retArray;
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * A simple INI-based i18n engine
+ */
+class AKText extends AKAbstractObject
+{
+	/**
+	 * The default (en_GB) translation used when no other translation is available
+	 *
+	 * @var array
+	 */
+	private $default_translation = array (
+  'AUTOMODEON' => 'Auto-mode enabled',
+  'ERR_NOT_A_JPA_FILE' => 'The file is not a JPA archive',
+  'ERR_CORRUPT_ARCHIVE' => 'The archive file is corrupt, truncated or archive parts are missing',
+  'ERR_PATH_OUTSIDE_ROOT' => 'The archive contains an entry, â€œ%sâ€, which would be written outside the extraction folder. Extraction has been stopped. A legitimate backup archive never does this, so please treat this archive as untrustworthy: it is either damaged or it has been tampered with.',
+  'ERR_INVALID_ARCHIVE_LONG' => 'The archive file appears to be corrupt, or archive parts are missing. If your backups consist of multiple files, please make sure that you have downloaded all the archive part files (files with the same name and extensions .%s, .%s01, .%2$s02â€¦). Please make sure to download <em>and</em> upload files using SFTP, or FTP in Binary transfer mode and do check that their file size matches the sizes reported in the Manage Backups page of Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'Invalid login',
+  'COULDNT_CREATE_DIR' => 'Could not create %s folder',
+  'COULDNT_WRITE_FILE' => 'Could not open %s for writing.',
+  'WRONG_FTP_HOST' => 'Wrong FTP host or port',
+  'WRONG_FTP_USER' => 'Wrong FTP username or password',
+  'WRONG_FTP_PATH1' => 'Wrong FTP initial directory - the directory doesn\'t exist',
+  'FTP_CANT_CREATE_DIR' => 'Could not create directory %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'Could not find or create a writable temporary directory',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'Could not find or create a writable temporary directory',
+  'FTP_COULDNT_UPLOAD' => 'Could not upload %s',
+  'THINGS_HEADER' => 'Things you should know about Akeeba Kickstart',
+  'THINGS_01' => 'Kickstart is not an installer. It is an archive extraction tool. The actual installer was put inside the archive file at backup time.',
+  'THINGS_03' => 'Kickstart is bound by your server\'s configuration. As such, it may not work at all.',
+  'THINGS_04' => 'You should download and upload your archive files using FTP in Binary transfer mode. Any other method could lead to a corrupt backup archive and restoration failure.',
+  'THINGS_05' => 'Post-restoration site load errors are usually caused by .htaccess or php.ini directives. You should understand that blank pages, 404 and 500 errors can usually be worked around by editing the aforementioned files. We are unable to change the configuration files of your server for you. These changes can be specific to your server or host, therefore dangerous if performed in an unsupervised and unprompted manner.',
+  'THINGS_06' => 'Kickstart overwrites files without a warning. If you are not sure that this is acceptable for your use case you should close this window.',
+  'THINGS_07' => 'Trying to restore to the temporary URL of a cPanel host (e.g. http://1.2.3.4/~username) will lead to restoration failure and your site will appear to be not working. This is normal and it\'s just how your server and CMS software work.',
+  'THINGS_08' => 'We kindly request that you read the documentation. Doing so is likely to save you time and frustration.',
+  'THINGS_09' => 'This text does not imply that there is a problem detected. It is standard text displayed every time you launch Kickstart.',
+  'CLOSE_LIGHTBOX' => 'Click here or press ESC to close this message',
+  'SELECT_ARCHIVE' => 'Select a backup archive',
+  'ARCHIVE_FILE' => 'Archive file:',
+  'SELECT_EXTRACTION' => 'Select an extraction method',
+  'WRITE_TO_FILES' => 'Write to files:',
+  'WRITE_HYBRID' => 'Hybrid (use FTP only if needed)',
+  'WRITE_DIRECTLY' => 'Directly',
+  'WRITE_FTP' => 'Use FTP for all files',
+  'WRITE_SFTP' => 'Use SFTP for all files',
+  'FTP_HOST' => '(S)FTP host name:',
+  'FTP_PORT' => '(S)FTP port:',
+  'FTP_FTPS' => 'Use FTP over SSL (FTPS)',
+  'FTP_PASSIVE' => 'Use FTP Passive Mode',
+  'FTP_USER' => '(S)FTP username:',
+  'FTP_PASS' => '(S)FTP password:',
+  'FTP_DIR' => '(S)FTP directory:',
+  'FTP_TEMPDIR' => 'Temporary directory:',
+  'FTP_CONNECTION_OK' => 'FTP Connection Established',
+  'SFTP_CONNECTION_OK' => 'SFTP Connection Established',
+  'FTP_CONNECTION_FAILURE' => 'The FTP Connection Failed',
+  'SFTP_CONNECTION_FAILURE' => 'The SFTP Connection Failed',
+  'FTP_TEMPDIR_WRITABLE' => 'The temporary directory is writable.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'The temporary directory is not writable. Please check the permissions.',
+  'FTP_BROWSE' => 'Browse',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Click on a directory to navigate into it. Click on OK to select that directory, Cancel to abort the procedure.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'Invalid FTP host or port',
+  'FTPBROWSER_ERROR_USERPASS' => 'Invalid FTP username or password',
+  'FTPBROWSER_ERROR_NOACCESS' => 'Directory doesn\'t exist or you don\'t have enough permissions to access it',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Sorry, your FTP server doesn\'t support our FTP directory browser.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;up one level&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'An error occurred',
+  'SFTP_NO_SSH2' => 'Your web server does not have the SSH2 PHP module, therefore cannot connect to SFTP servers.',
+  'SFTP_NO_FTP_SUPPORT' => 'Your SSH server does not allow SFTP connections',
+  'SFTP_WRONG_USER' => 'Wrong SFTP username or password',
+  'SFTP_WRONG_STARTING_DIR' => 'You must supply a valid absolute path',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'Directory doesn\'t exist or you don\'t have enough permissions to access it',
+  'SFTP_COULDNT_UPLOAD' => 'Could not upload %s',
+  'SFTP_CANT_CREATE_DIR' => 'Could not create directory %s',
+  'UI-ROOT' => '&lt;root&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'FTP Directory Browser',
+  'BTN_CHECK' => 'Check',
+  'BTN_RESET' => 'Reset',
+  'BTN_TESTFTPCON' => 'Test FTP Connection',
+  'BTN_TESTSFTPCON' => 'Test SFTP Connection',
+  'BTN_GOTOSTART' => 'Start over',
+  'BTN_RETRY' => 'Retry',
+  'FINE_TUNE' => 'Fine-tune',
+  'MIN_EXEC_TIME' => 'Minimum execution time:',
+  'MAX_EXEC_TIME' => 'Maximum execution time:',
+  'SECONDS_PER_STEP' => 'seconds per step',
+  'EXTRACT_FILES' => 'Extract files',
+  'BTN_START' => 'Start',
+  'EXTRACTING' => 'Extracting',
+  'DO_NOT_CLOSE_EXTRACT' => 'Do not close this window while the extraction is in progress',
+  'RESTACLEANUP' => 'Restoration and Clean Up',
+  'BTN_RUNINSTALLER' => 'Run the Installer',
+  'BTN_CLEANUP' => 'Clean Up',
+  'BTN_SITEFE' => 'Visit your site\'s frontend',
+  'BTN_SITEBE' => 'Visit your site\'s backend',
+  'WARNINGS' => 'Extraction Warnings',
+  'ERROR_OCCURED' => 'An error occurred',
+  'STEALTH_MODE' => 'Stealth mode',
+  'STEALTH_URL' => 'HTML file to show to web visitors',
+  'ERR_NOT_A_JPS_FILE' => 'The file is not a JPS archive',
+  'ERR_INVALID_JPS_PASSWORD' => 'The password you gave is wrong or the archive is corrupt',
+  'JPS_PASSWORD' => 'Archive Password (for JPS files)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'Cannot open the file %s for reading. This is part #%d of your backup archive which consists of multiple files (files with the same name and extensions .%s, .%s01, .%4$s02â€¦). Please make sure that you have all of these files in the same folder as Kickstart.',
+  'INVALID_FILE_HEADER' => 'Invalid header in archive file, part %s, offset %s. Please make sure to download <em>and</em> upload backup archive files using SFTP, or FTP in Binary transfer mode and do check that their file size matches the sizes reported in the Manage Backups page of Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'Invalid header in archive file, part %s, offset %s. Your backup archive consists of multiple files (files with the same name and extensions .%s, .%s01, .%4$s02â€¦). Either some files are missing, or they are corrupt or truncated. You will need all of these files to be present in the same directory. Please make sure to download <em>and</em> upload backup archive files using SFTP, or FTP in Binary transfer mode and do check that their file size matches the sizes reported in the Manage Backups page of Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'An updated version of Akeeba Kickstart (<span id=update-version>unknown</span>) is available!',
+  'UPDATE_NOTICE' => 'You are advised to always use the latest version of Akeeba Kickstart available. Older versions may be subject to bugs and will not be supported.',
+  'UPDATE_DLNOW' => 'Download now',
+  'UPDATE_MOREINFO' => 'More information',
+  'NEEDSOMEHELPKS' => 'Want some help to use this tool? Read this first:',
+  'QUICKSTART' => 'Quick Start Guide',
+  'CANTGETITTOWORK' => 'Can\'t get it to work? Click me!',
+  'NOARCHIVESCLICKHERE' => 'No archives detected. Click here for troubleshooting instructions.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Something not working after the restoration? Click here for troubleshooting instructions.',
+  'IGNORE_MOST_ERRORS' => 'Ignore most errors',
+  'TIME_SETTINGS_HELP' => 'Increase the minimum to 3 if you get AJAX errors. Increase the maximum to 10 for faster extraction, decrease back to 5 if you get AJAX errors. Try minimum 5, maximum 1 (not a typo!) if you keep getting AJAX errors.',
+  'STEALTH_MODE_HELP' => 'When enabled, only visitors from your IP address will be able to see the site until the restoration is complete. Everyone else will be redirected to and only see the URL above. Your server must see the real IP of the visitor (this is controlled by your host, not you or us).',
+  'RENAME_FILES_HELP' => 'Renames .htaccess, web.config, php.ini and .user.ini contained in the archive while extracting. Files are renamed with a .bak extension. The file names are restored when you click on Clean Up.',
+  'RESTORE_PERMISSIONS_HELP' => 'Applies the file permissions (but NOT file ownership) which were stored at backup time. Only works with JPA and JPS archives. Does not work on Windows (PHP does not offer such a feature).',
+  'EXTRACT_LIST' => 'Files to extract',
+  'EXTRACT_LIST_HELP' => 'Enter a file path such as <code>images/cat.png</code> or shell pattern such as <code>images/*.png</code> on each line. Only files matching this list will be written to disk. Leave empty to extract everything (default).',
+  'AKS3_IMPORT' => 'Import from Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Connect to Amazon S3',
+  'AKS3_ACCESS' => 'Access Key',
+  'AKS3_SECRET' => 'Secret Key',
+  'AKS3_CONNECT' => 'Connect to Amazon S3',
+  'AKS3_CANCEL' => 'Cancel import',
+  'AKS3_TITLE_STEP2' => 'Select your Amazon S3 bucket',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'List contents',
+  'AKS3_TITLE_STEP3' => 'Select archive to import',
+  'AKS3_FOLDERS' => 'Folders',
+  'AKS3_FILES' => 'Archive Files',
+  'AKS3_TITLE_STEP4' => 'Importing...',
+  'AKS3_DO_NOT_CLOSE' => 'Please do not close this window while your backup archives are being imported',
+  'AKS3_TITLE_STEP5' => 'Import is complete',
+  'AKS3_BTN_RELOAD' => 'Reload Kickstart',
+  'WRONG_FTP_PATH2' => 'Wrong FTP initial directory - the directory doesn\'t correspond to your site\'s web root',
+  'ARCHIVE_DIRECTORY' => 'Archive directory:',
+  'RELOAD_ARCHIVES' => 'Reload',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'SFTP Directory Browser',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'Could not open archive part file %s for reading. Check that the file exists, is readable by the web server and is not in a directory made out of reach by chroot, open_basedir restrictions or any other restriction put in place by your host.',
+  'RENAME_FILES' => 'Rename server configuration files before extraction',
+  'BTN_SHOW_FINE_TUNE' => 'Show advanced options (for experts)',
+  'RESTORE_PERMISSIONS' => 'Restore file permissions',
+  'ZAPBEFORE' => 'Delete everything before extraction',
+  'ZAPBEFORE_HELP' => 'Tries to delete all existing files and folders under the directory where Kickstart is stored before extracting the backup archive. It DOES NOT take into account which files and folders exist in the backup archive. Files and folders deleted by this feature CAN NOT be recovered. <strong>WARNING! THIS MAY DELETE FILES AND FOLDERS WHICH DO NOT BELONG TO YOUR SITE. USE WITH EXTREME CAUTION. BY ENABLING THIS FEATURE YOU ASSUME ALL RESPONSIBILITY AND LIABILITY.</strong>',
 );
 
-// CLI mode
-Kickstart_Extract_Phar::go();
-__HALT_COMPILER(); ?>
-s  =         kickstart.phar       language/en-GB.ini`)  R©¦i  CƒPC¤         src/Unarchiver/JPS.php]  R©¦i  &ÆÒš¤         src/Unarchiver/JPA.php·Y  R©¦i  zG¤      %   src/Unarchiver/AbstractUnarchiver.php|M  R©¦i¹  êÊa¤         src/Unarchiver/State.phpñ  R©¦iÿ  n`”¤         src/Unarchiver/ZIP.phpb+  R©¦i±  –ş{­¤         src/Base/AbstractObject.phpÚ  R©¦iA  Š@û¤         src/Base/AbstractPart.php7"  R©¦i9
-  ²•íı¤         src/Text/Text.phpŞ  R©¦iÜ  "¹á›¤         src/Encryption/Aes.phpL  R©¦i£  ;°YC¤      !   src/Encryption/Adapter/Mcrypt.php  R©¦iÃ  X;­¤      *   src/Encryption/Adapter/AbstractAdapter.phpˆ  R©¦i  ò~'³¤      "   src/Encryption/Adapter/OpenSSL.php®  R©¦i  	.§œ¤      +   src/Encryption/Adapter/AdapterInterface.php  R©¦i  ú÷(¤         src/nocli.phpj  R©¦i  ¸°y¤         src/Factory/Factory.php7  R©¦i]  9nñŸ¤         src/restore.phpŠ  R©¦i	  0¡'Ú¤      %   src/Observer/AbstractPartObserver.php*  R©¦il  ©ë™¤          src/Observer/RestoreObserver.php!  R©¦i[  ¸Í=¤         src/Timer/CoreTimer.phpC  R©¦i‡  w`ª¤         src/includes/preamble.php§  R©¦i   Š¹)¹¤         src/includes/functions.phpƒ  R©¦i9  õÉÇŠ¤         src/includes/mastersetup.php¹-  R©¦i¬  7$]:¤      !   src/Postproc/AbstractPostproc.phpİ  R©¦it  'ñ€Z¤         src/Postproc/Hybrid.phpOC  R©¦i  9 ³o¤         src/Postproc/Sftp.php¾:  R©¦iX  	G¤         src/Postproc/Direct.phpò
-  R©¦i
-  ğ´¤|¤         src/Postproc/Ftp.php>8  R©¦i  ™¨u¤         src/Utility/Preamble.php%  R©¦i  Ó	É¤         src/Utility/Zapper.phpOF  R©¦iÁ  =1Ë{¤         src/Utility/Path.phpõ
-  R©¦ih  Ôº°ª¤         src/Utility/CodeCache.phpğ  R©¦iö  nUò¤         src/Utility/PasswordProtect.php¢  R©¦i   ½«Û(¤         src/Utility/Hash.php÷  R©¦i£  s'Ñ¤         src/Utility/Htaccess.php|  R©¦i,	  Téù]¤         src/Utility/Lister.php•  R©¦iÈ  Ú<.¤         src/Utility/StringHelper.php  R©¦i„  YUn¤         src/Utility/ParseIni.php·  R©¦i  # ïæ¤         vendor/composer/installed.json•  R©¦i‰  z}­¤         vendor/composer/ClassLoader.phpú?  R©¦i‡  2@u¤      %   vendor/composer/InstalledVersions.php?  R©¦i„   2ªÅ¤      "   vendor/composer/platform_check.php  R©¦i«  >¢¨L¤      '   vendor/composer/autoload_namespaces.php‹   R©¦ip   Š/t¤      !   vendor/composer/autoload_real.phpˆ  R©¦i*  m+hš¤      #   vendor/composer/autoload_static.phpÜ  R©¦i<  ™ÿ«¤      (   vendor/composer/ca-bundle/res/cacert.pem4o R©¦i.ö Ñgìß¤      *   vendor/composer/ca-bundle/src/CaBundle.php+  R©¦i¥  ÀªNä¤      '   vendor/composer/ca-bundle/composer.json'  R©¦i	  zÕ‡¤      #   vendor/composer/ca-bundle/README.md1  R©¦it  >VuÄ¤      !   vendor/composer/ca-bundle/LICENSE  R©¦il  *!^`¤         vendor/composer/LICENSE.  R©¦ir   Õ¤         vendor/composer/installed.phpá  R©¦im  cnP¤      "   vendor/composer/autoload_files.php†  R©¦iü   Ö¸µÜ¤      %   vendor/composer/autoload_classmap.phpŞ   R©¦i—   Lñ½æ¤      !   vendor/composer/autoload_psr4.phpE  R©¦i¹   wãVO¤         vendor/autoload.php  R©¦iÄ  ¯ÈRF¤         ViewTemplates/s3import.php  R©¦iÌ  ĞåÂ¤         ViewTemplates/kickstart.php4  R©¦i$  äÂf¤         ViewTemplates/password.php÷  R©¦iŠ  Ù€¤         ViewTemplates/logout.php£	  R©¦i©  ×¥’ë¤         ViewTemplates/urlimport.php_  R©¦iÚ  Xu´¤      åZÛrÛH’}×WTs·§¥™–o»³¶Õ=	Ih [íya€DQÄ¸XÍy˜Ø¯Ù›/™“YU HÑYGÌFlìƒ-••••×“	~ø ¬G)—‘¸KVU•õÉ<Ë„õ³õë‹"’¥ŒET®6Ég)äou­ê$ÏDç)H‰úE´zŒ¤â±Ïå«¼Ø•ÉÃ¦£öÓéêìõÅÅï_¼¾xıNL“Õ&O£JÜÅ\wU^äMšWâ¥‘Ë­cæ•&+™UtÆÍt.nd&Ë(³f‰áêÅÏ²¬H¸7ç"/EÕ²<9±î‚7k4²ƒàr`­V²Âyr7PWátáÛ®g/¾Ló(îTaHæ£;;¼\5«Gi¬éÈv/£([ÉT$Û"o7Œ¼éÔaÇ(Ï2¹ª¡,am£¿@²à¦{‹©.F®Ø—ƒY*#Èç"Ëk±‚¤¨7I%’,ÎŸÄÓ&I¥ØåM)–PvS“Tø ÅR&Ùƒ–AÆú„kÇµéÆÚv×àP™%ÏÛ>¯ó4†Îôcg2ó|ˆí0#±.óí3¹]'q¿Ğ†Øï&ÄÍ³ZfµáØ#ŸÔÈU)ëªC'tíEÚ³W_UMG÷š¸¤DÆWo	Å²oŠşMKo<ì÷LÓÑ¾5÷„ê†Ãá³õw­`†U¾-RYKPù£[ç{1v|˜Øó?u“Gçåî}GFFè(Ö°ÉçF·öèjØÈÕ£~âÚÖt>Ã38C&æ…z|ã…^Zd—€œRäğrµäÛ)Ú—éB=	I"_ÖåN?™O)ö»®íc¡Aän¤p28xšFÚWó—¤J´®ñAşP±·É,îÈ®’ÁUÈ]O\õ$´ƒğ:œÁq.¡„Ïàù¹ ¶#
-•ĞdÁ!Â.¼±a¥Ğ»÷ü;¿jñ GKØ™òòñ'1BVx[ùvP„ÁmonÃ+ïWÒ.-m×(G%¥;ÑŞ^Ümñ)Û½¹;"P}Û
-Ùìä»M«H-%’ŒøàHêèï}(K›¿£Ï™)êR<•	ûŞà¤Ÿö¯¡oQò={ùËI†ëät£Á‰íû¿ğF£¹o#µ!£Ë²Ä©ùjÕ”%%	P Sùş|.´»Bëàõ¼U9Y6E}.ê²ÉV¸oLš3TŒ¬²Ğ6©*\Èp†øZŞÌš3öŒ…ôY©SµŠ İ˜T$8Lpå¨æ{3üÉ§:'	‰.ZâÙrÇëOr)*Y"PD”ÅDAgA?Q¤bÅp2¬‰ÁjC»W›2ÏqU’k±DN=V«ºLXÏ_=Û‰çì­ˆ¢á#Š4Z± ›¼ª‡J#ÎôËuÆ­*\ozsDáQQÈ¨¬È—²Óı×4>Îº_ÈdYEÚ¡»m›´N½˜=ôU¨Z³¥¨šR*µb»ØD”Åò§ŒÊ •ı4eu>³O%NÕŸ§¤Ş0Im¥Èè?R8üõ˜Õ5üGâ¿‹Wôçõ¿V¯ÿö_ÿ}6³gbäíÙâ£ÜşF_â¯h
-~¦NlèÂœX'” ô«$‹`RDCV­a—m+IPQW{¾s²š«ä/txÕJİ È“T%¦ôte„l®´^újp¢w`%ÈÓüÀÚ?Ï8} [•µ‹¨ª¥bVù©œB	ô.Ô×w{û<]ïÆA"u²ÏQšÄ"Í’LQP¼Y|¦Ê<á¦c
-H`ÍğÇ•krD[ç`õÜ@½¤,Ğ­ „`³Àx:í¯/nm%ÍFu€+YŠNS58 ¿+˜êÇdÅV/‘\†Eöğñ%?$uT	'ÄìÏoú·½-ÈsÊi’É¡ğ²t§ı†MM®Ã™4%Üò”€5bŒ1ü•0©‡Â•d¹-ê]ïbB"ŸìjfrËu„¸:ƒµ¯©½çS›t‘Á›ª…c^ùŞ}`û•ŠoQÅ§ÖÄîìF¾KùëC”g›¦®ã6oÅ¹¬¨æqş£½äGqN8€e–7QÈ’Ó!.)à›;e>æ3‚~T)xÜî\¥’PçQsjÕŠÌr—O—eşâá±ğ‘‚`ÿî¨9eĞıuPìmv¯\Åàhı: ¼ñP[€J/¿KëˆÊ¶Ha³ôwõ‡gäŠü9|ß›äûZË¢ÏÉUø$#$YEKéİA¥à&g—vç¹Ğ]é}IÚ¢¨Fm^É™Nih¡¤A[ÁzSÏŞ|jtâ}_é=ªÛÀE×–ã¢Ş«¸'Zè$®#ÄAül‹u@i¢­Bèµä
-ÓÌgªOê„Ò©ÙˆÂ"Ÿg{ñ^­á=¯”`bE¸â”Ÿ)
-‘v?G¹‡Ş¯üG/wé­1|1ìgX§:ARĞ$ÜÙ˜í°‰ŞÚ“‹JBûTE%×$œ\	ÖYWû nXF>¬-qBa8R?ç¹Ïr>í’Íl0©Û0m+§©k²êÃ}şÿ÷–³ÚKÁÚjŠbÔXÁ¹™z¾½˜ÀJ*,)²œ€‹`ÊUäkLüLào ÕÀ2ÉöPÏ¹Â„òõí>~DØïÿ!†#*[Lænè(¼ü-Êûô|XğXø­€îmèì„!q•oÏD=×ØfÇ5ªág¦§`‰UMÎ¤Ÿ{*ÃOAbjÙdV}³ ­?ÿwïú:°ÃÅŸlßãŞ¸í±Ú¶é°µ
-	%•ò¡ù>¦sš¨ë®ú§zĞsÓíu&G<¢ïª'xØğ ¤}üm13ƒÁOI„‰™êĞÄú-¸=Z„aµIô[²m¶_®5øL8Nœé]’§›Úö8ğ&6áà;$Ìû®Ë1d[s6¦½§‘êOÂ‡aÔ÷uRVT¦ UËŒ\gtwkS…Ÿæİ0–5¼ŸB¨7ÜXspå{µAOËÂíj£Yèf†LîÛAèùaĞ÷æ¨Á­ç©– €˜
-ïrÊËGú­	Ë“Ú©ûE=!v?ışã7Ñs¢?6´S·nš„*¶šÈšV90£YZ m_²iˆ
-ß\'H;ÈR®©>uƒ’}º=Q|à™›Záäs!C¤×M1„}Ù‡Tù=# ş6ˆ{‘’vGRŒ]·é°ä“b%‘.£Ç.4(u”*yÔR2mÙ Œ)V‚šAá.e¶D¿3İM•¹íÅÌö'@£_E®Oî‰£äZeVQ¤‰Îi‡ûÄé²©à’ZAò•eµIŠ3D£úRˆog(^tÇF¦ÉÏ3‹oĞk[QÛÆhFZŸ$MÜódÏngÜª¨áÒš’´jÅà9…:¶À t+õ^*	kÆ]’É‚h\ än0fæÊi±%4­4M8mÖĞQ(åğàà§É¾¥¾ÖO_h(7QGqH»×RÿpOÁ”Sz‡…nQ/l‚à¶ß™ªáFšæO‡#ãìy­·÷„ívÖ+¹3Ñ	r$”÷†àá•GV°)k¯{{tM2%¶àŸĞ10Ï{ß›Ş¨Ñ:’³2'!¦mS©®	…£e•§M­F-{û¸¿çiSğå&Qa¹á-°ş˜|¿–QŠ`Ür7Õ_ÓÉàR2n/Q¦whÔ[$ÎLDqÌw3zQw¦6Zjt¡›¬NÒÃÓ¬I£jğeŠêi¸•R)y…‚tL¢æsß¥vü³ÔàX;€R ¦ARTásqZk”DI¿ÌSÜsoÄ{Îf¥qSq’ÑjÂ©—ƒÛpâªdH—İÀMéUœĞ¨ipŞÂ¬ÁââÕå Å/íØ.ãúÉol†ÂáçQ×¼–UeÜ¥İÇYWÍ¨+ÔØ½Š¥Ïû©¸“èÍDË¼Éºë+-şPí—ß¡°*Î¼çô^fíºtq¤öø¿UµP|´Xì§st —C‚vL¯r/$¤RXğ¶9@ºtpßóÖHtjlc$~w9˜Áê/úTìº,­êƒ¹x7l \Eˆ3ÖY18à4°Pn«j[OP3’JMò0^¦QöÈÍ ÊÛ‹·,é»‹s"e's"Í5¡m~yoì…ğ¨Õ—¤|¶EÙ¥®×âÚ	ÿ9_’¢¶*b‘ ØG`Ö9ã+*àªô	â({8^µíÃ&ÿ½ï[4¢L(+Ñõô†	2*³Ş›V.‰¹ß&ĞSïÎ´ 4’ËMºÆÅ›şÁÿ¢VîX¹ÁXô±Ş›“PÊ@*€«Ì¢L¦j(u*‡dS×Åû—/__ßß¾ü«I¤g*/;âHl¶VŠ\½õÑnmwıY–—[Ä3¿Ïªn¦´E™¤…
-ìM4ëú‰´Alz·ş½
-5ZáAn%µÜsĞËŸUCN¡äÕàY…[ÖğŠ	iĞ£‘Êï(™Î‘Xbn˜ÑÈ%Éµ.xN>Øù41åLØg¬°_Oâÿ$ğAÍ’\W«“-•;Ól—ü~#¢	+êÉ¶×)æã"t{ŠIRi´ƒX<ĞçlÇŞ“FM¨ØïµfˆR3T1±ÑÇ7@Q“ş»Ñ.Ğ‡š	•J'£¢_©ü»Õ]#LğF$Ê³éU6ıøF5î°·C÷£Øñê‚£jUÔu5à÷×;(±é»/2éE¨–âİyËş•8U¯‹ê]‘wf¶ã†ñà,Òç38¹·ü)]³{‘D°\E-ª›z®~4á~2H7İ™$ònzK×¢f_¿oR·Ÿ®|@ñv·,qN3I¦ùhh$ã3C´ƒ/²=ÓHŞSÖ!Mñú{" ´Ô¥bzşÆ¦£›Y!ÁËZ­Dl±_¨{ò©ÉªÈ3Æşï*"ĞéÃƒ¾ín&ú¬úhğË`ğOÖìÊ¾ö¨KÂ_ı7aGì–^»|X&jx«İd…öëI!®®æ7•Ê7xâ ßC!º<8_W·ıŠÎy`ìÙ÷¤5—ø}
-1òR­»Òç’¨æKw÷‡,¯Ÿ‘«ëÅêG4¿Q§@Æ3B]Q‘£Ôô±ªIï?êÀùN ×bb}ct”¡-Ø5…5ıs-qëŒnqæveÓDè‰OŞÜôÛœ¡€AÅ½Ş
-jGí‰³çÔ”ÅÕ'aOÑ‡8´‡NºFWˆŞv+æ ¶\W ãŸ¡Ëw®×	?ññ®c©oÃ/µĞƒ““‘ë,ÆóÉÌµàL” ÑàP;C& Nyhh†©'ƒ}ê`®û]Â©û´›ˆf6è&TkÄ]RSÄ< >àBÍé‘¶İÀVÛã~Èaêy³ÔäL9»û™–|v¶®k±5§Ò¿ïàaŒ)ŒR¼x7ÛâE{Z^0üí\ywÛF’ÿ[ü-¯fH&º¬Ä?)²M“T,[‘ôtywm=>hŠ°@ Á!™ñwŸªê‹‡ädgçóbKDwuUuu¿.ğ—Wá8llığCƒıÀ:·œ-öŞµoãÄŠúÌgwÿŞƒ{q‡Y‘=vï8ã_’È²7ğYÅÑ¯CË¾µn8cìÖ¤òÚÂiäŞŒÖÕ?µìöÎöö‹íçìØµÇgÅìı&ëÕi„Aê1ÛR|%Ñò\›û1®ñëñ%û•û<²<všá;’ïx#s?­³ b•ğ&o5¾5á1°É%ÙOZÜO—¾”.Úk4>r}î´šƒÎû~ÿMgpÖ?¿89ë\7Ûìÿ`Ëa\WPêûv4Q;Ÿ:<Ş«t ú¢©ú·fÔhšşªy~™¸›L?'‘ëß¼å^ˆìãĞ8qº QX^mğ»Óóª´qi‡~¢ağ˜ûşÜiü½±‚V€Â[n9<b•XlŠMÆ\QÄç4æõÁæXQdMñƒ­ÆJ	·°Ÿ59Zê!}öñxÔkœz–ë'À ›û rØ(
-&ì~6B+r­^vË§ìŞõ<6äe~OÆìôÍûŞÁN‘©˜´TæJ¯´ÏšM“™´èØŠÇÌòn‚HOX<ÓtØ!C5£Zİ"¦6çp€S8¬?¼uF;½°­§9VŞ÷lbùSæ‚1ÓBñ2œWsq˜‘ßgO···M&ÎÍ-FÚ,¶¼dÎò¯ŠëÑmT2pós¢{d÷Y…W\Fó¹õ|Úıß“Ò¶¤`$v0	#Ç`Ot>Álà E`é,v}ğ8h»pÂ€q×ãl,Î>_`o2êçîW~“Î‘æ; jò`Je…ÂR_œğÁÀ†íL¢ÔNZíÆ
-è•µdìÆ/Ã—~hw÷†'­¦öß›ŸÃxSk®Ãùhï5V¾U®roİò4TK„VÄıdw7ûy[ÙÚb¿Áï,N#¡‡ëãìÆpÌ<ó„¥!kEü÷Ô…°³
-WÀ“îîÂ“ÓüYi)Iò#“…)™aççdŸWLÊc~^îQÅÔºyùI IÓim¢]tLg©Ô
-ú;ôİÄµ<0eEdqÒåª½­rµ>¿×!Û“û´#7ŠÑïBØÖd|pÅhbÙğËõèğ¥>ri=N&ÃcwÄ”´£íïï³‘åÅ7™_‰x’F¾øUöMÑL¿~2{Ìí[YÈşX0R!œéŠÃ‡éÍoñM«iÌ€sM“Tp‹İß‚uxSğ¼©f®˜ÃÙçjÜ9Ç©-dğ#şµÒ„ Ø\Ç¯×ÙOğ¯ „Ò­jjZ¨Œ©®åûpXËbw°GN™+8ß†¶Ÿî¼x?D)ó@•ü«­ ÓêGQµ0! Kïà'£V³v68<¾êö³îÛÃ«şàèäøW<®p|éŸf[ÒªÜ-¦‰[n°<B×YÄ.™ç_ĞŒîyÙv·ÛÚDĞA‰=Tä6ÀŒĞh²Y ßL¹4dÂê_ëƒV-JMP/ŠN”ì%ìH,¼Õ­Üû ‡ˆÔ ÛfÀÖ36œ&<FÎ×†®? OáO…ÔÏÈe¬‰ébà>œ(L¡Á&Öç ÚêN\ş±!cõ!İº£´x×ÄµÆc†´Ñêv”É½Âd*ü6…äáLW8ÆÂ›´\óšm²æfş.<E.š×Ä¯_íH¿ÄôŸ}•p0NßoU.:ßÙÜFÕß(ÓÎRò\ŞR?<Ì†NqM|ÉÀãş÷"çB#×™™şõ¯ÌœlÔ•ÖRÌß›Šhø°Ãxxac‰²d'‰Ã/67ó=Ÿö¿ÀÆ ˜}«ü4.#Ö)X–øŸÃÄ®)ÛK¶­Y\ûœú·Uv“È4Ö>³´¢©"ÂpJAíëËtÆÔ—jfş’í¿dxÉõI«;ü²Úbä@2šÂxÄ@iÈÍªê%c¡:(ÊFlÃÏ!!Ëò¥eÁsğùÜ‚Ô«%ÄòqóA¤®7Í¢N]DÜxùwœñ­Šfh}Êvas
-ùd4Â¼dŸ½.º½=cŠ‚æ~¤¬•2e‚q™=©ü±@5Ã!Å£âŒq’BHÉÛÀqğd€+D")b„Î³ÄQ.€Y5»€UÎÀÓ¤'İƒ†âÔ¶!¥Şº0KiùŒ£eM;X5k ë@Ååq¸T?å’–,53Ş¤:E€éØK*Q`sNBâ _Ô~0"ô¸ó|VáÆı“ƒ*²]Ü^3S™¿•»¬ş
-OÑåCZ8œõıêkÖã±¹"K}ãö­Œg2<ÖG5 ØÕYèq#måËà¨¢Ÿ"H1°ß,Ê¼cşÈ[MÅ ¿™aÒÂrÒ²™>»˜VLØx™¸ğ7y‹í¼Dfl/°/BøAÆ~ıJO‰•şõİloŠ^U-¸I3Îª(ğÕ4sí&HåÖg	^!mUîÛ‹ÑA¾QZmçÀºÖ-Íf9’øuE¥ò×•ü˜M“‰i×É–ÿ3&54ïÜ8ùX¶Ôãt2äÑ5{µËš-˜x´1ö×Œ”ÄÏ+JìR$‡åÓ%-ƒJ™úƒ·ıN¯68988ï_ş·vò}D(Ğ(MĞD¦–ıÖ¬‘±f…ıçc¶°;Qä6v!UifÆfT=®gaŞáD|àM0ûÏ)aâ<Ô§”Sd
-Öâ·¦CÚx¾ÎÎûı÷ƒîåY[¬4ßƒ)%Ö¸&­Ã™;`Cñ ‹`ÃbÚñ<]~+fëo—G‡§³‹%Ì¬n«¾ŸVËU)Vµ¡5e$9A´B%EMÎÚÈ|´(Ädd¤h¸ÉN1ˆÇÂ=‹äd³!ê…7”ÖIï,©6–Àÿ®ØO¡Æ”òDıqg8–àMé€ş,‚6‘!]ÕwÜ·c÷+ßºªøº*EJÌÒåiUC¡¶Dš×šÙãü1Y·ÈÄ¨éCâB°åû¥ÙìgµhO*•„aÙ†H]€´ßéŸË¡İ7İ–~¬]±B1KòÇéâ½9c[ë@éï:¿aRrHŠû½7Ä™Dpä©8µàiOÖ¯bğ@”eÆ&…0HnN%;íö^#§à]Ä™*ÏİöÍE?6õR™ok‰ÜÁ®ùÖ„àq<±gøw²ã*Ü¸jÊRhÇ}ŒÛ˜Låı|î)V¶¹\ öğ/	àX"z«ÌÉF’($–¶^ú‘_ËØfÊ¡Òâœ/“
-pÜˆô]ĞBÏ–RŒ¯×ƒx8_ÀêhôADªÕA‰’È”×ı˜'z½Îš[Í6b=[ˆõ¡Æ2—´G¤µKš©Tm-pF'N¢g¹SH«TX28‚Y¦\ %Óou•‚å¶®ÀuÀ¯ä¯BMâ­+ÙÆ§ªÍ)†òàEFGÀdÆºÀËW^ù¹ÆX	dOƒ0Å{kÒÉ€ßä¬`	´•5Ğ‚¼ª*ò’©Hß»	!,¹Q¨[P¿²d,ˆmïš™NNk¨ HÁ›Â††%nEºAsŸÎKhxõä¹“=×¿ÍOÖª…+ìÖ¢‚Óp*Òâ2óä+¸ùê†Õ$ê¥,‰*i+¦â!pif\²: ™= *:¶"ga¼fu¹{ŸVæIª´µÃ“Í'Ô?±èh …l2‡v`zâÅŠ€'‡Œ„î`L.©Ÿ ~qeËb‰#÷&	 ’!ç»ã[74"9÷ÕÌ5æ}98\T(Ê£yFÕôå5¢åÜêáQ9Bª-S¶uÈGAÊÌM
-ÏHf:tä6"ÚÊı—ÁğI’Ñy¥ İ1bÒ”ğ¸89ñß <Ea«²ÉF©•d¸z5—rŸ è}$ìh]”™×ùb]ßÕp´Î™5a$$ª#4PAâu¹4~a–Æ°©"I††ö¥H˜Ei‘¶‰Q-İ"í(XjÌ+q}ù¸ÿÅM˜¡¬
-ñoU¯¢ã‚èNEƒÍMóËB‹äd’©^¿+•ş_é¿¡i¹!šĞÔŒ\¼,İ¿À(^Ay/ÓÆ7ó¢³Œ×Vı©„â3"P)¨W9× Bƒvw{'Ç}sz•‹ÙP!–/¡“şRÕø.ĞIp§’üuéÏJŒôYÍªõÃú¢QW{lQ/KÀ€ûÓ=7%²Äè¥Zå“0Ñ.Ñr\‰éj.‘,âÜõKxIY=ÔT‚ùÈUY~Œé”#˜•Ò]ZñSŒu3z`ÀÓpSQŞ˜}‚¼¿ÁcÜjWßåôD%7EÇ{é_DêÜ¿"üâÒx[Â !v}¹wq“ØÔ½\Ô”¯
-h3Ù·í‰à#†è!XÑ>­	¿‹äbsÃ]MÂÑ6ÉÎd=±vÎë¬w±3¶sW3ZÃïõe†aÎïiü·§JÓ=Û02á"Â/¸ÃE%	tğÀËÆîİºY}ûoÏé53ˆ÷İO=¯]‹cN°"ØƒXÍğÂémH"]ÇtìJF±uú6²ÚÏĞò È‚@ˆøÄè :H
-8úqŞ¤gĞK¢ïş(Í‚ÇAı5sIÃâÙ8ÃN¸&€öL©}yÿ,˜•qF=4xßxîağ>ö‘F`Uv«Î± XhG€Î1ØJİ˜5G½š AñFZ	Ñ†sãÃ©ÎZb$]ïgQ0}-vH#œLŸŠë,¸µ–8Ïr2BœS'W•õ­Wº¾¯ëäê\õ/İ³~ç¢?èÒ½›bqV×wèºPá•Lm}“&b4¦¥kúˆÀX•Hv.:Àjİ¹O«Ñ½µºÀS$sDyv7Gİ´%º:êO”áÚ°®R'J$Õ‘1“PŒ(…ä_ È
-XJ«]ã”fÎü#SAÀá#+õ’İŒ¥T‚Ø!è$;Âsve2TËêìÒ€Ô{9IÂwvÍO\³Ğ*]Ã¯OBÕçR\é›©úÕ4|óš.3!ìí1œ1”^Ñ´ÒméEûÑ[¬z9¢.œ4Ùüúî´£â/áš™u|qìíÏŒ÷ßTjÌ_²X©Ô)œfèíñqªÖŠºP±†+	ÇŸJ©­ï<_5jË…<n»oô
-&’±¿ZUW+¦¾¬”¸íÆm¤!P7Q-Ú³†!Í›"7ØKëg¯(íîZ·â…È¥Zy²F7p‘È/@İúƒ|½Â;haÚï)$ÄÜYeÆÓW`~!f¾Ø–Çú'¯
-%™Ñ$êÒšv?ş·ÂMvDˆÛMk[Ó SeKšTmBWMYo^”6[ÁU±Ê…|{
-O!÷ƒôFÜ-¾B 1ÖÍ÷»0;´ƒ(JÃ›© ş±·)Ş4Ë‘Ê«mğ±~ úµ»'gg—§ª_[·gW7VÔæ÷ÇAÈ7ÙE%ï‡31³/BùrZÑiÜ‹×VŒfÎ¿(„'7q-	2eÏ§n0S€áÖÔ-Ü"²·Ô9`ğSífÓaÁn]xúX¼ŞÓä$ùÿït¤y"\ Z4†\2¢}VÔˆö9qÒ3,e	KXÖcéı^x‹ş /#ÏÆæ>ÓâÏ@ş/¼OÏhRngFgL]WL#{“„.Fs–z¹13~ş%¤Zâ•Z3{Qc‘½¥5§ı’?ªYûÍìjqãçİéùà´s~şáä¬7÷-Ÿ‹ÈT©NÕëYKP5g‹@À´ÌTôñbOªsã„Ş]ÃÌ‚j–Ë«Ÿ¡…èâ
-8RwÌÔÀ›†ßxú˜ÅÎAB_GXyö oó¾ÓÖ$²\Ù«PÖƒÕÛxJ€ $Ÿõ ÿ<rÛD1Ç¢ ˜„şÒÇ6Ä+>a I¾ş„¯Æ@rúö/ñes:±çê°hˆ-*l˜º^¢
-–ƒ‹SÌí“À È±tÉğxDà˜ëÛ¥–Î×’‰Â±«T³Ùµ¿DIÃD0±’a<qbIpÄFã¬Ê·vgÔ+åRV×qæÇò:İ‡œ’@ABÜ­Çlİ´ñb6^Gƒ·îˆØ¤‰î¨÷å5ûì£ôF”‡FMh”Ü§–R³·YUÿŠÎAÃ‡tÁ1Ã™;ÍÏ¾[±=nEøŞ»¯ÆÌ<4Ê¿è×kAş0ÕñzÇPŸ¸y ÆGófâ|¹`YŠ“eä-Uûeœc_ûe¯GøÄŒô¾Y‹Ò/GÈÒ„” ï
-Ø}ä
-dNÕÜ:k©f`“YHï”´Ú@T‚-?œ^ô©™»Yyø•Fú?B¨6PT”€HF6—šÌE‘í±~’íñ#0‰¢²›°'iÑ'‘»s¸ 7÷”ëÆTİJ—ÎeW6˜—¿	%_¦"_©*ìÃ"Î³ŒĞ©o[ ï úüÌx«ş?Nõwªõâ»ñ6ÿbnü?ïÁÏPl¯ôª­ò‚jõ_èñQ¢
-èyÂn°J§½|„L4 &2¦êÌXØ36qKh½>pÑ û[?ºKRx<z³ıÜŒhúßëaæe`ĞG£ 3aK}ú<ö1Z~êŸ¹xóR€ów@œ¿3ä<sVZ|(TID¨¶s.úóİğâQ*Ğezi”¹ŒÎ‚’ËXò2(áƒ@BÃ£.şÊY¥ ìGöBĞ[tü·ğ³àá%ğáGÄKn¾ZKÍ^&şãñ0Ï^³²ÙàD‚yˆY“Õ®¦0¡Jÿëz¨
-ú¡(õã`ê‡àÔËÕyXóPuU.,å.¢Õƒ«å†H_™sÚûìæ«ë°[ÚTÀ¤•(ûÂş=¢(‰Jó“lÊRå3l#áç1Ø®²ÏËĞÉŞ·Ó¯ø‘¥PVc‘:
-ÊÒàÊĞ·t†?]¬$ªŞDY ñüaXZùƒ¥¿Wøİ€âW ÂºäÊ— jı™EìNR>J×çãUŒ¤¹/½¨ìhÉ®ŒuSíQsjmo`	ÜA+¨ı’/	ìÌüŸó_l—}7Î“wo?}ÙŞ†ÿŸ>)ËøÚÀùßu'Éñ	xcr#TkÏ¼íš÷¥t/f½R{'NÄV¿
-wë*ûÚ­nj~BùUZÒ@îíBA
-Ò-ĞÆßÿ©:¨~¥eª{¥Õªøb^|P÷kqüÎ³çsŞ]-Îxöt§<Ãìrœ¥©©ª"|=„¬)¾ğUÅÒÇiöŠCïfåwŸ3#’m(æÔâ7^UÎÙ\y¶1µÚØŸÿÜ.]¥¡+øÖø'í\ÿWÛH’ÿÿM]Û3|Ÿd.KfÂ†Ìİ&<?YjcYòJ2Ä™Íÿ~UÕß¥–Éì¾»÷6o†/VuuuuUõ§ªKüååd4imüğC‹ıÀöo9ìmŞe—ôYÊöÿºÿßk“ìç<bAâ;Îøç2Â2ÎRVfY¤Hıj„·ÁgŒİÚ\^…Ùd–Ç7£’èŸ:aw{sóùÚöæöÏì4GYìí:;®³"›dÓ$+Ø†’ë¤ŒˆW‡<-p_Nß±_xÊó açÓ<`'òáÏî§U–å,	JÃàV+Æ¼ 1¹dûQ/÷ã»T®.ßmµ">ŒSuÚıı·½ŞëışEïòêìbÿêøì´İeÿø‹btÓÂÃéT“å3õ}×OuJ¤/Ïß•q—³—e§7ox2AÉ´(£PVóË½ûëù¾ooB¤¢…ÓODylPYvë÷ÖÒ$ÏJ–°Õ+òã7<ˆx~”Ûc®aN‹h8MÅL9PíÛ:İÖğ[Šø`zókqÓiŸç|àRÀdˆ^K<¢íî.Ğol°ã4.ã ‰¿¨',ÂÙƒ<f@±Râbí…O¼”ßkåtº(*ò;›p0ÓgÃ8/J6A«´Ãç$–C"Ä‘“¥ µ£8á†éQ'lÆ5Mq-Á ÁÁ	/àq<d9p8a{{{l$J¬©ÀÈ#–f%ËêB¶ÅdK9/§y*x L_•Ó/_f,ñğ–$ÁÑd:,*İ®;+µFà‚qÚƒ"¾I˜‡ËYWàƒ£lšF Vµ}©è.9í €ğËR¬«½Š?^¯²Ÿà»`„ÊXÖÜ|:RT øX»ƒêR±ØÖÎÖöó·\¥«0Ú ¥5)tÁË^gy=mg§˜€–ÃN»wqÑ?>}¿r|Øß¿8xsü¾×?9;ı¥½ÊÚŸ&}kwçí€^æ‰b‰<Ä¯²IVÄä#Š€ë°äIb¬£ÛÕu.A{¨8Èm€¢™Q _£\"YŞc¤­_`x
-ZÈçQ/®ÒÓE³ÿçkO-8€]‡½+´¯'<½)G¸tñA_|Ğ'÷ULS<e:í;TfU-Û]áµÎP&ş{8~ØºŞõËƒ[q›f÷)ì`Ng¤ÎÖS6˜•¼@¥¯â´OÓT5É¶:’E"`©ÅŒƒOY¾q0Søö>Ë)7ŞCp- 
-ÂïøÖ«'ÑFsÅÇ ]ÏDxd÷1¬7H’&¹çl)–1qÜ”¶Ùq¦ô‚¡-‘·…ô3ùØQ  $Ém:›%ø I®%=.q=‘Hz´]ÒG»‘^<–ô ´l<ÉyQğˆÔV§—zU#ªô¾lúiJfOÚZ¢6…>mK'ÚR‘ç>±ìw¦+•uVí’­±­ÿ"[ù3éEÃÄü~„Q¦ã°xÁÛ¯#	AéQV`BÇ‘£Dõ»}*ãXŞ¡´nÙ¶$#nâL¶}UZ“°àCaÀHn;(èÁıAYà5èc[†t{Ík{ìgö#“,Aæ@9jQ¨¡–¥0 Ÿ~òñóÓıŸŸm~ü¼¹…ÿ?Ù¡‡K+ã,ç¯­5ú—)gÒËQ=kÉ4J¯ºÌÊ 9‡ƒ©À•[3èñè‘Úİ5ª¡ÂÕ%C Ú­XµiÛŞ¥Í]“ GÄ”&3ÛEœAÜûùéÚ .¨.0¿9ÔxÁ/p\õ/ÿÖc/ö„1jÅûÕ¤T¬”unûíÆ¹ù¹AuK.-©¦A›»Öá’×É•1Öxx9ˆ¬ÿ>6H!xÔ8<XŠ¯­ºM@L“òÑ6 ÈíÈ³®ƒÄºö`üÑâêš%	%#ŒâF«M­ÄLë>‘¬!]––8@ˆÚPŒUìã9¸VfkÙà$),ÌRi¸ğ/(BĞY	çÊ-ŸQ¼<45½)ÉX{ñ;øŠ[C#êp°ıÆÄú§Ì³‘È;¬ÊtÊ°_ñeó†9'mu4§-ÎİÊhBµtÄÎ-OáÊèw–ÉÓ¡Ó0Z;peüAmtÃìŞÑW8EÎŠìx–—‰g»ì%k~Š\¶Â•ÆNóœ§%Rœ‡ÀŒäUïÛ-Õ'
-lÒS‰—Ëœ¬³ü%Hó²4„§\$ö¼`ã)¤>S«1üÆËQéôZ$G‰BÖÈ¸¼’²,aW0Å&	†A÷àÅ4A÷Ãi²*à;R)ã˜°,¤GXb(2Ëˆq@&Å7Kh[n½ ó‘×IuŠÌV—C6•g!ç´H$ÂÄ\PLPp°²ï¸èuP‘]Oâ)ëb8î²qv'ëÄW¥“&Øu é÷s6ß»÷zş'RåC'mÜòü^ç{:xşu´KxHÄÔ_Ÿ¨RÊ/@†hOå½´ŒË;äE˜ÇÚ…×IŞÊDSÂÃætS}¢wÍñµò‹gÀÚ‹2C`(ÙTpù€Švâ«2[)“ÈoL~Û¼Ëv`r„NAÚ¥ïi\€}Â.· o**”í‚Ì$.é"^Z¹ÉÊS¹Ñ¦úQ)©Â†Mûç?+â^^–A	Ä 9ˆ>É
-/m`$q‘¶‰Tv-]R•*Ñ2şTPÍ†ä?°œ Hİãê$.ÊMösÍ^BìêÈ$¦‹ğªR2—`NãÃji@’¹½U%8:>éõßôö{ı³££ËŞUÿo½‹³?f	µš@'Ìoí†5VKc‰M·íN”öü«Ë,®‹³G R‰”ğ+¡Xho›á;•ıå4…“?N{à“¿ñ6¬ü[Ê#[Ş1÷Ş“Š]°Åï9–$Åá¨·DVÚwvÀñ:m}ù°ÒO'ë wP7Z˜‰=|ÇíĞœpz0hø4C/%+Bğ]UÓvEWæ£9˜Cğ$X‡1ªx*ÆV³*;bSpÔé }Sº3#lˆ*ç†€ÀôÑ:{ã­È,›æO†º â1æA1Z×úZõ
-WÊßu.IAşK©i”µO¸¶} ³<ŸNÊõÇìHÛÑ¹O§HºrlUµçw¬ÏòÇ±_ß\Ÿï_\§Xìe‹İ¬âg–£)O3®æñ5>(vøcFã™à{"ÄHXRi¡±Q –À„ÀÈ:;GŒWˆ“Y`×uBqñ½*’³dİ25/™`BLí¾&à#ï$ÿó Ê\S]™LŒê®w —¥WOaL,]nCrUâ#—p
-ÍmÍíÚM‡r9Iy}¸?–lÜlø(AŞLàNpæ¡Êü’Ş"”9.Ä|JÄQãEëdÎS\”ƒÏˆQÒå>ÿnXtHFmBö`¸‰…¨*Lô=—¥g2a²JFQœs:"*Z8ŒóG)è›õ .VƒäBİŠ>ˆ‰_¤‘¼Ìãq}Ş.ÓëUÖŞhw!Ñ…oğu ¹‘õ¸¦=b­XÓŒWµ÷%tï /MZß}5RÎ&|ã@U€%ŞŒ'âfDTÔÄÏ‹Ê-‰-èŒIÄè”á_ãZšëm:
-Pº³½ejÍ^‡lY….ÁÒöqâ’nfí4[Tç‡1O"¼5v*û’Å„ËhDßÖSS¡ú©Úb{ˆ“¬éx§Ó«L_›Iñ3Â9ÿÖ@RÏŒvŸ(\h “ZÓµ[Ò×ô\Wv*†o?ûyG™xSŠgQÊ†P­2P|Á`"«ğïüóf¿ìº4İ¨%¥ªf¼ÑÃÀlİ{µ$Ø±bŠıµ”U¶©¨%FBäë]£5ã‡¶fkK47‘7Üõ»-wåÙÖöGçß©áyú´làwóo5Œ©ÿâİdçj#6ğ‚¾ËøÙWµ‹ÒÔ Mãğë¦A&ŠË9HÎj†}õo{_@{'£%E(­xs5ğOÜ7WDKnmÅW¼U±’älºW ]÷D[±˜+8s¬‹Y³-òy[_ôg“)ö—QD—˜·Ò©d;Må0'¿i(”Yusæ•EìuÃhûª©6Ú¶Zˆ²nÁ´ â+é”|xSXˆ/µˆÈLÔ²0»µp,U\ıƒ·NâôÖ,wV¯®²Ã]™5çI³”WçY´À
-‹›/ñÄÏ¢y™`±í]®g,B£¸‘®j6iƒ>Â>¬QGk*#@˜r9½mƒ&ıŞe{{ìÉúj”|(5›œ¨’ê)ü©/ù’"ƒgXª§Æ1[JÀ£dõ±l€Ä+Àa|3Í	Hi~/nã‰•ÅÀ_6ğØÅó€.Ì ºèW;05,ÍÖÇC¼Qwdkm«âbÍ9³¸T Ófé¹è¸ê‰¾i »³†Ø•`u?ºÒ›Û Icer•f&^üs–p¤Šµ/\¥ÚVØ‘0NIÎo>,­^Bo Ûµa°äv®—Rõ¾%ª)R†Ä¸ï¥®(Q‘|€-xA“ébˆŸæ—(+^ÌáÆÀÏzQsáY¡`xrÌÁ'(‚ôe‚«I×˜·kP°"ÃÖ+¹^şÚ|UMYz5ÄOóMXe—½ŞÛşÁ»%’V(¼’ÊÅ?¿ïŞK—rZ†â—Ÿf@>MéŠÄFLôÁÎÎáÙiÏi¬ºÿgwêÈÅ±°³*.'ç¼V=AjJº“*	wÈXê„S§*U{ä5$ÀH!r™'¥AáLU–ÌºÚnĞ,°äÑìº¶zğÖ¥l•N"!¬”P–ósü0Åüâ¹$VÉµ([½B¼ˆÆ0ÓqCeãi­Îz×±/ø€©œÔ¹Ë‚âV”Õ²¢Äk_ğ0Nå.ˆ
-a\¶î-L¨Öç³f[89‰%è”48)Ö!{4'ü.f<’“-Œı§¯í?¦BÿñØ÷	æ:®œ|Ñ!”³.øİÂ…ªm<TÅ¶]qÑÂ*J.Î«nQu•‚yDšu¥ù#Ôıà©6ÿóÙ3Í°5‡CuKÒi’˜d£r©…¥¡Ù±ë.‹2º&A~k’É·Îc‡fµ ±)VïÖGEe(.L—°uTwßÔ¿âéş˜wû%:AÀFJ•gªÂìÊ–Ø;;rªÿ0,Ó Š±’ª^Ş ³¸½À0~õ¶nUQW¯Ã]¦–qªÑ`kÉ/Ÿmm¿ĞJÂ‘Ê¿=¹í³í§ÛÏŸËcÁMŸöØxĞ/ÊÌ¤#¬²öóA,ßqYVÀ´€hàCC‚› |j4TmÒµ
-pÌ²ıö‹1ùßäë–m}Ö·èG8ÈèGöÓnäiºQè²weª—er×İß›˜¡p§3_¾&˜£á¼tœ{·ÒÎE)î¹ÌE©»VtÃã¬¹‰ªæÛÂw,ôœÌ¨ê0C4Êî*´#ÙKÉØ7¾Ãª;×ÔO´F(³‚m9—ğe$lS^3KqçAq„>¨Ö¹§K£ónâu›šM° Ä£Ë£blÜ\˜“KeÔ/œBl‡Îâ*z×oèZÀ„Z‡–c¢ˆÌî«e|ÖyÜ!‡ƒA´tJËå¬2¦ùj»Ûô’ĞÁÙ»“ÃÓ«şÁEoÿª×?<¦‹e%bãËAîµfÍV¿­!RFò+<·ÖÙq)¨Ñ‰Wôq´*Ù¿ÚÉÙıˆ§4µ‹©®ÅÒiš$Îó-›†=¢á²9Xˆ ¯¹U8Ğ0?Ösë`„úDJ….iC‚9VÎÀpT*X­Ó‰2Ü‚ñ'@ÓÈ€Á`àV9Ì‚ÕèT1»QÔ“İ ÜÑ…j§8.XRÍnÇşD”à4‹ic¾ŒÇ“H;5n‰*ë–4NŞn³Vµz0'ÂïeÚïİÕüÌîÈ0‹½kÖÁçb>ó¿6Øø}¬j®Ú¢tğ¡Ã4Ç–ïb³ˆDÉTÓÂ¬âã\ôÕİSY&Põ6)b3ÈUN¿ {>Ğü¿OÂ94"u“H …Ï.ô§ê3¬Üº…U¶û¾³ön™aæ4ªØóŠq.©ÂHˆ±âÕ5'£şÎB3F@ËñÌ½|5â×în,	$.Å#<™Ùú°ß—ßÙ	àLÅß	ûŠ™äÈê/¾ç"Äs[£êŞ¶2›…u«rüÅ¶
-~sÑ®D&`/üß§€+x´Ì~Í^‚ıGT K–@V”`{úK“=×‘ö,hK…™ÿ‡“uvB5ä›Ìi¢G[qòboÍ¯–DW›˜Û=Ñu%Ä={Â+Uë¾*<|W5Í¾EDåÚ‚¡Î×ñ5l¢± µ.[âT%Ø>áMc…UğJ_¼Î|pvqñîüJ½Î¬ß^^ĞÉÖ’Wë˜€ƒñÉ·Jæ`c?ZÔ¨xgnyeAÉ›êÄ¥ˆ(ptÀ#]üš€=Õ{]UĞp¤tZ¶RlÆ†_MSsÖC™šåcà^ıØJe¥P3,MÆ	JU àV+¤®Æ¯²µ-‚¡ˆëíìÙ(¼>d“F™ü_/¹-VÔZØË°! pqãßn@c„3æüÍ9^•`dK9ocë*L3Á†&6˜ÆI©££«sŒÛef€×
-<–L±A(  yÉdò•¢³"N.W_öŞ#(F.ÀÆAYb=G\ÆĞRX
-¼-«zLóéSÇDúTvŞåWmu³ãFJâŞ­£—SĞ/VÑƒ»,7Ù´Ô÷ˆu¤=y7ßÒ_‹°bğàâŠÈNÂPTp§¿Oaånör A\ÂJéæß
-,…	rÈÕÊ_yš[rUÉµş#$°şÉT‡Û­ÒEQœş†|‘ÆÍÍĞX]BKÆX}Ì5o˜å°Dü»'ìÕ_]Y±ß·K£c´+áæ ¢¢÷y,ò:Ö^ªÕtÔs]sjï×Ó°%ÿßrÑ3Z{­ç˜3ÿvq)3öd·½5nSjiÂòöuòaÆ-¬*®•!W	J<’Uqg~#ŠÚiåƒ§™qºe¥Öº=£Zã¢L²ir©wçD†IVè'õ"ö‚HØ|S8„¸+ïîP7I6 `‚‘(oÉN»¼R‹¹ÂÏ:ê•·ïÛxëësó‡"²	¸»”Ç#ı7’R|£2›ŞŒHfüòºJ‘h½
-×É†ÅºèE4\Í	Pt*­É58ÿGbzo;åw{}EÜˆî-l_ÅîÍ ŞXX%¨ıøo¸ïûÂÙ&&b)]Z/YD,*µá×#@U/5¾÷½¸½9PY'ßğÆ,¥WC
-õò7M[§›#àq„®ÖQ³Ìd^ğ43ÿ¢`ûÂšDal€Â~Ğ¡¿)íŸ€}%[D;£e4{ç5¿e³jç‡é~)cğWf²­×áÌ…Éÿ¸©´ïÇšßÌ¥ş¯ÔÃº¬{t´¬‡)«!åû€pgæMPMj`¼eØ^$:Û%â)q«n|AŞ—x"ÿ\N3j™£TZŸ„hs@‹œ¥Kb;k{\b[eƒ©,”S‘Íî,tôH|¡=G êOæÙØƒ- Å
-ıÕ¼şC:B>?@y’­Ú1YÌmÚ53{cæY©jşk‹šsCÊ"ÔÓ0„j+W­éæğŸ¦ÆàQ:Ä~BWóêüàâÖÌ?Ãà¾¡#èë“LS*®š%¼©JëúœD”„©:-œ×Ûí—,Ä®ybœ%¹ææü9•GŞB}mı/å<kSI’ŸáW”ÜJ²y™ylË lv0(€¹Û‹Á¡h©KR­î®n°fÖÿ}3³Şıbö>lÄa#uUefeå»²ùém6Ï6÷^¼Ød/XÿóqÀ~&w¢ò‚%¬ÿ÷ş?v²ôç<dA>™G÷œñ/ELŠ(MX‘¦1LÅÙï²`rÌ8cìÎ…òn’fË<šÍvl>u'½ƒııwö¾gÑdÆ`?ï²€ºi––q*Ø¦ë¼	VMx"Ç‡‹_Øğ<ˆÙ°Ã ;Wƒ÷<HÜ7Û,ÍY<‡Å{››I°àÈä
-ì­Ùîí/‰Ú]şzs3äÓ(áa·3êÿ<¼ï®×7—Wı›³Ë‹NıóŸ,Œ8Ì+E¤÷à·ı± áÉëæy§0œæKı»eÖ0E–§Q=h™‡CÿÉqQ„ÇÀYÄªƒ¾™s6ÙŸ³tÊJ³uùŒâV ª‰¿eÊOB;„›İüss1m ªóHˆ  ”ÄzüÄ±¤ˆ]œKóßİ9ŒåÁ¿îmndò\·Ô|‚wÄ~ı»1Hp?EZ€ˆè¾†()*ğiı5.¯BÿŸ9È&›F1_¤,ç¸5(–Oi]3Ì0Ê9|äB~».ä“(olˆwQ¶@œÖLh_1!6ì=JfZ°°[z:ÀKÊ8®Ö¤Ìa…wD0q1æy{R¼ZÂvA« ÏÎ«*–t:¼ "
-9I Æ‹øŠèRB;bû.ë9X©Áá	8IØ
-Ï‘@Û#*Œgc4”uVÅÁìJ.Úµ€gÄ‚»¸Píê=‡9ÉŒ¥ãß FuU#QÇ˜ÁÈFÉL\Ãˆ4.<—bb”å`¿•á8RÈ¢b^%¡M*‚0"Ä#Öé¬Ä—óEŠB—§‹*Â5PBhÄv</“;i)¦à,CÛm„#¸X™‰ï¾=øñG4êËRX	"	û(Úd·RA”–ù„7HHÖpFWe›¿Ææ<qÅ¢	i¾ÆíåerM@ëios„°µ0(‚mŞ:‡ïl¼$œø'}¤9İ[ğb†´·Ú5¹¸ıÇô-J°mÊ™”É$]€\‚¯
-‰öÀ;÷’
-&RĞ|ıâÂ+XqÎ“‰Š§Üi²óGE0¹÷(Aìà:]Û€ŞñC°„ñY’Rœ” U)KRğzaç)Øk:,|jÄz•'±„J¸'Òšåîx™±)0Ã²mÀÇ°1rtÕ$äÇ#ì<‚$9ôÀF£Ùímn€Gßˆ¦¬»UÌ#±ó¦nß ë`MÜP³HnßMÓŒ'z¡ãÅmƒõy›uòN÷&‘v#1ÒÚÑ5°{=ö·¿5Q¤õ )’$m¼ƒ‡üÎ.ßfm+3ÌÿºIÿ¾º¶>æ|m?Ê^1/‹0}H\ö¶l´Â×&§ônZğ8vÑ&ŞM'BóÊãÊ¶Î R€ap–µd/Ù$MŠ £`ûÀªò	8ÖO‡
-cÄì[ğÅ‘”9Á§eŒÓc Ùq&È‡4¿ˆ"ÃÕƒ )8RíXœÎ¶ñ?AúU,2O(öùtöáãsDgl“XŠ‚/"²>] ¬ö{	GT,Ù<¢„9%¿3Ù=wlw°`ÚÁ1œæi^œê`‡¢œC¶!}a¬òvÏòOmGeK~Î‹2Od¤Àøp“—œdDì(N“±F´10[¤,gr¦6Ë®"Ş§½w¨Â´½=¦(11Èx>>¹I%]ù6„_=v®v¯ƒ‚÷–å€eQ›Ã¤“‡H8>ªÌZ¯GÉˆ¬aWâ6[³…(ÕD/²˜/@E±Ùd1#ğp„Üø&Å4Èô w°ÖÖš@³Àêè$-“BkÔˆ$‚ƒ»}$µGfGë+H?@$Ûf£İºãKvô†mİqÉƒ% ²¢µ0«çx:**ïÜ›tÄ-çL0»ëègCùÔfK´ÒÖJØ×A‚*A,WOqÛÏø"+à($™=5¢HÈôÅ£È‹4FıÑsp‚ã1ú9ìú^Ã²Àh¢ù²ÑÕ"Gk¶Ùş6ûA
-Û¼(²Ã=%Sòó†ù?Úùb­ßËÓ5á+z„˜<¼±?İ~²ÌĞ§†b³n‡Œb´é,‘­ÊÄé$@ÁíHóO?_7+@SÔ§1ˆç><úÕÉŒ,5>rÆk2Ö–Öh‰{„Œ™No†ZL\FéV‘Õ2UP9<œñBZylF=TÉd)Ú@9ÀK(Á°TÀøm{•›İø[¬ƒ,€›Ïâ ¼|çö¶CfÑX75¯×º\YVï±´¬¯ôÕZ×[ú.Yğ×FRVsÊMÓZÙ%'5rÌKÒ™æÍXÍ7;µÊ:ˆÇ=;òèm<tĞ¬ÇÆÆÂëÎ1—i@Ïç#hz‘n©iµ†ı%¬à­[ª*Ô“pb¹	‚İ$ä_¨¤\EŠãÍuUë ¬TØdä “°Öƒ¤S¨€ÕMï«ˆS‘—\¥±)Uk¤ÕÈ†Ì56í.0åâE—„Ò°<Õ€Î²epá¤ÂXz?Ò
-¦o€BÍqeÚN¯%u/ãÎ––ñÙë
-ÕNí€~^\ú-pX…jìvœ&€Ïuš’kQf`ÅeªòÂI†œŸ"=©B„ôU¡£Ã<¾—â@18Vk0LsŒŠÔÇTj¢¢÷\85/37Á¥	[©)¼–5d×3Í%$ ÿ‚‰sRÍì·¼…Éh„U
-½UDª¨¸>ñŸiáÁ2R‰R
-hHF!‘‚T°«dš+ˆ6\{Î§E·grl"Ë¬¾88!-)'JuB>.gŸÄ¬;Ÿ÷¯¯G#¶Ë:‡‡’Al‡agj‹PÆZ[ú-qQjqXÎU
-­-8Æ’?º>AY 4IZDÓHTZÃJÉZ~XÂœÕÎ›b™5¬Å@1#ÖN}fáXË{*µŠ¸Ó~ä*'ü‘ŸW 0‹ÿ* ¯T×ÀaÒ</2¿#È€FüK¹8·Ú&Å‘¬îƒ\tk€{¾zƒIÃÑSg_W“g÷ñGàcÜsy§‰”¿9dïOE°_Ûé£Ú9$ëJµgk8;0i·mZ¨vDê¾ia\»»“?×¥ê˜2	¬µ’h2
-¸;¸6êã 2¸:¬=?éßô×µ\C[˜'
-°âÜnºTî&ÛÕF!RrTÖi^^ß¯.×¥ó8ˆc$½Ís›@nØÜ”o]— [YdÍj†+Ûnı±ü¨ R„u«ôäiÌ`ß§Š\’Æu!TÖÕC–“Ë‹Ác<‡)’«!Ÿe\>æ_eşi”Dbê§¢JZlF¢]ş{’ƒZ×%Ø¸ f`ÿ©†úI6p5ğià6Wù(€ÿ£uÁScW]W»ˆGÓO­7Ü´‹RÕ™“W0UPÑÍ”MµÒÜÉš‚¿—”jH{ ôÓYÎ~sG36“)È½Â²+.; 
-c‰›.Œ·1º§ê¸¾âS%œ|©|8^Ù± L²Câ‰ºgä`mkÁlEñ©$œOâÂÇ ÆL	›ğ¶ƒ–*n˜Å
-êëG³W5éë#™æ¼*½tBˆÚŞ˜ëš\¥+fÑC  ‰ ïš–ñ¶¼WÁ™zs,GC¼{ kì	9iïUb»föé'?aÇÊÍÚˆe—r6Ê“m€¹•H„Š+„-*:ÂÈkµAÁB^ÍÉ¶eOàèLk»švº)Šş0B b)0OªM˜6¥ã2»x	Z&o¨ğû¶1„ÚR”Õˆ7´à$X“bÔ¢sìt9á½+EâmZz÷šô]³ØĞ"ÕíåË¶¥Æ6¶7TnËœÛTòW+ŠOSæ_GZ£×¯¾<7- M·áÒ}Xî]*^ĞI8¬[«uÁ3FÿnÿÃ†Ç^„v¤ºÂœM9Çnò2ßDÿ›äXØˆ~“B”–ßÒÑI×ˆ=£‡‡"ƒT®˜v;ƒ««Ññå/ç'£‹Ë›Ñåpp1ê_<ûïÁhØ¿ºq®,ÖbápX^kÈØ÷¸×Úzg¤A—«*vıŠF£A k:î­I¥ÆFWo÷·ğ-v¬y B8¸<Õúr®×¦§«²³`%vBêÿ85L4´«Mcò  ^N©O«İjD6ÑU{´Òô'EA°7Xøíéˆ	`Àh,X¾÷i5VÌ™ìé
-ÕØ£ñÇ}v9üÜ={ö¬·ËNSÙ$GSêÒÅ€3°šX…/€ñI‚5K…HéÁ.pNÎ³L,9$ş%ƒíI
-ê|cAWD¸UØõ‹1_¦Iø‚&àáÑÉ _AB¯Fã˜?c‡¤
-[Hkg5«	ÙøN~’–;
-n`ı¤º¨”n…Æ,ğÚB^Q¤™}sÀÆQaºÜ—ÃC†­Ø¸Gˆ_™€== Êl—}âØ¢¹aØ˜Q©ˆ:X³»~sÄQ=j¹Ö;@Ój’©J‘šá’&ƒí·´qÙÆ²ÇœHƒ¸Ñ7>ˆo½Ö%ˆvrÛÔ'ğ „V^©« @ÚN¼/*jÖºzTMß4¬Æ”4«(óqš#Îex—€)íÃĞœz»Ó´8‰ÜHíÜğ{W;®Ó®w›n¿Û1ïaì !‡ô=¢îNo=oo;={—`¥Á™F"Ö]A§n<;2Ô»VB·—{ËÄ0Ş,{«µàl‘øã\×ƒ·T…&óE:KÀ•üğİw^ß#K3ºŞÿşÛo«AŞ<rš{nm¢ÑXÉ"—F(ƒta+ %.ø¤£â¸SIkM ¦™ï}¨µ]’¦L60ÆºkEÃo#LÊÏ£IWÍ±â"UU.|ãYj†EëPÃĞómÅÊ%`‡Fg7£Oıøàjÿë¾£©näãètŒğ®uÓ~…S/nµ_ÜÙƒõ'V/kV5Esº9
-÷æŞûÖ›Ö„âäšĞb+‚”IÀ2fe^éŠ7ÂL&Œ`EŸ#M¢öFÛ¢–“†ÖE½D¶BâœiàÍm‰ò"şªÏà:#ªÍT]+vI”Ó±œ©Õ©%—éã¨ãí.ŠeKI¦ÚH<ƒZ!Ğ=¤ş‚÷f›Ú"*m±*ÜÔıü(Ñª¡6ä½y•&ab;¿1¿TİŠç‰ÄI¾Ä×
-×*¥ßà’ÑGmlJ¢çÜ÷8€Ôõª–ëL¢&²šX:P·ëä†±ïP5Ğ?Ì9ŒçØıJµˆîG•¿46\1ï…lh”ö@ê½º¯Ó !Ÿ0,¥ì`!x/H6ö¬A„¼Í°ûƒ‡ÛKf%¾;V½°æ•ã†ö=âó%f¶ *û  w¦²fâ¼‚iHÓÁşj1Q5:²›†ÄŠ®Ø¬©ÊŠ3‰"€øÜ=r÷Äı÷XâœºÃ_œúª}Şõ˜p‘VĞ;WŠ õ3ğ»ÉkdI„Áşû%Õav}ÓÑHU½š €Õ‰ß8-e.#P®H:ƒY%»*¿”j)3¯œHü4æ–ê?V‰=a­1-¬.I'©6ã€¨;-°ÉxŒªªš±âV¢:Õ˜O÷y­CQÙPöV›M:q‰2¡Í=‹Ïoo÷÷zì%{K{ìĞgô–Zƒ¥7}¦`¸ø§ã¡ÚzZ÷ì=é0úks¡oZşñÇò:š%¬à×#>ˆ½ùï%Ä˜¡ S±%¢Ù9O§…¬ê[¯/pãöÚ ¾ÓÓğø³ˆzÉd›]?®7¦™§œNİ>bÙ%¯¾yµÿÃŒ.Á—aJïª›Û¨Åx$®ƒçk¾u%|°]ã(	òeÍ’d`L•lÀ³°Ÿ˜Â…ß^¾lèoàvÇıÕTáá{BßF9‰£n«–äë·$ù[‘99g/rş¡+Îš¥Ş9¢[äÅ¯¥	İ§[ß¡ÕßAŠªX7ÔÕ&ÁŠõòŞP‚$–^ºñ_~6±@tE{›•z}†V‚Õï'ƒ÷¿|0Gõ®Lâ(¹süÙˆj»Ù<ë˜İ–#½¦Ä¤iº1MÑÓox³Mßõ’^¦	İW)7T^JV‰«|ÇŞ&qõ_z’¯¿èåu* x¾	ßŞè¡®ïÂ?búI>ªÜäİ·Ì÷õFñÔèĞàE¢,V§érÅèêd…l
-Q	8ã¥,IV,4•G*©İÅnMa$¬Œh±ª—S÷mÿ-7ğò¥ÄôZ;vÅ;5ûû&ëtĞc»ÌT”ÿkÿ o·%§&9g Oq—œ]o.¯şTcØ¿êÃG¬Å›sØe–Èlöˆ$C[„-ïäUÅMï¬VEßa§GËİ øèœ0dKĞ œ-†¨xbÛê¾’©ä{'È0DWo.›—sŠ„ŸÙ‘E¢Ì€­
-š£s
-ŠjâõÒ©ài€u}#Ä¿n9¢«×|nKùáTƒ®~™Xßa–|qxQ¶ú[B7³´±ÉÇà2Ë×ÏÚÄÿ$¦ú¦ò†şv…g²%;µ¢X}m¿w_}oRïplB½Qâß¬¥<±œ"+*ÄhäÓ#5•uË*•s–-Kp—”~à’úÑ®,É4_Bé?µbí¥“«m3¾;Ûeİß² SKã+Û â¼ëÊOç«c!ı´ÈtbRßÍµ;9e»Q›Ã´0‡Ë¼A¯ƒàjWİ9ú8+^C)Š‚W/ŸT6ã±ZÇ	~Ú¸5Æ+%'Ü¥ªÍC—«^o6Ö™’§d&›ª7'TŞÏ¯Ÿ‰—Øª‹µ<xPşuue@‘9B
-eŞèbºàÔE	9ê„îygä|$9JŒ¨¤w|~f3s†Hünîa(ŠYœ†¼ûü6y' §º9¨¬&Rè‘A!ÿ|’¿/™ŞÙÅ¾´Õğ+fşúÙEsœ&Åï-:6Ğq9aÓ"Õ74T/ƒIcp»Œşâ/õ‹ÑÉ
-Ÿ0÷±çÛÏ1ç¬ísõ>ÊŒ”áâ=•G&ô¶6ŞNHH@S_õÙ¸²nñb`WsU9§L¢ßKPB5ì_uq|w]—ÊD8¢dø¿J“=ısÇ¶`@@W½ãN€Hs¤@ó€/Ï ^…ä“™Õ5Àéi•¼—Âš_|oS®Æ”‰ÛV˜%{jÕã¸Iô¼*˜ÍB‰^Ì;­ŞµÉ4!ºzp[òÆ½ ª¦níIÛ×Í“Ûn1†¯Ù§˜;*‡’¦RE«²…Í¡ -DêÒÊxÖbc¯l/5y÷’‚‰ÜX–çŸoş±Çßæiîµào—F‚oŒeÚ–güßşŸf®v¨1¦y*¶ød5ãV(	V©Œ¤NİÏß°5Àæ”Òç*ßk±N-Şv5^ïvº×MZ¾ÂDğTeÌÀ¨C¢îÊU‘)íW_c›”¬Lp”ÆÕ¸<À-JÔ,ƒi±¤ ŒÁ-jãÌ]}¥!c5%·=O²G4dØÅ[»‹yìN÷</Á•˜Ôª±?
-‚_~³yùóûpR­Ãó3$Iw¼»ÿ¹ 	´hZ¯×b„¤‚ßZV§tÁ–¦¼>àÔ²™S{½ŠƒU(áFd)²„pRYĞ´…=Z,ı-Ó B–'m¯Â•4&áÍı8€Ğ!cïÂ¨W®{z7ÈµâHfÙö]àƒˆØŸOÙÓ@È5¬\™€†şÜ'L÷Ü¢&¥ñÊßáúUÆ6š”‰È3•º:s|‚ 2(Óp6ŸFá€(_N)C%vÂ¦g–.ó†áÄ½ÏµcåZléİaUÈÃGŠãR¤nku¯BóP±©V;¸ƒETH+1xâ˜;y­:`Ò‡ F1ÇrsG¿à0VUhs0ög³8®÷¼Ê‹÷òÕZo[Û8>…º×mœ^ Ú[¶\»ÍBhÙ²À´··]ÅVÇöcÉĞôv¿ûÍŒ$[vl ·w/$±F£™Ñüùä¿ÿÎÓµÁÓ§kì)]1áì]è_KÅ3EÏb6úiôËzšÜŠLŒgş<¼L|V÷U˜ÄL%I¤Hı:åş5Ÿ	ÆØµËåµŸ¤Ë,œÍÛ+¾y~ok8ÜYßnı‡ş<‰¸dï6Ø>p]Ê$Mò(‘l`å:RñŠB_Ä×xsü½±ÈxÄNó	°#3x#2‰Âm÷Y’±ˆ+‘ÁäÁÚZÌB‚˜Â°ı­P÷·÷±Ñ.Û][Ä4ŒEàu¯FïÆãGWgãó‹“³ÑÅáÉq·Ç~ÿ¡ º\6pº óĞ¿]—*Øİ$SÿzxÚdJ©Œ-ÏÃ„TsÁ¦a$XÀgi’]2Õâ€ıt:N°F¸#EKX-Ë}•ãny¡êJ&©Z²)Ø!3ÙGæQ_Ãxœ‚¡EhT.ø\öY/R„`‘¥^	â„ùÉ"Í„DÛJZßÎ¾„)|"ïú,rçõØ­`Ÿr©Øœƒú*a2Ÿælô®ÜRğç<‘!ù\ğ@d,ƒ0ÁZJn°3‘K>#ù¨ÏnvZsD3EH4ÕÚ¿Ö:7<cÅçTøjdÜÒÏÂT¤/Ù”Gwµ“f‰ĞlšÇzspÍ‘î-IáõÖ:À¯ˆI>ûYÎ¼îi&R¡` Ò›¬åîöwg0`‡q¨B…_ì¶Ï2¾ŠÇjÊõWÜ]…cq[8”Wğ;IElœ%Ë¦x®d8NrUHPb±ìt ®V2=àaD[˜Ç¨™QÂp8e™8MÙË—Æv`²‰³ôEeIJğ#Å,Cc’N&Àec»ÎV†üË—%8ğ¯IT€‚ƒÀØg£¢ª35ÆIvd8‹9††Yõ1<8Hrğ²—Ì*ƒ³Ï-İ¹À©
-øÿu0Áyİİ>~î¿{6y>ìõús©pT§[!ŞnÛˆ™Ç#HP°$Ù¯¶Ê³á¶™ˆ3!-ÌÌ6 éeŸ=ƒO­îÉ£B§†­Øã1Ú2x&»ÿVmÃB×“6·vŞMĞÖUÏ!ìŞÓI¡ÆY–df¾/d
-‘ ¦^w|vvuxüatt¸5:Û{{øa|utrüÔëBn nï.?(4(x¢£:"OQá>äGR¬~ ×©QT:i¯W8ö…&’ËzÛAj,wü¨“¦ôØ’Ø]ÏÜÎ<6[SA‚’C¹tElDv‹Ò3îwD0bc¬äÿ±‹\/!Ø\·h8»«&Ú
-î:â;S)Äµ«Ìú³>;ß]í½?ëi»w:öà^ö5Ö´_éá)<„H’`
-2bZ¦Œ’Ii‚¦À¸ÜµñÆW”U,	T´×`ÌÃX‡‰ÉÒ¥ËuÙ¤™Ïœ{ÚÌÿóÀ0øy–‰X¡'SØ[&]wÿİJ–ÜÓSt0'z‡)emÕJ½ EÛÖ1iTbÃÈ:ñLÍA„!Á• Ü(6‚ ó½$öaThÜ#Ğ— ½ bB†l!Ô<	ŠRZ@!-r .¯ÍÀ¡ìVÁÈ²J“n[ÊÜ÷ƒLó¨¯íˆ”<f7‡%>© `„`sĞÁ)5¸â `Vªb,õ:wú®ÁA»0d¬,ñ… %‘k°¦H#Áe‘´C9>9ğĞMjK<ñ°êÄüãY¢M/ë[õïwªUŸªJØ«
-QÁ˜;`¯•ÙHS±m[_fÌ§y¹YĞà4â3«oÀdr
-ÈSÍ¹ÂM"ÉóÍ-6Y*•ƒÖİ¢]µåu˜£„-ø5yYéé6É¤è£ ÖêMÀ96ÖT]‘9qNRÜj°¾„É
-6ÈæŸòøš‚±¹zõÂ5YVÓ¿]IÈº(ä?…´z ¿óJ9»KšÍ-½˜ãNû5½ÛQ³GfDÔ›€ÙÁ«»[Gš%[IJIWPh,
-Iûº7Ğèj±2¿¼G‰‡èäêkÔØ)´0~0¢–Ä¢QˆÇ>6ÀÅF5ªQ»”FÁ»€¨e[‹¨¬dZ‹“ß`şÆ~LPt”øà¦4û­I—ªHÓ€h¶‡+®dÜ“D#ìmAşÜ@„b€n°ÁÓ	{pƒ¾H.Dñ"F>ø™ÿ€TBç3ø ¹¾n¦ØƒF"Üˆ)|tûÚ®¼ø¤ Q{´®sS©¿,5¤Íc‚_Ó*¼Ã#Ù‚lÒ™ƒ›5ÖÂD–ÄëX@NB-Ó;”º¬qæCZÅ4í8dË6>“ûõ±ùªÜàÑû¡p¬6Í¶†›µ<àºÙŞşW(eBs¬B.}ò t©Û`ÿ] ¯:¶h™
-‰Ä”ö:·sœé­¸­no´œ:@NÕS(Ot^¯ Ó¡¦ããıŞ.½7	.!¤#¥‹šZ0„¡<7®zìÉö¨iğÀ,=ê\Ïz=ö,İ…zñw+¦Ö?;Ù™ŸÛp%Ø“1¿•äTâÿ‚]Š%­vüG¡TWëğq¾˜ˆì’ı ¨Ìƒ4'·qËE¥a®eîØÜ²KY:X„zpx4¾z;íÏ®NÎÇW¿ÏNş;*Ôx¬L(40.u[t\q“Âİ4İ€p0¨/X‘ƒ½bÃŠüy[şüşèâğttvñVhS 4Ì§”;fúôÕfZí€ÚúÀ`×æš•|·Üzvå­:Ml¼ùaã?ëŠÍz5ªÕ¤U±ö}ªÜ§IE‘B­†Õ¢1ÍZğ-NÇT€—a§­0ˆ©l8ZÎd«>fXCı{U‹à3·sşVOM&¬¿BÀ"_¤EïjÏŠ”í[ É„Ó
-»>®…Ê‡“z°¹2;C]:˜xì€¢bBbÛ_¹30?9<İkÿØX_)XÙ:o®æIiSxQŸ ˆ8Ø!ê ì6wù"ŒsX©‘|øİX“?·ÔàKˆfêáæAÚô­5UeD›¥à-YSE¿ï±¿²Íïw†…¤IL‡«s†›u9¾$¬’‚5ùP¿?>ü…Ä¢½àj­s¯ß¼^\ãOÏ˜j³5&}5–ÒQrúrÑ'ÀéÃCù#à˜& ¸œh’Á^°€k²ºKYÀmœou²Æáfzm²3S§„"²g<µ¿ÚTëÍdºèjŸ]›¬;ËJ¢Ìúº
-¹4ë25Æª77uÙ‹fâ-D±98TĞiëŸÑbAiz‹$í‰¢æN“n’$HY­l•QDE¸"/btu-–Wâ3Ô>éµhT`<—úÛ±:ïcñ¥.Nâµı1GxÕÜoÌçö2®÷Ãì«ÌôíVÔƒ÷„Aò6cöjÖ$¶®1Ét…Ş¦Š«,\¬Šóñ¾µ.û¬;è* $špI“meo™W`ˆÕ-q6bÅÂ[D±CÑ§=1ÚØò²›ç’Aô¨ÚYõÉe
-«4Hİ§Màâá9;¿ xÆNÜóæwFZ¯… La¸RÒ¡Qá»¶Å¾ğÃ@G»Z¦’½9M0÷ãäÄ!55ezœİ İ~YG†Æ+ÛC—ö
-Bşjõ<5+mŞ¾8HÙµW4÷i$—‹I‚/FĞÍ¾¸Š¨nD¶©6‡:òêÃ[zx»÷ép¡ná ò6Tş¼Æ²<+‚vÁ²ô!.ØğE[6s^ ÀUâ$ÖĞéLÀ¯w;eï%ÔY·ÎxC:çY°§i-ÖáÊå·Wrë~‚Í¾Ùø†^y(5—F®ÕÛVÈR+È¸*ÑWº®”,åTÍCóV	Ü1gyÆñÛêPÉ±x¦ãÔ)r…Geê©æÜòZí‚Uru3l‹jõ®¢8âwuë3ğô®ÔgPa‘Â\–.$7¼ò*Mš@g…—/tş‹‡¯â3 Ñh©_.Àw2Lã "Äû´)x>‰©r^hLB¤=+&Ùãƒâ |Kl©í…†Ïc†Ä¸}Õ[6Á;nnríÜ9ÊŠGáh_øŞĞM·ÁØÚ#§‰dmW†HÁãs”	4¶‹®33O“ĞX²W¬Ğ·ÚÆ;|,í‡ñÿêÙŸQ»›vwaıeAåˆÒ¼~ã!º^ü÷E†_§Ú	YÓa¡–èÁ‹û'ÇãÊn=ŠÏÄ"¹ÑŞ™Ñ×S]İL:¯İ…ìì¬ÖÜb¡î:¾PåÓ{Wà©© WAR˜ms-È6qõˆ^+<+p%stê‚»jCU`Ã£½Ì»æÁ6¥„K|/ĞÂº6x{|!íU3Uk­²uün¥!ªŞÂàQği–øãxÆ~ã®”ÆnwìBÇ9¾O4¬òwK¶z\d0­93iÃº¼êzø ª´£ˆ‡ìúløİóç6ğf‚8¢»®ÿÎõ«†»,HèÎù­&T÷?”Æs«¯n\œplkô!R(é†nm5Ô‹×‡qÍ¯:ü±öoÍXmoGş¿b"¡"»©ZUrí†Ö8ql™48m¥$B7À–c÷z»ø¥ÿ{gßî3&QZ5œã˜yæ™·~ø1™'Íı§O›ğzÄ1ƒs>Y(ÍRmß	è½êı¾—ÈL1–NæüouÊ&šKZÊ˜Dôó„Ml† °(jy>‘É]Êgs?gOíIçÙÁÁ÷{Ï}—|2—1SpŞ…Òz§d"W±T°p]èÈêŠù…26^\¾…(0e1¼^é¸ğ_^cª¸ovA¦3)Şo6[¢"˜èÕ¾ÏÜ}ÿSxØlF8å£öÎ¨wŞïÿÔ½é¯ozWgƒË|ü7rµ«9Â˜NÂ„à+Ó€·/f¤äøœhÕ…^ËSÂƒiJ™ˆà†¥‚‹™‚XÎH|f4š÷I*6c†à.\°t†ñ5¡œl¾’r³'ğu÷[x5°F„®u”•‡Õó`óïfƒàÃók–Õ”İ™ãÌŸ+\!(şgŒ©ÖÈVN®CÔu8°¾pAtqíNté×d…°†“#«td•Á±÷iö3š>A8»-Jy÷LÖ½ßN%¿¦4ÊÉ8‚w¶R’/«É^5ÿÆ9r{)•†)¡µÏJ]Eåe¤¬$Õ[Ê–d3$-0HLÚPM¸C\Dx›IQ¯Ra0RF}óÔ¯j7@]AMWÂ•ùµk“‰#«8î4”G¯°¥ç\í“Ø™Æåi*—=C@Û¿÷¬íÂÎa³q_ğ÷SÀb˜„ø”ªà®tÎp)F¼z½j×¢öèÖ€)Ô*ö˜‘ÔÈ—Í”õûP—ŒÔEÛ§Æ§Æ;ûrÿÍiüÜ˜‡$ê¹Ø¿wïÃC‘Æ}%£_5VµR—¯}¯GúMi2PŸc¦Ï!Ÿ	?Mº¶Q–ßÁğåàíÅ‰ÕÈ—IŒK“I&³BR¶;Fñ>‘–¥wKÔs)¯4œúÃË+xÙûµW›lUöÎË#ô]BÍöÔL³[fìí‚ñ&L ^£0gWf^ş0ÍĞ:cõ…‘Å_Aã˜‹0Òº9#P__*¸áR˜âR^ÓÛ)¥ÈUª0¾Fšxkâ9Vx0„ùç zÆ»Ä8;w%şöWŞ‚÷ş><!ÅŸüô–Òºı„«‘{ÓGèŒ=äS’ÒÂæ…wQá-WZ…»°‚¹“Ÿ¶Úq™èj³µ"N¦a’…MæPºrµì£•õÂooï8Ë/th¿¿·ë{›ûv?|
-nö$e£/ùõ€¼ñô'ëiA°Î§j½¯>¥pm’®—nß@Oò‰à¶«˜rtcC–æ½òù]ãc,©Ñÿ\ç¥®ÊãÇ—ºÕZéL¡â¿tÙ«3#ê+gS²dÓ»+­,í²à†üa56UÄæRp±¡îƒ­‡à³SD/Enû*·"1…Ü-R“'À9›‹ìñêÊ(ÚT[ÛÑTv¨–¨Š#5…Ù‹hS]šÃmÈEt»;Q5òÜ-wÃâ²q¥7‘+¡«­àA*ì=h¤æ|º¦¢œ8å/ß}0Ù`ŸÿC®Öòa¯ºõl3cY¶9«Qók™šzŞÂ×9ÿ©ÂİĞ\í«°­:†ÜÛ¦ûµk¾@g§t£ZM§hò¦æJOô
-¼]¶ñÒ‡Â6üĞÖ£˜éyvcÉ6ßµœU¿]F};³sd™^ßTÊËr›Àu2pÛõŒÿ¡ulÅDı¹pK£#ff®ÓõÕpâ½öeäëÆ9e¡b œğ)Õ9ânñSP2¼Ç¨f\û¥¨åÿ/şèà,ÑJ5—qTİ^*l»5ÒüËVÉ€°~•\ò["Ö„&È9sÖ•)‹ğ†„ŞA$Q‰¶ágáq?ƒµÊi]1›cyõ¤ö)¡²ÚU®ØQ&èÊDOpÊV1M¼;-m„ EäMvÜ=¼Ñ@òÃNI×=È•lfñ]Oz§hìljĞÎiL‘îqYäìjeX µÀÓ²lå;€û\DuÔÙ}×â²}!l´FÂ%ä}óÅYmo¹şlıŠ©`œ¤T–s)Pñ9’sR7®Ø®EÔ.eíiµÜ.¹rÔ^ş{g†ä¾+Vr=œ>$ëåpf8oÏ÷‡¿¦Ë´wüèQÁt%å\À›(Xi#2Ãï˜ş}úÏ£TİËL† ²`m$ÈO&‰TF©I‰úy*‚•¸“ °ªry¨t›EwK/‹§a0zòøñ_<~òg¸Œ‚¥Š…†7ø¹nµJU+Ç^¯2¯8
-d¢IÆëËwğZ&21¼Íç¸ nq#3MÊıi*ƒX™áæã^/k©QMéØ~(ûá…Ğò¤×å"Jd8Ì¦oÎÎ^Lg×g7·W×ÓÛó«ËÁ~ùÂˆèrİÁãEe[ÿÿI7ÕÕ\ËUü0k¶ã[|ë_"kçÛ¥§2Ğ2ÔD·Ü)ş£'Lİçç>ºIB”ÇÑL ¡‘‹œüÌLj¸_¢Í¹/T¶:Jîb	i¦æÈ@$!,Å†^Iä+ÈÛcÈò$AJZ%nh+GÿáEH—hB§
-+Ñ¿Ks/¥_†H#Û$Œ)œr£Ö¸7Àƒma¾%f‰å±€Ë«áÈJ‚Ôúy-ÍR…cw½ÄX	Qn–puyñ/O7}{N<å§Ti”gSdR2'=;s%wèõ	‰p^±¦‚ª“(ğe–/¯æ?ËÀôşÛ; § ¬ó$Äó¶0j)3{"ò[Ó9"½De"ƒ¶HĞDh@mlƒXæô|#2˜czI‘Ğ‹ãŞzÇ <Ü}é·ì|>……ˆ9x÷Öb­ĞÃ÷*[‘MBÃÈHÂ¿2£½u¹vÛ¾A•šAjñôuæxåùüZĞ_%àñ»ÄR"PÅñÁ&9Ê¬Ø¡˜¬&Ëf@”ŒÆS„’¤É3¬«bn5€;®qd‘I]#A´y[!ªÌ9™3êÕï7•ÒF¦ÖU•"Š€	¼#E°ÍQæº©'>±)“NKƒ¹ËTH•‡ŸghGÌ[›ª_§9«×Ô{jƒ6”FDT<B©ƒ,J9Rœ}<3úÒÑö=3ú¦£åóîÓ%[“,¢»ÜúYDjé±Í•š` Á
-Ÿ‰mC2¿kQñFU§D¢ßt¢«*s`„Me2¥¬ä¶ÉÍ\Óz‹«@]ƒ}@]•ƒ5İdT.´¸ tÁ…ÀNeD}/2*/kVr+‘—bGÌo8ô”³TfÈıèûfø;t`‚5XÑ¨• !Ã¸±ÆğXaéVÑÌ† ‹ŒfÃ#ËğTSYH5FøJdbÄ|¨Ø¹²WE¶]êò#Ó…ª ˆÆB±TQ³ÓŒGˆ?küMáÚSO+QRÃÔE¸·w€ vp|/©ë`Øä¾Íµ}C™" ’%TÍ€@ƒ¾bôğòòèÙ47´2¡qP¼õÉ:ı§ô÷#ÙÆIOøõ<“buRîpËacçg÷nûoÀ`3¸ÜØà@ª­Øç5ÙšumqËÅe½±o@(x°#E*§,òŒ×gvï!şHäüI´(äs%–-­vµâŸa½şµ#£’ï»wÁ96@‚º7ô,‘0™e*s(Á; è
-Çà6.uòÅP+£Á†[´¨Ê	«ŠS¿ÏJôƒÓ¦?øme[ÔŞÇ!¶k›oFğİwPyï:›úkùünÁE¤î%¼)ºKrK„í_s¼ºˆÖ!\.Ô$´ù7·ù@(÷µÜØÒhhôÀnGÍášëéja]Ã¿î@Ë-úpó™µ;ıjºİpë/©W&8ê†=Bb6PnnvzÔyX¤ˆô˜ùÜcÍŞ¨(ÄeÍK%Bk5Z›¦Èšx¸Ò¶/¬ì*»bI“é‰Š…òí„õö†0›Y‚A„¿ P9â.~Ö*sŸiMâ­ÃÆÂ¶÷QÛ–;&><9±¸Œ,¸â¡"Ã½·l6h>C*ÅŠW‚Øa³±H^³\y~kFfôğ¯Y,w–+v÷°©I»vUjO·¢}Á°‘cè¿É {F‹fXš«êŒ‡>L|ÔÖšı‘M²ƒSÔDwôÍ“0œÑ9Øæ3lÿfòS¤¨Dm[g§Z1^N£ClîxoY}dYŸ­º”d;ÂHİ)[;üÉŒn°ïş"jÌdbû÷/ó±4ê15F˜¼”˜¾ùÅ¾?h}×ÍpÓìÔë$˜í°sÑ;E†E×ı¾O‹ıä!|hèú£üMtå^ºæØ§šá.›U±J·rr9âOàÆ–=*P³29y;UŠ,—NÕâî§œT
-í«ıh‡x¶=1ö‡f±RiS•w)µøvzW'i_=g%ğ;İ&ğÓRb57EW5®l²§ Ü")wó¨h«1ww\â%wlÚµW3ÁòI—“}lášæ;Ôf;ıÁ{g•Û¯ı>JTñR“—;5÷àÕ¹¨0…4ª40Èõ²İ,[ø!¬i°²GB\ÎqúKŠ§
-*·zŒbÎzş€–ã»I?ÇRêúçrRÀBô“{i‡ÜÍÃ2#4$ò¾à@LW^’b Qåûç2Ç	 íWG¯Y1C3ÅŒ(àô`FÄº5p?CÂjcÜ"ø†ˆÃâ`£QG
-ë¿Së‹™¦O åæ1ìôGøŞMh;)N¡©JKCëèÖq¿°“w»nÄ{O/ãÖz@‡yÖİÆLhAÏv%#HXã4É‘…£A‘]²t\ufåfi|Ô˜¦p®}|`V½‘Fwd‘’…Ó‡¯º¨f	½¥J@ŸOÖ"IdÖ†7ÅÂ¡aıïŠ‡Õ¯˜PÇ¶Bî`ÎkÿÀÆßµnùë»”²…um×ŠŠ\ÎâîQ¨]UÛJÛº£œÂ€Ô§v«&ßŸ'¬xa±Sâ._cù¸BR\·øüÊ‹åZ»ËèúŠP[öP´c¹}é^Yvã6w+Ëî¾¤ÔË»éº&üª¹¸ùfÍ:VÿO6³qü;™¬äİRÌçÕo¥YkóŞ&³#«Ê…ÈcSSÑ·DÃZÖµïøºËÚ‹ë³é›WÓ×ş«dTt!­/f)L£w)¬s„~–Ñz-Ã8ŞİŒ)ì]@´æëÖ¼V»KÊâô
-‡pßc¸ÒOŸRw=Ø¨[´XNX"ëXoÈ¶¾¿ŞÙÃèb&;Ä>ÃOµ1£ùªB¸wÔxÙ¥“³û†RíÃÕMnvı£›wñ‰¦JÚ€³Ke¢E„RùCâlCŞÁ²¯èzœ¼Äğ&µ¡ç¥HS™”Ÿ¡)Ú°¶èÆ×UÌ‘Š’r ëvzB:m‡~«;ö©¬Yk ¢K"7u¹‹üãèY†ŒE|_Uè1*bÿsïksÚÆö3üŠSSI^q§wrÁ„à»N(ö8ä¶Ìh„X@AHÊî‚ëiòßï9»«à6“Œ'HgÏû½ºè'ë¤Úzñ¢
-/`°alîÁûÀßéq©`Şşh$ñ#ãl÷×ÁûKrÏ—AŒãQ	ûMâùoÅ `SäòÆ“'¬ÖŞfO¶ïœ·Û¯çíóÿÀ8ğ×qè	xß„_ë“ˆ“xÆZ©^#¹P¼ÂÀg‘ ×ãpÍ"Æ½îvs<€‘9Ü3.H¹Ÿês=É8·ªÕÈÛ2j2Ãö!3÷a‚Fu«Õ[[Ø–;x?^Üûá‡Éíı`rs;¶øòC¼8ÁãÒìa0Ê;·óOÌG–'1ó§2Å3XtÈ§‡;v(7ˆ`›„nÆ79Š]@ğòU,Z¡úÊX*€Ì¢x±h! ¬ZõïjåHt\-ˆğ)B¿ô Ú…!
-ª$<Ø£ç †4A´%XèE«ÆZµó—»H§„ëú1²ã;_ÚNµ‚R*5¹Dãµá„B¦³nco1á^$0RÈÀ¶XÔ¸¾´báHk +&/yü(™3[SK°©~èAÊ1H¥ç„P:¤çWb«Õéø^)ÿ¯˜'wœÙVÊ<„U×Jñ×ÜCÆÙ™£Ğ‚ã÷ÔQœ!Ï—N•~ÿ„b*¼ö¿ˆqmÂ,”=Ã±¤„
-Ê†=K.ã]’0Ñ—w”L6½Ö¡]‡—ôĞÉ®ıòt€³àB0I1B=²¤˜ÊÌÉÃ£á*ŞÇx:*•
-K)ˆuZ¾©ÆÄNŸªôô"Y²K±S610‡ÿì[É¥1µÙlÖ<¾ÆÑ¤ïH‚ÂEÚ™FŒeu¿¡s±!p—äØ–‚Yu"d×®’îÄ—u.æÛQÅhM[-¸åÕãÃ@Hˆ—p¶d\A²¨¶hÁ"	ó'ksÍ²"Öä)cQªÓzÅã­QÁ+JşÍK€yş:„C)``ƒ³±ƒ?F€Ş$,b&"‹Zêé4I4‘Mâ+D&©çŞv íÁV™t¨[ oë%öT)Z5%.Wqæk†•|HNÌ”¿gÛ'bæ#xä:ŞI¥¼xN=<”TW…³Œã8Î¹õ‘¿Ê	ò6æ¶·‘3¦ÇGm†Ö4¹Æ¶‰|*3=Ê6İ³”Sd–ÇàÛkæíÆá‘Ñ¨vò¸<2ğ½¨efWzØRfÆa2Š¦4XKi—<—¶x'°1—;ä'¹,òã³ËÓ¥ï>Üİ»ûádò'şÜŒ')gœ“É–BS†£…8UsE²ItŠöQ ´8µd€ÿ6ÛÍsµN™Üv:¡êÅOÌãè¹ÕvsÕ¶ş´t“E!½¸¸€ÉğIµÛ=ŞÏöûY·KØ'÷3‚ÿÓ~¦üÆ˜}÷‚V%KU¦,c®úÁA`)6µô^CmŸ‰ÍÁ¨Úèn^Û#Ü:³ I§.gIˆkŸê•©ú¿‚§uıtöéÇY½„ñ¡X‘UD©íéÇAşÈG©­£Öì‘’í‘lT£	Äş°Éîsù¾ÈzÍm¹­Š&H#êĞ´B=·\™ÖÆøê¸6
-<«"Ílœ5_4ÖÚŸIçB[·ç˜dP["2JÇÅ ;ÃËûU±5°¿’êÙj¤Ta›¶g©¿Ìš©r¸ÂõÍ¤WíÅl´Xwû8X¤Ë±©CÑµ 4°Æ€nTùvií	.‡7»á}"¶„œ.øNBOn4#ØIuš ‚9Ğï`èatÚ1',)º}Ò/5£$"˜‡ìÎ“kµ¥“n®ûËÍ½ëRJ·šMúKcÒR®œŒ‡MzKoM†£+÷rp?~ªS4I×Ò7óËšÔwĞæE…X‘~ŸŞÿÎéXãÙñèÃF½3¨ìp%%‹]Å>Òár™¾’mĞ;mZS
-…n	¶:†TSËU[’°Bò½…7§ÜÒĞ¾f‰Kºª½+]tõë]ç¹ü:½Úu´­&­ô0›Î²úùAİ ìúòşÃû©õëdrçŞ¾ŞMÜÑ`|ıqp=´fGÛ‹išfu¡¶E}ëÙ«Ql½º2ÉKÔJ|Ÿ%²‘ª$pÑÁÕ®©Øh^¿32
-D¼eX°èî0Ø°>[ò†¿î~îµ›8¶^/ÛP€Wô¢~ÆêäIQµJ{R:«BØ¹ıg§ì?›©Xä;¦úp!´Ii³ÇMÙ£¾¸ªÇ\œ–>°«ZÔY3½k	Ò|V?;@Ôª\©÷Àˆá¾ÒEÌeaûÕƒ İSö¿«7‘gA>âsZïª-e³›¡,jeuSõ3q?ãéKıL‰•^·¡¯éò‰Yo§RŸ¾œ©ë¹¾±~îY¥k"±\âH‘{/<Axî¤×E¥@Áº©ÁjÏf4L>g™Š-½dqÍ·¢ëóI¹dHiÑ×CAŒ¹06‘	CÜ°¨¨ñKïã]M¤}Iÿræœ
-ÁvNäºYyşR,´£‹Ó|=ĞÄIœ¤q1ÁK«š>dåc¿Àñká¢–_*Rf·°´9dÎTãğëÿ­;ëzÛ¶’¿í§Àf}*)Õ•’eÙ©Ó:Ûø$qòYNºı\7/Åš"µ$eÙíÉ£ï<Ò¾ÂÎ0 ¨›´İ=1E sŸÁÌ üîûéxºİzút[<G7Rz®xú7Yî¦9½‹ÅÑ?ş§1Mæ2•pSŞJ!ïòÔõó0‰E$LÅÙ?L]ÿÆ½–BˆÊ~2½OÃëq.ÍSÕ¯9íö á´¾8ıq¹™xİ/ê}–L“Y”d¢Åt½É‚…¾Œ3ÄñÓÙñ“ŒeêFâıÌƒñFŞÊ4Câºu‘¤"rs™ÂâÖövìNddJöWÃî¯'±ŸŞO‘§gÛÛ…±ª•OG¯ON^}:?^¼;?º8}wV©‰ıK¡„y³l#¤_w
-ÈùïiÿŒ ı³G¯|Ko?ÿİTÆÃá›5>äaæ÷¿¾r³ñS†yÆ×¯d4•)pÊVr2ádÉ‰Œs—, ŒÅûWïQ¡âxœ†™øJÉ2êİõvúM\xNZÏHİl		0ı:uA,ªfq SáŠŒp?•€ÎO&“$Î„›UŞñ"P2_6ÅY"ænŠ€îE2ø÷n‚à“Ñm·©ô•toÃè^L’ …­¶±`¿³©ğî×$É Ê ?€Å FÇˆãÇQŠê<ÌÇbBj!6µ>j‚|eŠÔ¡/ÎI*r’Üø)¤R&˜| ÕS5ND”Ä× ZP#ö¬LÉlûÏí­VK½äùœ¦²bšÎP–“Y”‡S_£Gà_ñÓUç·A âïáÌ{qŸËŒˆ}-ïOî¦nLÎsùÿù÷n³Óì\moMÓ$—>BÎPë¾Ø!´‡Û[[—ğ¿­ö]¿[W{>?ìñƒ§F~èó›şH?ø»ú¡ÛÖíÏa8#õCÀC.íõ «ŒÔßç9Ãá9»<Ôc€#&ÃåÉAß0@—‰ßg–]³g2Ï@f€û,1‡iîš†<âU>£è2Xb’F,±=~¼Šßtxr›áøF¼LÏ^¾Ï„µyù>‹®ÍË;Ìò€Y–üF²vìñĞ¡‡U00ba–;Œ«cÌ†`—‡\FºË»<9`â=™qIó†>`±ìòPÀ¢k¾Xƒ¿1©OŞ5¤2…>¿ñ˜ø®±:Óc8»,yŸ	v~ãòªCî1Í=¦°Ëo,ç±ÆŞ6º`È»Œ«Ëôì¤LØ.sê¤¼j`ü‚!ïzxùˆÉğŒèXMóå£5r6~a´cQ´Ùği¤jc;ì±º;ÆÑŒ™ğeôÅ(úÆHøMÇÄFÚ7Ò`.zF•LÃÄ;Ìò¾YÅ‚ê±X$“áñP‡ÉŒ;ğCÛ??H£Sã Æ…ù“`¤á”iöyyÀœº<Ô7êf–÷MŒ2Ñ¸¸‰Qü¦ÏR˜Øk¬—tNß(—i1.É|õyù	FPŒİã¡=~ãğ*‡'wLœ7!ÅDQ£&^0ñ{ÆÆØ z&NùÍÀaôeôÎôôWqµY#¨yUŸuÑåå»&›k6Mãqf“b8’‡FfS0vhvjÈ¼|Ÿ…°ÏœvxhÀôH^å{6*0R5Úè‚±Œõ2ñO–Fb&1şel•—;&’ğrÏl.Ì…g¸ ÈW c.vîc>œ‰óY(vbÈ–â\åZ˜gæc‰9–°’¬N–Cvá*ç·jÚèÔ¬,íJ'aÎÊŒ°
-LÀ.i{‹ÿ^ÕõXgÃ˜³a¬·al°~¬³gÃXoÃØ`Ã$kÇ ©Z9F:[ê²ëy’JVé*Ÿ-ÈÕ/@ynt¤áO¸’A­¾ñúåNS¼.=‰åËl:MR;†BëÓxâúÅR¨(äÈ…ı@dc·ƒ°	ş·n*€,»ğEÉo¡x-ˆón‚‘sdˆ8Q±É<›M<( Î¡¤-[¦vkçQ E§İnÛ‡c(1—ª¶ã¥™åÆï¿å‡LéÅáŠö¢.l4ñ÷©–=ùµ½ùÿØÔ`A§k6]s=ØJÁ³áÿsEq¸i KE|……ßDæã$È”ëç37‚úÙ9‡ù2¢¡âdXZó1¨¢!ÀxÇ1Ty¸¢hâJÔÔš†ÿÓœ­13ÕjG÷M[ŸM$çæD!Ô–¹èA!-‡“»€Ú…Z;Ï#Ùqº1êYxƒc}Šº”X¥¦ªĞLÆ9›àÍâ)Ê+ps #ãë|\Ğ÷ƒ;îÓ·™9uSw"X™Bìøát,ÁÍîrAAÀt%½f{8¼EEğë_*óY+Å4r‘Ù;<c_
-Ñm¶›¶.ÕŠÒÆ5šÅªO²©Ll£j‘^/(ªmoAM¿µãª^Øa&£ÑÁÁµÌu{§ZC»Û
-G¢ú_<­ñ<Ì†pª5 BP¶4ù#7Êä3xñWâ&%İ€”CâÊÂ?$âÄŸğ`E­ù7ÕÊÇJŒÇşË7z5E@{™ˆSˆr·èøÊõÈ#¿G˜äšö‡«ÁA úƒ¹CİAÕ{zNBtÆFí&3¶Ô—’œ$ıgIKVUoäıøR]X¦á\Vô@åŠ¦¡]A7ÓÌ€h…ÕòÄb@Ïœ-„03³4P¹2:eé à`§ª‹^MBÿçûáEÅ(¤ş³d™gy‚Y\ÑÕ‚à$6|Tó)—QdºIà°İùØšSÁˆ¬zÆ³Ìò}ãü„§ªRdE*ê¢Ó·^ "¶<ñôãŠ‰ø²W~§Ñ€“$íÄD˜
-ÕbØ¢U„še8 ­l"!…‚M§’â¶œ%zÔ)pL@±`Si#Â¦  Ê¦ÒGÔKb–›UsHæ´ÂB‡`½¤C26c™j_©÷OW
-[ƒçÂjà‡m«5å´[[­£lOëÌÁlŠMñ!#K°r”%Á{
-”–B´*¨.‘aáüIª-CêEÁÒdBoy5l€¯N‡âÃ¶È‹W'âİ›—uqz6<9şp~"Ş\¼z÷r™*s*è\¤÷hÎ×šP³AŒqŒ¼ôv]´šV8íÚ’Ó…·e—;ı¸ÙåN?®q¸Éyœ³ÑãëH\¨Fâyˆ5æŒo2n§½ÆÎ[°„J¤ bîŞ73ë•úùöÑŸSHN?®Q¯Ş()æó~‹áÓlxZÀHºh®Ô2(r‰—šr0³u]¤áD`~êL!–¨+7½gËÈSaµ ¢&‹b§4ÖQ¢’©1ï1Å*Ã©Ş ‹™0ò¹”äºyEYJ‚ùµKgêL#]Œ†Ÿ«It`¡ò@ˆ—‚Ä“\§ît¬³ÃKÒ"ízùNœ½»@¿¬‹“'çuñáìÍÉp(~y÷Aü|tv!.Ş‰—'Çç¿¼¿oN~::şE¼<º8Úy&J©;7A@y§ÊYçúTGjú)·„Â´—üÇ8÷ë3°#ğ…Ú=®,çô«³®§r-®ÂÛ¢àãX„‡d“`·d¦œ~…àidÙ%Î¿*¯Øäş3!ÀÔ°B€è¯˜€7<ğ”ªöëšğ¢Ä¿¡L¬.Æx ÅQò1(ÜÄ’™@ ln®°(ªáF ‡J%`H|'4!øëÛo)}fíåNxÓ/­½*„ÈS«‰oö]	Ãg+’°K“ÓUd]¿¶O’Ì`M™XÎ9²&\º`äÎPì€7ØÔªéÍCá1ZÁ ¦F“£€‚¦.9˜™²à`j¿+íW³Á0İ)n¨ÑNAa¤/YÔ
- k©€ùª
-æ¡¢£x¯+±ÛtšíÍF¿j÷TÖ^l#™ƒÄ}»Ş¹í—ÀjˆÍ$’
-JyfŒãaéÍ¤B9n”$7³éëuá¹Ò¨À¿jqá?xZ{ÿ	0"ğYµ€Ä6Tôb,ß²Ó„bÂe±Z¹°Ñ=Ì··:òÆ3ìAXÅbÉ0±P»	É¦ªRKŠÓÅ<Ğ4ÕÔ§¶ƒ‚“%›}r×ëğ\t†y*$•’xs»)´p[bğFÑÅQÛ|¨nÑï·å÷n½×6ñ/y}Ai~"ÓkYÅ·uı&ÃÓ|ıwL-›„= BQ†MR%uú-§×ê:ZBØˆØVÑBYc¥ÂâÑÑ×YáåOE8}1º|¶ö=‡ m2<œz£ç•ÍÏ:ç4¢¶u?ISéç¥kV˜ÑùÎ†š"†,Ş:ùªhb7Ê{fÑ¦ˆgQd<;Ì>%ŞïÀV•g€9}#Ì/°el„ù¯B,P¸Ô½àE…N,¬rÎ×+¾¤/² A]°©.§ef[},ÜÇd º÷å-‹hk*OZÄ¸¼k”ç/m·Il¦,[¦l*+{%‰ÔÌØLµ¦Åjó> ¤¢Ç¼IJÅ,ƒğ}à†¤º^–ÃQn@|"ƒÇ{Jcp›XÅ`ÏŸ?É‚WÅtÿHC²—ömW€¡SX†èãI…æV»%ºZ³×xf†rŒğ°VG­JŒúB\»ÙìvjeÆv6Æ¿?dš4FaÁoïP \%äVT‰å6ş_±KQKpWYMéğ`½¿ÖnJ›L§4q“Ùâ*-ø++“¸
-ú*¹-€<†¯‰N“ŞÃ¢[ˆOè–å¶Yh«$¶–tîaMMÏcrş„ÛŒ˜!e¤i‘Ò<¨Ê•ùH<K%Ÿú vÂgá©bn¡K>H›© 7ÑÑÅ+ÎñjM(qÓ¢fe˜'Ë”âXtPII8ÄI‡ØÕÑ&»¡;’yîú7P[^»¸!—»vËõåhÔÚN|É®èÊ i¿s?ê¹P‡é[VÇGVïBj¶Õv_5»ˆ4jz¹÷¾4½ä]jEfM_ <}±ÆÔf„ÚŒd
-™¹ºu£Bùùğ¨’‰÷¯‡â¿wÄ8Ï§ÙA«5ŸÏ›¡ÌGÍ$½n¥#ÿçöÍü®ğ­	J¼…´+ëòÁ*=,Lğìtr3°~{¯]F§–å{¾`3š™9P¸cj-©º‘`$ÀÈ¹é»íg¼ĞÒä–àe<U“sëb¥*j$#ØêÜ ™7ı„ñvÅEİ“pK„RÜÕT_¦Å¦‘I½D#G'poT7ÜÍr½I?â€ğbÑ+VÌ·Oôy4W ÆáÿÎ$oô² 1†¥+æú ÂÇÓÿæŠLàé((Ÿé2N èmS¼‚¬SqP…Ìa°.¼dM^ô·.(àQÿ:øX»ëC¢V?ƒ™P]÷ x¥mEX):{ú	–ÛÍIôú°óˆcsQ¢ÎbQ·ê%\Ø®Ó
-	FÀŠ't—Ca{²T¨XƒÕÒùÎ2YDA	u]äéÌêï4C–}ÿàÀ½Q¢ÂÖ4Î+¡{òDÃRE7mŸ˜e_†QÕæ¸%lLª†ÚIfùtF— ,ô:ª¿ ûªw¡Ë e:Ì(Á3!ú ,¼êö€: ÓCí>MAGÎOÎ`BQ‚°~S˜eB<-¼KÒs™Íh‡7÷kÊBGØ%Ùùj¼|Èk`Œï¡ÅO¨íNU‚6™†èX[qÑqı]Kæwì¼°H~/7\mœ_N²Íòo‡jªİÕk–ù)—³K6¤[?j­ê¸–Q[ØÅè“Õc·80³JˆŠ OøÎJ·–#-å1H¶o1X_K´´•†çşxV[½z®c%RØÇœEÂyY‚r–~ÛwâÌÓÀDƒÀ­ıïš>)¢RøLÑjÂ–SjrÕÖ‡´ãâvÊ&ÆZ+n¡™ØÆ}6’hh^4r'ØŒ\Ğ	³q…~ŠŞ³%amqà ª EõX ¦¦$šMbj9"90eŞ¡/ãÍ Ú„O†5B€-2ø*†ÁP6Ğ …‚•b’á>Òê8­Zßq­Î¾ÓrvûT7ƒ\3Š<
-56‰L<Ñ
-İ(„dºw§¨eHI™Ô6§ìyï6{W«{¢=PĞ·Ø%0—0ã¢wu9Š’¥¼ôjÔÏ#ĞØ1-b3S©’À£  ÛÔn§!T“ò§3¯fEP’…êâÅYÊ¿4UÄ¸;B^òUò+(5hù³'![1çÉüá™oÃ»c¥z=uå¬uü*&
-è«dµ–èGÓüXbÎRKüÅv©­@Û—ŸàwQ¹6sl)7^<‰}c¡|İù«¬K!Ö÷¶¶Ô}TKu^ Ö«ƒ•alúbòkÊÉ°EŒÍ§^½«ÂZ5w)r‡-¾Ô_ÏğÉ‘w¿¼éi~Ó«ËÿŠ6®ù%Ò²ê‰oaúš“Åû´öAî-ƒZ`VyĞğEr'VğÙù{ù4<šƒ)ü:î²XÇäÃZ°À¡j"¦É\P“€YŒ$¼…]*ÕÇ"Ì²C{‚rûÜ(åˆô(ş{ËÜçšsÍ-Îİ¦5°rò4âœÜMQL†—ËÉTàgÁÛÆcKY!eĞÅ¾†}„*<»Ö Ú’ø"Yåí<Œ"ÜúnhS:ó{õİz_Bx‡b¯>U}ò^l|e*Æ$”ÚÓæuäÈn§Ñ,ÃòµeİÂ¸ÿDWu“(¹¾o¥:Gj¹Pá]´f·ÓiNƒÑCæP
-Ñ…) .OÕÃ¨q0êáW–a°!tÛ_#q}J¢M…8¬¸º‡ ¤«K<–¦PÍë„A¥K•¬B«½ÒjO­
-şl;Ÿ­,õ—Âéò•×DQ|0êLKtx9h‹ïíwß}éûoxû¿ÓñÄÁâ•N£]Æ°„‡áİáÊ$ÛÆ"=x†%@g‡şzú¯{éè¿İ+JŒœ§n<¤ûÔíÀ×Áº\Ç€s5¸E0Ş"8 öavÌ8g	\A]Fı.À æ(` “ÁuWPW[P©ÁuŸ 	œ£À­ƒ\l¼¶OÑÉñLQ¡óaÈU§ªLËÊgîø•u‘­sÿ“Sz°_»XX_˜ĞYõ±õ¯IŞWôHÑÿÉƒE@ùTo°Ï7œ!Î!ã$OÔäã€ùˆH-ú›²U^l›‹º§`ƒìµú­Áúœ¡Ü ”*º‹ª.%AJŠ4ì/­$¸2AØßŠ¾JçªöVW¥vhûÙtâìf1•KuõN‰T^©šYÿd¥7ÎÒ›®Î0R«8Ü.(Ñ -U”ôSü“"¼
-Q¦Œá”®åš›\GÓ|aÓ\îä„×cÙv…/Š{^tã8¤]üoÄ¶×ÛiıÏt›„~'9ı¢9úÆ×Di¨ äã$>yW%È@‚d‘¥N·ğK¸ËbuÁ‰b…ş1·¨ç¢Wlöz²§*ô(AÏÕ.S’4`T¯ R27«Äùc2`EÜ|]îÛS&©¡=_]¼¬³¨R2K/—ë”‡I4a‘“1¶”h3©k¢SòTR oêeâ»ëˆWÒFŸäÛËğ¦«²ÇÉôÙ—ñ0K!ãrÁ•9‡ôè›Cº#¥şSİVõ®3RiOÕ£˜¥Î @2?W§'ê?2C²­«ê{ŒHI‚B\Ëdnr2„ğü9‚³ÇøÕJa_P‚„åß?’nZj *xÕêİÔì~‘(±Ó„%°:Û.__ÓK ÔB‡4­Ä ˆr±7Eøğ†^ŒŸiD6ÂE³s×œä®şmñ3¸’Ìù1Rúh‚./S5£#\}G-Oçxw‰¦ÒÍ’Ø>ÖxàR4ÒÑX¢£.>\üØpÓ|Ã)ÉÅ‡«?h´dú¸C[séÓª¯û²êqV=ö»ªMŸUç±å‰Ö9­¾Çm_N}¢/=eã‰h®¹¿já³n™}åıÕî®ÿp¨8dş²Ï‡¶—ns¬¾3‹S?oÿ?½TkoÚ0ıL~Å„D¨`í˜ZuêM)ª(…"`Ò6UŠLr!ÁlÃÊÖş÷İ<x–ª¦ñÁ"ö¹çœ{üøø%
-"koÏ‚=pFˆ}î´aÊ$sœKç[9’¿P¡LyŸ"à­QÌ3\
-0R†Ñ§óFlˆ 0Ze9õd4S|¨.şÙ^±rP9,Óp-î2doáœXgZFrJûs_WÆO¸Bî¡Ğ±ÆEë+\ @ÅBhOú´ WÙâ•Í½/T2ƒŠŠ÷-K°1j²‰íÍ¢İ›šğÔ,Š{ºq|QÉ‰eù8à}»à:ZíÌq;µnïºãôê×­BîîÀçH¸õ;¨TøÌCŞWLÍ`@V/ÛN‰†.0áÃz{×#VK‘Ç>8>üo{¤¡¡™$÷ˆÂ×àôuÒl+ğqâ…¡¥tª.hĞ¶X¬\¤¤AÏPXyGªŞ,BøÍjç{»çvê—­s§vå¾«SòáMé¯À›×ç5·zVM iƒ‰H“÷11jÏuÈp	ò#œ­ÉåùÔÕüwœæMÀuùóÍY(½Q—ìâI£
-È~m8³ãe¢Í¸Ò
->…e…Ä­»8Ø¬X.>R±BÆE‚&ø8iÓ]´›:\†›6]‚u¾UTœi"QŒsÌ)4%`©Bš÷[æº;‰"©hwì,S> ûÍàâ-×FÛ…Ì!eë’“¤B‘*’’¹Ü€…ãîb©§‰²<vâñÒÙ&ªX0}ZvâÈ6o'¾\¥â&ë×qL¯¯LäŸTÎ§&éëåùİ°o§g1ÑâÂeJ±™]Pü§ğ†ez
-tdW˜czÑ‡Ê¿!ª½Œh#†e~Û[×{±D6iÔ¹Ãëï]z‰³ª‡—mëÛ²ù¥{ë/•TmoÚ0şL~Å©ê¨ E4M¢lM;T1*ZVM2É!‰l§”®ıï;Ûyc-Æ„í{^|¾‡³¯É2qN8o…8c0àşJ*&”Ù‹Àûîıl%ñÀ„¿äø¨ó#PqR©®>O˜¿b€U•åÜ“­à‹¥‚ËâWİoœ¶ÛŸ[§íÓO0äş2™„Á1|#Ö­Œ“8c	'¹¯k®ûI­q5üW¡`!Ü¦3:€ëìğ…Ôæ>6!2…‚À'±5J²‰í¤¸î¤ùb›è;M¼€%é8N€saPw§Ş ×»ğ¦w½ÑøæÎ÷o†nŸ!àHuygÒ4¼Ş° Ÿî&–W˜­):¿š¦ª×XğµÔöŸPÄ­„¬pK-éßë
-SE=lMİ - u	Àx‰¦˜ğı{z$P™Ú…ğHşJş„2cfÏAÑŸ
-‘
-·J=á"\-×¥*@”†ásncHàsk‡KsØ´&ˆ%«"	«=Û*„£…ZBLªbÃ%jö§–Ø§§‘82Àm]s7-CÃ©Qëj$XÇu¢ìYƒvÍv-³¨MthıâĞ—®¸¶’]mˆä-ªãdL¹ä¹T²î®gS[è–Ô;4EAæÍõF—ı¾Û(D5mÑ-ìïÕ%û0_ş‚ìušêÙ²NmeÎ^f.ÛYwıZñó& ¼WÅ7ënN&ôÖõƒIû IşÍ3· ¼GCƒ56Ÿ÷;Ca'Å„ÔcË’£À0c67R¯˜®\iâ Ë²}>ç´QÎó;‰Éd±™ñˆ‰m~¼YÒl¸6…U±=Y2Š£7õ:0¹®®3ÄïßšV¹<İ\/K±<+"Vèë„qY úE¨[òL$õì²Í
-6ËNvb¬—°›ÿ›‰ªJ(rñ·sQEuwî¤Ãu÷âÎŞ½šÊÊ[µ ÂRÚ:LlÛ.ÌÃt«Eğ¡‚ïT2ğ™*£À‹ó½Tik1ıìıS0xâ&MI)¤G¶	i‚ml—–XdíØ+¼–„¤uë6ıïíá#=õá•fŞ{óf¤Wouªƒƒ½½ ö š#N\
->·WìIˆ>DŸ;Z}Eƒ	0ÃS±DÀoÎ0î„’à”Ê(ÔGŸjÆçl† 0ßF9åJ¯Œ˜¥Ş¯ÿ…¼}txtÜ¡åôOUÆ,\>…3B]Y¥U)µ®+—X™à(­ç8ï}„s”hXƒ|BpU.ÑX/îù>(sh(ù $[ %™XÁ^¯Ë½îJnVÚ×t%LSÊI$8“°G—İî»(vGãş0_ô{­6ÜÜ@"âv=¢uÊà:˜‰‰afS’úaíÓ2&ør1¨ãí]‹Í†äaƒ_zƒÿ›Áœ8,ô5ÊÑèÊ‰2±MlQmå+ˆ…ÎpÒÑQ¹u!i™R_‚AÃ›Ù )ã×PªèŒ-LÂu§H}‚õ‡Ï)òN—Ì éü×AĞĞF9äÜoª®_¡½†CjŞáø]ªšpÈ-ŞB§‚„œİ%¨r^C‹¡í<;zÙáŞò$ºtpšË²íqÌI‚39wa;hPİ¦K…í¼¹#²?èöh#FŸâ³hÁÍzëKwØÑÙÙEïü$hü¼‡¨r(lr¡S4cêÊ>4ç¸ªYÅ2¶â»ï8qUfèŞeŠÏGt¶O|e@õ[‡ÑRÀ%®BL°V™!–°É°¹Ÿ‚]‡·36‡dì†ëŒ	YDS¸·ÍÚ,¾¿ŞRoÙ²üõæ®ßGÛw¬aĞåFÂ†æ‡…åZ+CP·RL!|RÄøMXgÃV-‘ÜKuq©È¶Ú”XdÖ¬S–YôUzÆßàz.Ô"ÖóDÅ“•ÃGVâÈìåÌ¥C«îÔã@ª¶şHÊì?Öà3c–ÍÔomú¨âí]Ø­q¼Ûë°œ®‚OÈ˜ÃVáÎ{A3¸öw¼Á÷óØ”¿ø;Šj“+¬®@ıdVG[¯í­Ë±û’”·£JzhÚÂÛÚ.(¿ }“_kÛ0ÅŸãOqMBş‘Á(tĞºk(YJ:’ö(²t»’”fn»ï¾+ÇqRºÎO²¥û;çŞ#½4™‰†İn]ˆsÄ„ÁLòÜyf}õMAü=şÕ7z‡0Ë3ù„€¿½eÜK­Àk]ĞÑpúÊ0³@~J¹âÚ”Vn2ßšU›wÆ£Ñy<¹ä™.˜ƒÙ nˆZ:mô¶Ğ†_w^T¬BrT.hÜÎÂ-*´¬€Û„6à®Ş|Bë‚¹Ï=Ğ
-æÑRñ0Š{DG6±Æ®›v×ÅmiBOëX0C%Q$0•
-Eûì!M&×ñÃb²\İ/âÕô~~Ö×Wé\=Ã©¢²4àSÒ'KÀ†
-lOu•Ùœ¬ÅšÒè%j\‹x7XU;`à¼•j3€ú­U|†`Ù©˜-K“¡õLÑê¾aB L…¢p,{¤±íA ŸLÁ¤ZQÀŠ`Õk P¤ÛTæXBı¬ŞÚ;í,
-HğÔGˆ"6†–2I-9ùŒ 0Mér)ÒÍ˜ªÿû„Æ“Bó¼"tÚj2G›ku/¤\›¬Gª†QËì¯NºUû-ö3oçÓ«:îPÌM0§)œD|ô’ŞJî½?šòÒô×°$@ûŞ4HÑ°ê;nkŒ¦¸Åå{~şÈH·<şŸè/MPMO1½÷W¼0¼°‰¬º!
-ƒkÂ”îÀ6[ÛM; $üx»D—™É¼7oŞLòP—µt»]¤ÑVb¦UXz¾ö,Ò×tİ«İy* ½*õ‘@'öR±vìœ‰Ô†=©¥ªä TÿU&ÊÕg¯÷%ãé¯j«Îğv8êÅp…V¥32`ÖÇsT=W»ƒqƒ__s.®ZF+²¡Ù1]|`J–¼4x;l#€ùx$sw7pF2ù8<¢ ¶T´[›t–eéf•½çËUš¿,­.šÆBPôƒ$Igë\ä¥ØiCˆÙ:Æ'IËñtl›_:p|N¡=)6ç¾ÍT£rÒÜFñ7µXınÛFÿ[zŠ	`”T`KAz(
-¹£¤Në$MŒÈAµaE®¤­(’Ø]Zñ]Ü;ôïInö“KêÃº+N0`’;ó›ÏÙÎËEÙ<}Ú…§0ZR:%ğ%K!	—ú[£·£¿Ÿ”ÅšršáÉ‚İS _$'‰dE²(2$UÔ/K’,ÉœÀ2Dy™ågó…„×ş)NzÏŸ=ûşäù³çßÁ–,ŠŒx×‡õAeQe…€Óë½L5VÆš%ã§Ÿá'šSN2¸ª¦¸ ïíâ=åB)÷í12")GæA·›“¨&µ°·ŞÜÛ7hPÁN»İ”ÎXNÓ8šŒŞ]\¼M>]Œ¯?~]_~üõà? eé*±æª²äEr;š
-í$÷át;ı5[Q~ûºàT?í úœ[×s[ÚÅ#YÆäÃío¤,‘ôõ‚n¬õ`„çõ‚	óğÓ²È…`ÓŒÂ½ÊräÌ%#’ås Y¶	ªy©Ğ®78VL÷Ÿİj/ï	ÇHÎÉÀ2&$³ “®˜şN)H§äì?Â‘ù¨éÏàæ­Û8f«µ]±€”H…«m@!Ë.A³şK42±Z%MvaÖüâäU–) Ò$¥¥˜U¹Ù1‚rF2ö÷ºtDGIç4iÜ;y!•L‹u÷XçÈó¥(£ñÜ—Vƒ¸gØb'tB¿ ‰"¦DĞïş6¡yR¤“ù›o`MJj©ÕliĞ@Šƒ5”Şé|Up*+C°†K_w{¦é‚£¤ÈglşŸ9KcÏ¬ÛuZMÔ¶ö6?¡«R>´Ùµ©ÓQ¶Wn"Nñst§Iv.z/Ô"}¬­½Jºî‰ÿÍXFåCIuülÔâÈ×Ê>
-ªÊ¾£ŠÁÚ°Ûhdm°µNú·W€(*PÅP‹Ğ*¤!†{=zH‰‡ [7”&¹,*UgbQ©{°c8ùÖf$†mÍd²€¸	 í°†t\èíÕ(š¿é…S»0å”,-²çïâïãûíòj;ŸZØÊ‡§©2é˜ğHˆ£Ëüó¼>'5ÖÊÚU,…ô¡íU/@=~ívlVµ2.º½µ¥>¨õáq«°«dÆ¸A²ø,=J©)ãû“Ä¹ó!¸ãp|ñşÍäÇËOÚ¾ZnK®JëzÙq/Ô×Ê._¶Â=ã7³å:yäªcuƒ3tË™Œ‚Ê¤SúŠÈÅ!©_"EÆñ–ûŠËáGs»éjN­Gcs6pÉÙ*$E¬F­‡a‹:1júÓ:¸D«M%‰§¸õè¿ÿõ'şa³†Ç÷‚äx¾-°[ƒ_>¯aJñàeH†E[@±Ñú™’ô-¹'"á¬ÄNÌf2`îVTôLÊé*¨ÎDmAäR5‚àwö"TõØPb½ÄS–N°¬°ŞbÒ‹HQîñ«eQ=û¬g¡Jl&ªwŠšB·B):šÏ±sSÁÁÔE›#‡DÒt¢£ ¥ğ¿ÛTq{¦ç\÷´ù˜‘Š¥N=¤Ü:QşÑV$S¶à)FÃwlÃ„dı…$IB…C˜È½ö§d;*ìûû¸…"+Ì½7‰ÖtÚ7y ¼7éúØ~r§èü{Hv§ÿ9«Å’•-›³Z1¶mnÔ¥W£ñÅ‡Ñ/^» Ce­ô^¿4?&8/(vºŠ6Q±MšVó&¶ù$¿Èh›ílc²›-83.8ÄöMÆ îr(óÆ‹Ø…»º|Y*¿ÁU^½è((cº İ¬ÊbXaëkÕa«Ã«Ë—$«RSœQ¦ÕQ3åp…ücdISU8„/3J„"^á,Y•zÒx[«Œ<±^!é
-#¤Î„$Å
-ÇšK¡'D3Z²õ‡ğNµÜ]¨ŸÕ>—8RĞC€×•¦ß¼iø¯O¯AX)ëò÷¶rPf–:1•^—õvÿw‚Aùk…w­åïC¨=4.²Âù}'½Ínw’İ„%çNˆœ¸ç4ŞJƒE¿§½à4Ş3i„'¿?G·È;n!¾o|ôŞw,›³•!{t®Š–ôAŸcæ¬oSGzÎZŸz”<mÎqÙìä…—oâœŸ{P§/¤é7¶èQw{õP8Ñ³yC#í]&&Æ:;ãú[ßÁ¨eÅ±T\Vï7JÚÍçPåõp½¹>„œ®5d¼Œ– CüÑl±€¨Ë”°ş_"T_ÜP&Vû)Î´u©z_b…®:wÊ·]VGôÿuáèeƒv3ÅĞ~Ûóë¨m:s“cèä=nÈ«eë2gó:h¿º”pŞ3ÛT·âØ·~;RÁR·7é™E|´L¨ËÊ+l¤ëhª¶zbúj·E‡Ğ¾Û|ôNfÏ­H°ÈjÑ¦ÿE÷ÖÓ†hwÛ¡Cµ¶oùGfÙGœ®/~ct«¿6şÜ/Â‡ZØãrÌE°d‘b("¾şåXmoÛºşlÿ
-æ6€ìÂqŠ†ti¯oë´nÓ$sÒ‹aM`ĞñF5’Šã»Ûÿ¾ç’,+v_¶}Ğ&y^óÊCşõUçİÃ§O»ì)İ	1çìƒïŒåÚºµŒŞş~«¥Ğ"b\‡±¼L<XÍC+UÆ¬R	H‰úçœ‡wüV0ÆîšR~U¾Òò6¶ìuıW/ì?öì/ÏŸ=ÿ3;“a¬nØ‡!{©+£rU$Ê°Ã
-×©œ¬D†"3¤ãíÙ'öVdBó„]sl°Óró^hCàş4`J³„[¡Á|ØíFb!3õ‚ÙèÃxüËh6_^OGW“ó³ ÏşøƒER¼èvÙG™ÉƒPeV«$š- Ic•Cr[=Ûuí³ëxEéUõûÅvªó¹¯§^^õ½ƒü
-îv?vì²2‘vu}Ámì±OÒ\iË€~!oÍ)Rİ”øáRØ"ïõA·¯…iÍWì˜}îv³…	;~É¬.Ä k©0h-+’dĞ½!N‘ñy‚|8f¥¡GG·Âö‚:ìÃ’"°OŒ }rÁzg¿û¯ngßrs`ı[!ôê‚köZˆ¡c–Ò†1¸h©ßí€§r¸ Èevá³kéƒ9YˆO’‹”0,S6ÆÖ‘í[™"ˆ›€¯h|Q¼ŠY*³™xáŒÖKš9¤ß°ÕL§ƒ|¼ŠQ¨ÁìR1#rØ`ƒ§sÃÜ‘Y(Ø’şá«0–gi¸XÈPŠÌ–iå¢„ui%Oäïş36VV½:–#Cv¦–l™ów™H9İõ7şË:dÈ“!¡E‚/@B dÆæ"æ÷©‰\d‘ñjÄC˜ é½€+©ÆÁş„ ¿ç÷Ü„ZæÀ0YÀÇ0Z;ÀÈ‡…w.[¢”ÓBîØµøgLôwFÎp¨÷ê2±lúÀ	æÿ\¿Ğğ¥¡Ï"Ñ(]¹Ğ-s£<&bgã_ÇSgä:C²â‘'M-¯Rü>‚$nÙÒ±™æğ´	‡¥rcİ&Ev‹ˆoV$[Æè{Î¨He.5ÊÁ#—ÛŠ2Fh8ñ¹*œ
-¶‰@ü@àµÉìîŠXÏg"ã(`íBYÔ:²Ãº†šF¹Zª–ëôñæêÖ—êq‹«OûT•®OUk.Dˆ	¢‘¨­”e­Òv|¨:ŒfÅ"„•V DXzléŠHÚ*P*TaNç>ÉŸ’øİÈ/‡´FR£¾µxÄ¿ˆEÔQÂÊ‹È¿w‘fa¼)EÑ;¬ÓA 9A½/1ÀˆrÇ ÆõÎîüÎò0D;u/ÖL½Ú
-ßd:µ%f›%P—œ°¦©½aê‡\xiÑ*ryP6ßa'"C4Ã¸Äå"áPÀwºÓ‹,û{İŞ]"”™Ğùx%Àjù‘+¾T)Vjf)Œ°9Š S˜ÊÅíø˜K±Å–šÒPš©e¶6S ¸Ëí¦Ô'ûkÑt&|q‘ñ‡•ê‰ÔÔ³ĞÑP(ºÈêz6+˜™²ßy4g=-REyˆ’ÒPz2—£•D„yXÅûMšRM$?§Ñ7btP~¯ "“&Æ:Tg$“N'	%6ïÉèôrì:g‚&Éz)a`¨/»9GF‡RQÙÈ|Sƒ.ƒ€–8ÇLXµj¯B=Ó¡;u1ƒ j€Ãcï•I¼ÎáÒ¦˜êÒm•ËÜ!¢rÈ’; ªĞhúÖl@Ü¢ÜE4ï¡£ù^7²æXäÌ0ÜŠ^½ªÃŸUµ•3Aäı²o±VOú”•Ã3ÙÈ`ß[R”}Î±ªr+‰­é°ä{ík—;’Š£¡ùà%·HÏ¸W‹ó|#·êTnåÂˆpWÍB>*õà_::û«U^üŒéd
-nàNj¯[\ù¹.oÈ-Îã/ÚtÒ>QĞøùˆ šEoZSoéıFIïùıwÜL‹,¸ÙÉR¥±vÖÁK·~¡¸ˆÁ˜¯¬0“Ì›Ò`UškÇr¥,O¶óÖã_óÙ·8×¾ÛåšµïšµKş¯Ìß]åéa7NØrÄ,¿,áÿú®°yYğsš®Sµ1[íë™^¼vÔòÔŸTË2e’øÒw]":ºa¡Ğ4ÊOSìö¼Â!›ŒÕL´Ÿ+csÄ¾éË”u{®O²K?•MĞ}3zHÕD1œó;×™—b>ô“¯[ò'Xã`¸£Ó³m3_m´|âø¾å,2ÁÓû¸œÙìYµ´ÍvêmØÀ„õˆTOG$yæNdÓğh“/Ø‰v3ÕÂ+Še*Ü½î¶sùT/SwƒËÛ¹ c;Å}éş|²úïöÊší‡ÜÒdû¿´@6=óXbs «+±u«qI;çô€‰óÕ2í!/gZä	E/¸¾¦ËÈ!~TOQ—ãÓ“Ù›É´ïÖ	»'ÒÜ®zµÀ~ó<«µ‰­ÙÆ;jMÌ‚äÒ¼İ3ïkÌİ¯1Aï¸˜jªŸIv~áÖ¾)ºêüÃ¯fvßï^Õd¾_õx®í”ònÖävŠÖ>ÛH«J^³ÜUÒÅ($p¡ğãõÜ_	q…N
-ù×iì8¶Hk¥"€,3+/á˜ĞZ¹ş˜`«nQ„İª…çáŒK2˜[:ÚÛË¿-{	“B-pp<“‹Yˆ;Õ­ˆZj¾BÙû\«¼ù^7iKÅzc§.@b¦è­£¦y±­8§ãÑ›ãaÒCû`ë<»ğº‘¿Û¾–[í¢|\y5Y!.2Û‹Á¿±uwy®=M4Õ·ö|£¬MlbXO)‘Xp\øªGÕIùšD?{åE¡zô]XÕíçK÷‹4ç«yıØ™¨ôÂÆJÓ#{Š§brOIôèU–Â«®Ù›OÃµ(b(=¿sIÊqôˆÌâ›Şf$Í_©İşÖecÇE‚Õf½`<Î&g¿N'of§ço'gÔµ¼Qï/ÏÏ Õ5ÂSòw÷£7ÄcF¿f~}Kìû—ø©¿”6ÙD+öÓ“'O?~ÿô¢ûoM‘ÛJ#A†¯·Ÿâ¿ä@4!"(è¨!ìFQ¼¤¦»âôfÒ=t÷dºï¾•dö¦U¾º¼ªŠJz=…²%sN˜Z½Œ‰BÚÙ²ŸÙËIåÿp`
-º°k¤@:Yï¼/EºU_W¤—ôÎ –ÿg¹Ö¾Úû^$Ü_İ‡ç'£áè3«_RÄôw’u}åëÒG}İ'³ËUZÍ.nkLf¿0aÇJ<Ô¹8pß8×â¶¹ï}ø€’	(åhÅQÚä&íëqÜ×y9Hà…R†Ö±é´ß²éx|“½=ŸçÙóù¬İÅ×ŒeÑ5äî8JYC.EøRa#´L#'9äŒ:
-;+¬
-y»bh‹º©‰§Â›ˆ¥DºèÃğö9ç“]lºÈT‹4‘íÍEyÜí¤©œ5ßí0™úTß²jOlQ»ıëÊ¦NËç¿Y§>Z*Ê2»ê¯Rÿ …SÛnÚ@}Æ_1•ì@R¢TíCé%nšFmPˆ•úÉZÖŞbv­B›ü{g˜Kˆú‚¬=—=3{øğ¹ÈŠ ÕhĞ€xŒ8p­ä˜œ°®<ÓÿˆfSVfj†€Î
-é”ÑàŒÉ™êÙç…c1B o»œKS,¬e.ª¯H½=áŸwp£dfrApı¾²ë‚La¦¹!h­su\ZzåJ¢&ÇÕÍO¸BVäp;0 8CK>Ü›c0ráĞ²¸ZL8&®lï«qï»BËÂv¤8TÓ(LâëËË/qrwÙëwïâş÷îMx*däÈwHÎX\ëırP§ñ€Ê-İ²ûşµb™µ.Í¤°H„iß8á#œ²gOõC•#İZ#KÊ>ê¼¤§ş zšçí]aG‘{ğ<î£Œ„!»UÈÓ”Ï=-RŞfT7ƒß(İ1ÔyŸÄo~Ôx´šBôJQ²„£
-e¸ÄkİÔj¾²ö¬ùÂZ±HÆ¸HğcQºEá1ŒĞ­œ’™°´e÷’Í•“TÌ“OŞªb·ZĞCí`¡†9‚E‘‚Ër¿3¬
-^ğ›]¢ÊB¹M ^§·‘‚;–gş(|ïku—)â·¿‰!æV¸ìUímQõ$‡Eö—šÇû·ŞH€çAÆCq-ÇZ3)g\Í¶ ì½—ì°U‚¢<‹¾©a³¹îW¸yĞsÃÚ?ÿ–oóv6äKQöb¿ÅIâLÏY¥GÑª¸Ë1pÑ‰{½$i{áÓ?µWÛnÛF}¶¾bbåJ²’6mÇ­•ÄMİø¸Ú‡ ÂŠ\I[SKb—´ì&ù÷Ù%e’¢’º@”ö2×3g†/~Nigo¯C{4¾–r*è­
-¯m&LæÖ4ÿ9H“•42"aÂ…º‘$o3#ÂL%š²$‰q”O¥"¼sID×U)Ga’Ş5_dôjı-{OG£OGO¿§s.’XXz;¤×zg“4ÉãÄÒ~i×i9Y±
-¥¶¬ãÍù{z#µ4"¦wùtZlŞHcÙ¸oû”ŠE&.ïw:Z,¥…™²ûaíî‡+µ”æ Ó‰äLiİÉøíññËñäòø÷«‹ËñÕÉÅy·GŸ>Q¤$Îå¶EÈKaå‡ñÔºğ\Lÿ’avĞ~òHÌ]ù„À"Î
-ëlvß8#ıb/ud©®¥ó±³Ãv áLÜªe¾ÄIæ>I¸I"“•Ğğ=…›ÉtÈÇİ•£aHéŒìwvR£n4z¼·ÇÂšétÇ0t­ˆ—áÍ2¥dVÑæüºlwl‹äWFâŒ¥l!ñ†ç&	Q(â0×û7cµT™­¨72Ë&ºITTÚàá2Ëµñd&áÌÃ,€¥M¿Ÿ|×'·<UÀè!ığ¬×ÙAÀwö÷éD«L‰Xı-½ßÎl=ÎÊ~ª:¹T¡Ix;€&ÙcYÂ™ÔÏÔ<çƒjïH™%ç3kf©şàYÍ¼BÏŸÏet×¥7Ìr­ô|Ñ„¥vû5ç`„:·j_jríäMø.ågåúd4*{-g"3šySPÍPŒœ±w¿¾c7[@:ds@JgøWc…Û]»å>In(O9vHÔšQpTæ¡P6³AWi5oİád¶(>*»…ºÉZó~×'Ñix¤ìDç€ª
-ƒ†$ÇÒiÄª½î-^cãs‡ÿ½ûã4ï€ñT¡úÍcŒ,©¿r²sQ¶¡QiFq"¢5(ëJƒƒšàdSš‹{>åÛ@Ù²¸¾âu¾-²ËÄ¢®ÓÔ$ f†û2¦ç•jª—åRé`SM¿i*cüs…[ş×r§÷Õ¸i,¶Fqü4ZŠ§ÕBjZI(Gk1¾Ö£áV&YA|÷q)ª$ÇWŞ–É57P
-ÿ º)äŒ¬D4Ğb9Ëú4•¨7ÉÆ/”÷mw™#ÔSpëõ.à4ºn´Á”3@&ÛââÀÖBCĞ{^eO‹Ë-™”‹¸|™kæ^¶zä¢#c‘Zğ¡UÜ²
-ú¹/Àıû\¸ß}’³—ÁÉÊ	Œ=/ç‡c=G[§˜n*‘SÀ-”Âç‰L<45?ÚâĞHŞ}Önx¬‘®°(	 f“Ü¶X#ıÅ	.İó|W`	@œ,È
-ÁU•cã—6ÈNÎO(#ÏO­å¹şÿ%Ø‚şXI“X™Dww½¶m¾¤šm÷ìêZ#„Äç&eÇô@œŞÑ³Ñˆ–¨..&-ÊÀñÕí°Ç‘Í$œ(Yi/‹ˆmä¨€& ·’qÌO¡lèä‰(‚4Î„sG@”—!ÁZš›4±ÒiÛiº`H Fá£%&]š'Z uo¹€ĞFímÄi[öøäG1«öZÏ­h\Ï'»e‰½D¯–³ŒóXC™NcGâô€±¥
-ç®7¬¥ÓVdV²]×4:¨ôĞ³u‘LRB	ÇÑÃ}÷yTè«Iûi£½lQÚ8V5ÁM|9ú6fJã‰dİ¡Úóx¸9‹¬4£êp=GÜl+eN/4è*™	b‰Ù2‚¾;‚—Ü&ÄÔ]˜$E¸ ,&â$xFn°Ñfp^Ààš<÷Ô^S‹˜§Êud;“ÎT«²“Ïã½†šA]hoMB”;‘
-òƒ<B´¡±è–µÊvã¯FE7ux©®o8€Ö˜ Å77+{T—W4ßñ)ô¶İ”«NƒB¯°»nSå\Ÿ**ê¤¿‰ÉRÅU7İ‚Ë€	<$ßyè›–ÀîVÌ¬Hš²`á¢H¡dá_ˆ=ßhÆªè9µî|¹İ\8¤“Œ0=åq„1GgI9O+JÓ«ÓÌ´‘|´¥_»Y³üKéÇÿ2 ¹ŞŒáœ_Mkou[Cm…6^tÛ¬©ÜÕÓÎ˜Ï eR]oÓ@|Ï¯X^š4jTB‰Z-¡nˆÒD©’u>oì#ç[smòïY§NJŠdY¾›¹Ù™ñ}şÒTMo4ö`ñ1p«äÚyaınÏ@ü=şyŞĞZ,@XY©GÜx+¤WdÀi¦¶ì«FÈµ( Öÿª\Ij¶V••‡äğ5§o/ŞŸóëL•¬H·ŒYuë¨¡ ÉÁhï+õÅNK+‰Æµ3n¦K¸AƒVh˜…œH;ğ­kÍ½;² …GË‡G½}Ö‰Q^	­œØepÒªÆG]ŒE¥ğ#…Öœ9ß‚¯fßâ98rÈqE¡¦P¦âa\ÊĞõ±£'é¤ı„9¬,’_–XÑîçLîf?æ‹xºx¿(@œC”‘:È2lb¥4B-L`3Ûˆ½µ«’£2Ö:èæAé"â¿yÆÇ#ÿv&vuRí\e:’'Rı’,zî(pÏ¥?.ÃÃÒ+­üöafQÔ¹ÆO½Å?AYÌÈH„,OæYôGQ4êè£=½µÖç3«`v×&ÃrŞú½&¶‰ıS89«Ãz&Yœ¦gĞG“-ï£åâúcÿ”%ö’——%ú„ê†Ú8xÒ$
-´æ¼PÚ½„ÌJ•×œş“Êu»mDı
-b¡cÊ;*^aœä«µdS*Knù\©Ídr?çfĞùÿ4—M"´~†õ1¦ö÷_£ğÁ¢câ_}VıoÛ6ıÙş+®EPÉEêx0lI“ÔmÜÌk»‰Kƒ–N–fYÔHª©»îß#õá¦-Ôàß½»{wÔË³<ÎÛÏŸ·é9õÌ3Aï’`¡PÆeÔÿ£ÿç‹\>°â„
-âä6J&‘)S¸ZïW¹bÎD´ØDyÈ|¥’ylèMóË:‡½Ş¯/{‡¿ĞUÄ2šŞué¨+-sY¤RÓAÍëÒ„+MÎ´qqõ‘.8c%R3è²2~b¥-¹Ÿ÷I*J…a…Ëívc	x×$z÷©Hµªÿ?~Ük4Ó¬ |×Ÿi—ı§õáq»r”dúŞ´ÿn0xİŸ^n&£ëşd8ºò:ôõ+…	Ãïà€Ş‹“.“‰™Rˆ”)ÑH¥80ôLhÎÄ’ıJLR-Úu§.ØhôOÁjE¹PğB‚)¹¤‹ÁÄ¦<İL(F¬[7Ô“lN´·àÕ–a™|Fƒa@¢HM}Q±)TVÙ]£"+[?góÁr[¿B¶Àû
-PV¤i§ıo»U!í¡0>¢6·ÖõÎÎïãöM’ç<+æ¨ÍœT‚ôºßÍd©ç»d?É¤T‹N²Àjå·n¯ÛÛfÚ ïõ¼!œÎQyl“ˆü'U'Ï¯?^tÚ-WY·[ ÚÚs cab$Z÷ıfpùvz>¼¦.yÍ LkçA%ü«(IyÊŸm´¿ÆêT¡,#àz/í˜Zõøc:;õ <ş}<Œ.ñË:Õl¢œª'ĞPÎÙè>yÂëØĞ‘+¨ï}w{s+
-0vÎêœ¡ÖfÓjP›P†À|³,o.‡Vº•úËÄšQØqôêÌØBV±ŸŞeO]ëŞ_™v£ñ—Ès([d!•u·ºG9M»˜¥Ü¥ÉÚMféŠ”½özÄğTn´0KpÉoÒÕ@Ì»_D>cÛÀpü©ãÂá:.
-ü-a«#hÃ¹¶µ@òŒ¡%ãdÒP.¡¥"ëtieEÒñÀ6	d&VvºöÅÌÒƒZ‰v†EÊ"£H¤š¿QûcKÚ—ÍÏQná±
-›#ĞÆ`%Û_ÕL2ÆXì%ğU(%VD¯7ÉØ…Ò”İ9lOR.¡ı³Gi®Ynlk£¨C,CÒ1ö}Ø´$QuÌvdĞ„ĞÑxˆ9CÙ(x…šİLc%#ÖÚ ‹AHôÚvRËõªÿ~@''¨FEëŒëÍÜTÎãëQi+÷Ğ–ÍÉ¹â­XÏaª+@ü~Rßïl-²ªÕĞ¢C½¥ÖJªg_«ö„ª·éèK×÷¾+boŸzf¿Ô÷ı\ÒÍMÒ´¬ª}j¬bBi|)5³M êv¨òzq
-Û<Z¶ÎØ‰9ô~H oE»ÔB)a=•³¿ñ ú‚šÕXGt
-7Ö¸Ø"N¶Œ=(¶sº^$»‚ní™dùM¢{VæùcW#Uçæ2µÆK’=EÕ+b€HÃÏ S%@Y)˜o½RRy÷ô5²µq7[3p\€>ø—ë¾}7't‹c¯$ìA‰§„=Ãûöp	İã›Ë³‡v¸Üa(3œótÕÆé}Ó­G9Ôä]ÄÛ:Ö½{Jª~mÚ]„ûr,,—sÍêŞÖb3kO‹øMHûê³·8[ÖÃ¬$ô¨qTn×•ı,o6Í…Z‘&_ì›ºíÏPc©80ïœS6ø<8"ûìn	½˜Ymùµâjep†AxºL2<íLíy)ú¨†ïÿµZkwÛÆÑş,şŠµ¢–d/’ãô¸r[–h[,©İ¤o’£³–äZ Å¢™4ÿ½ÏÌ.nİÄ_G‘İ™Ù¹>3‹¿=K—igüå—ñ¥8ºUj&Å·:¸µ¹Ìr~–ˆ£7GßS³R™
-…Ì‚¥¾SB}È3äÚ$"7&ÂRZı<•Á­\(!Äm“ÊóÀ¤ëL/–¹8®~ëı‡ûû‡÷şEœë`i"iÅ·#qªkkRSDÆŠq)×Y2­H*±ÄãÕù;ñJ%*“‘¸,fx!ÎüË;•Yî«0™ˆd®2lw:¡šëD…½îÍÑ·“É‹£›«ÉõôâêhzzqŞí‹ÿ[„Z=ét
-qŒ¬òãKÙdëòÿO¶¯z—ëHçë/efÕi¢AÍkø­´DX•©˜C0´+eAO	™„÷¬0òº.U¹ÿš÷¯t‰LÉPäx˜d®E&Ù&©Ìd¬°ÖŠyfb,#ün‹“Rˆ&m|s}q>TI`B˜w·EfWè$-rq'3-g‘“/ó,á­//l)àsÿFÌàBL³B	=ç…±“»-ã
-Ö–iiğÍ¯ózfö^|òqg^$ÎÏ>{¯È\:¿tvÆc1ü˜ÀÁHœÆ©Ér1“^äT+ñséììéDß„2—â©HŠ(‚WÕÓÄG‘aD3ğä_…†?l˜\y.uÔÙ^{ŞÏŞNÄƒ§OE·
-¹n¿³Íù‹D¼1&¤øZ¬”H”SvdÌ-; . ,ÓŸëÜu"	ÇÆz	!ğO)‚’Ä"uQ67Qˆ€ÚÙÙó»_b#ÎUÆÔõäìåÍÉé•‰îx4òœºtz>±¼Q´Ím¯I­3ğ!vöhÉ±Ir•äLó–…Êoÿ°½Q<;]Ç€9Ø<KÖ4ÉÄ®ÛÒë¾¹<š¾¾¹|÷âìô¸»ÛgUÎed	à$Ø©“Æ›É÷“cŸ'<ÿl úOhõ¯ÌÙ›ğÆ$Mùh/u¦Kmşú`JB™Dy'@n	Ål]&„H­pÊËÌÌ•¥Ü&#xmÎ¦´Ş–şâ˜Ğ¹Éæ©Ê°*ZŒåBØîÂ“W@ŒÄäôïÌa{Î/rf(Á
-2B$$H¤t²ÃtÌ­ß£; •0X°
-{ı®ø©ò‰Jİ-Û4<¢-Ë?Aš,ÏtÜkn€O×±“aŒèƒ#Hp±Ğ¯7’õ;cõŞìÉÿ¿­œØ/öæ¦HBÎs>¬ØY;0 ’ÁRô6Í\ºgË-•¢îX½¤áİ÷æÈİ.€vf`xëıÚHTllªXú~xV½:%TB$D˜¸àzâ£„K†?`(–;;¨(Ş=}¹$Ñ¨f(GhÄT1ó¥L¾¿KS ØÉ…!×ğPZ[Ä¼ ‡Ëw-˜/aÖÄŠâÚ\ËÇ.S±´Ñ¹«™u$1rºÔIHu–9oFdË<‡ãc©ËáS—nTkW&Gbr§(Z§‘rì‹`)	D"àçBF)ÎSÄ¢'‡?Äşğ¯ıŠ†Xk…V@ÄL<=VGâˆ©“HãñŠ„Nh±ZS‘*;~*ö÷¹ºÀù,%…fíIš ©†¬%èPI»¦Uî”µ(.¹ß…¡Ÿ,Ó{”qğ'aæ¡ÓFaI±]è>§´’#üI?1Q…wÌY®¦u>Pœa¢¶ü#”Ä4q4sJl‰Î‹P!/±ºU9Yo†“Š”Ak ¼ÈÎ,Û˜Xè;:HK†8kM®ô(­+!ú¬`+;QÜj"ì4†=›x*²1~ä‡şà'~èÀ’Œ Œ|C[…•k±6EG¢ü»0I"’%Ó^÷GÌÈÇŸŞiP†wÚ2(c+²ç¯MÈÀaÃEL¸‡äú+/y}ä½—KÜ:~T
-ˆ£I¢µˆ•LrÊ3’1ˆ•sU!J–n§²µ(,Ø=Ú\ğ3Kb9ö¢ÒecÕRüæ‘ÊÕY¤LaL	Ôg9uL™»¦:æ4Š} «f¬ŠœÙ¿ì‹¡ØJ¢/¾_?Úßÿ¬¹n,ÎŒ7ÏÈ•İ%:Rø"‚ÇD5O€KC±×ØtÃw6qGuÎ'>±Šç 7Èàu÷÷{ı5ê–5ÏUø•§â4_÷ªMu™ÆÙÎM«X*dÃ™%¤ì•±8…K¤@h™"¿Ü"Òo]æ~öà3éù·IPÍ# ‡2§°³BĞoåzÆXx)á[ôáÑ
-š±5ù¡·×ıÅ•Òx­İ[Ñş³x íÛhÛ‚5ìTöš‡‡)ıvC¯Èß·ğÚªOÌ•ÎL‚}2çm‡d’¿úÇ5V2YŞÁ»Íu›ji:Ó/-ÜSq&Äs«Öâé7bïNFÅG ­”+ş'wàS\)0ÎµŒôÏp‚Rˆtu„_hvR,¨$>Ü?x<×†ÁˆFõ„…r(Cİ©ÈPÍå\ŒF¬˜iƒdo)¿GôZôuÍ„P8]2>7ó¾XQyÂ¶T«@qÑKêâ}áGRµ­òîØ ¨“ŠëZŞ£¤œ(Jİ¡">áÇ“.Íú¢ºDGĞàLoW ÇÜ¬a}¨Ã²ş’Æ%<«(¢0égÑ4 Â£¤R2 ˜€J‚l’$T¡´0`–'“ëËÓéDL_OÄË£ã©Cx¬ßs£[¤!Uïi™Š‹kPÛ£"èm)5º¡®Ğ@]“ïAğìŸ }4‰o‡¦ÃÅ—Nj]UDL•NäŠ•eT`5eê¬H¢Ko­™ç+ª·œ7$/,MÎîŠˆ&V\ÿ×¨ s4ÔtÔ"5<U‰êfYa
-†³3RY¦W$‘Áó°ß2/”W¤Õ2(Á’‹ÂNf3xÈçå~şÿN/ËYS+°Õ3ÔyBe«¾ÎúÉo¢¡œè•«ê8¡˜HÅå¨UàH‚¼D%ã_!Fæ¨>@`ÈöãÁ‚Eqk@Fä{Aº¾#$¥©—TÜ:Ú„M5z4päĞF/ˆ†sSfÇàŠ ,Ë*ÂxvK\ĞB±Zq4¯‰!:é	âÔ¶fdÄP„bAi ÌŠT 9GEë¦$”ÇÈ–~UQã<1|¸w$BF¹3Kiñq§ì_Ê7a©¶¿9#ĞD[kçJÅ*©l µš”§@sFŒğ=**àÌ°Eİ¬¢t¥fn~¸yŒ{‡%Ãú9¹çSq=9;ßM^ˆë‹—Óï®&ÌòåÅ•8g§ÿ8=EØ“ÌA§f>È	áê÷ffK9à;U°’P:¹3TRX×Q¢,¨›b%)*ôÏu3"ÊÈÏÉ•’„Q#ƒ½ÊîOEUíâPpT®E™ œÏ¸£„Ê×<%êñœ ñŒ&un€D“©H%›+úâohÓÊÊ÷IØgúøÚõ‡Ç£h4'ài¡›7!ÂÑˆ½›«ÉßßM®§h¨PÑ>Ç´N84aIæ	]‘•uâ«×…ödÚÍĞ5«öŞ[xäSê£ş^ 1¾$‰{]zÚ4Z“Kå ¿—Åìeí5¬>s?)Q75Tl×H¢8O5iğì”ˆsæE= C1ÛÆF¥²ïc£ÊÇFEÂ ¨\ù-û©ß@l-N—[ÙĞãßÁƒ–ıƒW“môñôwÇªûÔ¡ä£úLò2-7/Y¾=í×·BĞ÷şÇPÁ¾Mv_Ø (l‘Fz¢B^MÔyğChÉI‹p4¹<|L~x<½âa0å\Šª;á (ÎT¾R¨B¨'ÎwZs+?Ùåy2÷ïÔÊ[‡¶¿ørw¦‚5à?OÊÖÀoˆ7š“x¶e÷Î“ğ$Óh; ùtü	ìSIË@8¦šÖ†×Ó·gˆ®…*oyœœ}êqÁ¬9W ñ4ÍZ  vÜ@Iæ©ãh®*±EVúÜ¸ÇQ@–Á¨$PQ	G¶É€âC/G!Ğpd…ú*7•½Æù›éq‹züâ¸O+‰nM6„¢9®åP 4 rbâ†üeq)f–nlŸÊ14ğv•3EÑ[æyjÇc•ŒVúV§*Ôrd²Å˜ş5¾t›nÜ¦·	JınIH}Ã	WÒ2¿¥ÌBEÍ*Î‚¾äßdÈG‰Óì¬ˆx"cJªÙ¦nŒ<LT© Ïxj-•Õ˜róŒdÛ'Á¢]aú¥DÍÏ¤ Cã^l²V¸]kB{[ƒ¸ìÊİ°È7mïhè¯.SôPtú¼vOï³|¥ÂÎÇLyšê$G‰^`m=Ë½Hš^ÈŞ²R>ªsÍãXUy…€	ªˆ¥Û‹5_À0ıD¢\ÔÊ™'Ã=vŞHI§×ŞJáÙm¯Ğõ)]¹gÙú¥pÆMÊ+4¤päA)ZÄ•S†œ™r|I˜¿*yÜ¡IUP(¼N7‹Ìb¤³ – ÂG“ÃŒÆX=$wgbCš™–y‰VÄ¦ğíº™¶YhŒKÍ‰›ß¶G·ì¥¹X9“tKº(pè†«Õ.ræ‘@b,ÉMéÅ.5”ä¶*	CnxDÌ˜—.Å5íg»|;Æ3S{ëR»-Ş1KzCŸDpjMåšyP3PRÖ [W7ÕVÎ–”‹^\L_7ıèèü¤‘Eo–™^!¢9 |¤Æ«:‡F lOéíØÀƒ§Ì0ÎšXÔÔÉÇÄÛw(Û3zDÑŞÌÅíÅ|r¹ÑƒR`ù¸§,TêÜ
- ŒZ*8ÖaX¥³¾OÍ|j’GêN}XyeÅÒÔXeÜd äÄŠªSxÇ¬ñ_ ½‡£¹öÊò•ß)p×Cº¯ôçTĞ©.G %5ZŒÜv¸ÿÂN·Ì·LÎ²çgÿDNuw#wF‡uó=Ü0.¤Œ4Ão¦ÊæY¡Ëš"õ¹ë4ôz:½¼.‡B<JÉÍ&µzA¹ûúúL*Ëõœ‚	"½K¸Ñ×4'}}Uf~Ô<œ‡Éø®u ÌŒŠ?ç«"`n5UøõJ† Ÿ\	3}8ñ†r·œY¡Ù¹²äQİ²›Ÿ)væ:ñ ¥ªe‘Bªq¹”5ô³''W‡âUŸ¬o8."ƒ5OÁøšå)e‰cöù¡³eo~Ná“.×nD]«¿ÿq9 ¼ Jš7=Ê9Oy¶Õj5J‚`¦3åğİ¸°c—%ñK¢V63&B‹C.¹–³,åÕƒ±äaáø½¼“6Ètš›R)÷CTôßCd¬x^D^uâ-r¼açm¤ºˆç$òV² ¢”•É4âŒeJÔ8dE4‚“‘I;eK[V*WoïA.ŸÁõUVpÊ¯5ÊbµAe¯n“¹‡‡˜’æ>‘C|ÉW“ ³»nuñÍŞ¢î§]Áï–Ò.oè~/²õŠhõrõ˜…¡×ıâ‹/~Ùu_:íºÉùnÀ@»{¸{š 9AüÃ:Ùı‹»íÈ¹©áú3q¢Õ¨5, –´ñøU$kßk((Ru›àg´9™\¡µ!~7¡¢!‘c^ºıçHôŸµ¤Ï*,éœç§Õ’²0•í7wÀFwHÇØÖ’L}-İNğëÏ8ù
- sÕrwîÚÄİjFğyXm¡ìÁáÅS¨XenN†^˜Fµ4ÊÛ£ÁßPl™GxŠ›#+ºi¢½Ææ~ıùØ+Uu\%eO¨9š¢Ü¿oÑyò)7-õøÊ}}òÙ,ö¨¶XûÄJ·”ëê¯^ÿ8ÓÍ¯ónı:o¯-Í=‹µ^wë‹êÚd­­{WWñ\˜o99WE90.ÂÚ·z­4ÑÚ¼åŞ°yá«4»¥ûàh„¢Ë®´Ûµ>Îéƒà€¨Ñ&ï¶¸	…:ñı©ysŞ¸Z<=?uécE¸“>/æÆêø1Pvãşõş­õï½jôOı÷ËFÿ1à§ÁF”•¤õô×Î •UÛN1}Î~Å< %Aá"*Úª7-T-U@4H< !gw6ëÆ±·¶—4*ü{Ç^ï%iË%O›µ}Î™sÆ³ïò,v67#Ø„áqÂà”Ç3c™¶ş„á×áÕV®¨1¦ãŒß"à/«Yl¹’`•´Õí>ÌY<cS€Yå0VùRóifácıÔ‹û{»»¯·öv÷^ÂˆÇ™ÌÀé6|"Ô¥Q¹*„2°Séúf%xŒÒ8Ï£KøŒ5p^Lh¾…Å[ÔÆ‰{1 ¥A0‹šïD‘ds4$ìu]îõ¹26×*~E	¦\bÒëŞO†7ÇßÇgÃñ—³Q·wwp¤}…ùÎ3x=œïĞÙäÆ–¶“O¸@È‰	CòPN‰ÍÀ„BL.¯•ˆòTˆ•L—Ê¤Y(©¢ßQÇquˆlœ!\¾\åTµeóT
-–Ş¦$£k AÃ]¬s•ğ”ÇÌš[Ûî¼Ç8¼e¸´îÏNÔÉKŸ7Ä÷°Kå­pÆ…Ö()bLô=äÌf°À®1ê «*Ö¸¨.§V–Š"‰Å¥G„²bSãÏ‚ÑÎõœÿ:t«Œ×m7®ŠWûûë ç¹ÒL/Wj€i(À9YÈp'ªŸXƒ>y¸¤†=¡”b«èi‘Ñ=ôÄƒ'?'H,Šr|õ'®‰µÛms—yP'ÚVˆ®òàöt›Úä–9½Ójîå9èªĞ*´Ïd	'ãóÀZ÷pè›´åÔÙ÷úëE·ü´(„¢”ã½×­@RLZãÂH “‰ÉÍ)îF¦)úz<—Ô*¬mXÎ4›ÓP)MƒV¿yYmz×Õ^ÃêIê.p¿ĞQîçO6íèdI¤ª"¢»¶Ğ²–±N½ÚO4¹j³ŞA@­kxÑ+W ÿÂ¶v2Hí`ÈQ±„˜ê·Ô¬Õ–<uY$
-ìZŠ‚û€µtnT;Û€P%öc¾®ÛJ}ÚŞ$fÈ¿}¸¯Õ#¶•"è†ÔU÷*ã‚ò¶od˜unı1£	Ûk»ÿ\„B
-.g+O9¦ç¤¸­¾ôåIGË©éÊª7¬jA4Mâ<ÓCÉ”O÷qùÇû+—ÕQµ¦dŠv\¬±V[é;×	§7lÆÍÖ‡0×ŞFûè>Šş Í[mSGşŒ~Å¢")‘æ’Ü2›3å¤ÊUªEšE[¬v÷fV`%ñ¿îyÛ™}“„9_üK»Ó==İ=İO÷ŒşyœÌ’Æî?4È¤÷@éGŞ“z,Ï"Òûwï×WIüDMfÁ#%ôsÊ¼IÄIã8„¡8ú$ñ&Ş=%„<Ø\N&q²dÁı,%§æSkÒŞßÛûÇ«ı½ı_ÈU0™Å¡ÇÉû.9®K'ñ"Œ9ÙÕr]¦SÁ+&4â8ÇÛ«[ò–F”y!,îà¹T/)ã(Üß:$f$ôRÊ€x·Ñˆ¼9å &Ul?™å~Ä<MX<9l4¦Ô":m5Ç½÷ış›Şø¦?]ßôF×WÍ6ùóO2(Œ[ğ>ç ˜˜-õÿ‡å£F Bñ§âım„AºütOé©7™átÊPï–w,˜‚ŒNRPĞùh@æ0ŒøAHÉôj' Q®‡ÃT4šrÒ»ãÂvz¹?-àLN=FîÀšd8İOÉAÉÒ3„Ş’²cd»•HeïÀk|sD|/ä(`ƒ]H0O€:HÉpxYàÏªù!›,	=ìR'êÍIÙÂ¥†Ñ½aË&è­xzDšM‡,ˆRA“Ä,u§ÂGdÿuÕ, )+Î"f±Èp	O1›ÖUKDAÀ.çÃÓ"5£<^0Ø#eİ™MC%-aÃ€Rä³#-ÂP‘7¶ÀÕf›ÄH±À)»dÄÊ!àÓı>j×eƒá»H›	æ/"@ÆcÃ¨ÕnlıÑØÚÚIgõ/å_Æ¢ötx¡6ÙÁÁ=M[Muº~št9›éKm‹8ó“:b5
-àÜ6½ğ²jrÄÍ¦35úÍJR¤û¯Ûî’ÙjRUœhõ¬0ª@ŠÎ³šF(S:OÎ„ëÕQâ(‹ÈŸ´Àµç-Kemr„Î!¼ÃÑ¦Ü…[[_xw—\ørOpÅ):£Ü/ uuaÇÓD™A”Óé²eYWDxç)êµøUÖÎK•Š™h#Ø™u•§^Bª="Š¡zÔ’ú‘KDBõ·ï!W+D~…%ngŒ×”©Jˆ3G	ÊĞBrpVÆ®Ì6¦zÖŞıô	i>4%æ-ïNÄ5:à0ö£zÜÒL…“Œğ‡‚Àå³6K¸šõÉ*½è–ø â3ê{‹l,cæá²à
-®%Ô¿`ŒB‚`qœææ7ÿˆÃşåùøìâ†fWKçİñ8\¤¨Fñ;@Xbñ’Ía5S©S™cF“ÀL«	êD­Â£'ñ]jË5›m0µälîQf“/J„Ü†v%D‡D€Z2i­?Ï¶«Ìs'´K.iÚ„™aº	£^ŠéĞ+·X$,Æ¬[¥\­âÓ ³bôB"m@È<ı@/ŞGñÓÇ™—^ÌÏb”ãˆü¼·G~$¯ÅŸC2C^"²xMúza¼à„O<ØgŒµJ#wK <¿ÇÜÖ¿X#ŠsCÁõ07µ¡ÑËiağ™{BˆZ­İn×Ã>(›Á3Ï™åyf„©?zrÇDô©ÊEêŒ-ÍÌ)%|"Î€)Oè$ğ–qD¥ˆønºiÚÉïÅÄİ!ÒÏ1DD;€)(0Q˜Å«MeÆÙÑÇ}}†ìÒâDçF‚Ùë×2ı™½¼	ùkC~ğòıri*M'U¤u„Júà=P£ õxÇ
-eKÏ¨¦qÇ„w‡}€Îà…°¦ËºiJ9bd©ôÆÌéç€§ÇÙê>†—ù@iñõf]ån¨Ûx—hÙ¾˜¬VoWÇE#µ>Îöö¶½Ó9MûŒÅ¬…%èÁÁ¸Õ0õ? I¯®Gã7£Ş›Ë~³]™qÍãu[,EjÓÉ?DìĞÕÆêÊ‡‰¡'Œ¦‰j±¢Ú0hJVR›62PGñ*À¸ÓL9}"ÆU,I€!"ügêŸjeW-yüeª¬PÛj–±ÑB¤bÃa)±F5·µ9YRjG*fåå-zÎÇ›ë«·côŸw×Ã‘ğ—:ı]Æ÷A¤U/Äñ‰;¿÷q&sà®èvØ¿Ñ,5ÆœºS­÷FİS´v¡Îv1™É Q¶LÖ{Ğ½ûJ±û‘ˆ‰Õ.qò'º(åXh©ë ŠÄÈ+€‡ùÅ™Â8ï‹•Y-«‰¦ñSÆ$r€64|¤}D`x§ÚÌµšÉ,9Øİ²7ûÑ*Å´>¦û‚£‹Èßô†ı«Ş‡~£É¸7<½¸€œÛ~÷£Õö×0¼õõ#X9«F«Áª9bÇÌS›_í€Ån—YÀL<æÍñªv’h]aßJt†²‚áWğtÉ°C†ÿv€¢É€dI†!‘ğPmkïl³‹ĞWÉ«ÅíI¤íÅëébCšd›¤|	?‡Í‘ÎP°'zgÕèyŒÎ ğ}5’_X$İ)ì¢bCCÉŒQ @¦Û«‹_ƒßes¥Hßµª¼³8
-WÊ,Fj¨Ô I¢Q_0!V0'…²J%ğĞã³¢Dª”Ï•Ôñ®4ŠÂ©0$°xB97ª ‚¿
-n!õ±Å£©a°„gIQ9úÊ‹³„w9cƒM¤S5'n+mp±#­·$Ê¥Ï{—Ã~·át™´!²À’‰"»bŠÉŒN„AW 1»2•-­IóÖÒ³êÅ	.çCâè¡j¼›4
-,ÚyT¤²RX/a,7Õ3ıœ„pZEßÛI} è•ewÅê
-CÅ*ıOˆîÇ%&3_KâÄäg”©Õ‘DëQ?ÌÆJå¹¢F\î(í|Ø&ßO¶+šwØxœ†±Y440%ÒŠ.Nuî–Ò×ĞQğ\!«YOQDîœDkÊ‘—$ïBš”’éŞÜ(2öN%T?™?ØËƒ}ø÷ŸV»N÷³ñµrä£TŠùj¡doÒ¢·³µS°ûÛò/ÂiÔLUqóP‡x)æUçıà³ŒCVSÍ£Á»	)êÿ)np¶ÜV+)ïhs(í¬©É­4i*ÒgéR+s•6³YJO §¾¬O{W£ñéM¿7êc³³i¦4Z( « ¶|z2ÀjiGeö5\[Qæ.ÈÎdf-D%9ğ0ÿN%•	50Bšû) îE¸ê‡€{ˆj?«Â\1«)aU•eOµ‰]»–—®Å“SU™òÒ5xêø†‡9H‹f7úP1÷ÖŠtõ Øä×|-+Ï+ÄGüeŸşÿWà¸ ³¿JÆñ"}s¼ãºnˆÃq¦ô³s|á˜îD•¶>bVÚ:É-cŞ9Ì9`DÆLÑŠDœb\T’xŒ¤dN=Dö3/ÅğÊg:¾Nc ]’H•°8 éÒ®â¡”Fi ÌŸ ?[
-®Ÿ/ç˜Ë*q¦şTÃQ DÙZ&şªÅ~€Gb¨r‡-U¨cÖw	‹¼¾ÛıNáxgqÖÈ´0R`[-ŸÆ¯öĞ¯†Ç,e3¬É¦Ñ{>|V[LvÑa+¨y‹*0¸Öğ6ƒ×GÉ¥ã(\êí õzçqZ!mæŠ
-¸ä1Ñæ«ÏoëZĞŠ~hX¹út\,µN‹K‰\Jµá|-ÉÁ¤}†¹êúFjú‹¥=¯œ2ò‡z¹Ù,Îk ŒëÛË3À·ƒËëŞYÓ4ØŒq4Ğ(Àã—5YóY+³;YxÏÃ¹4,öYS|U{±¢wÌ\æmåj³S}áä®¸ÃÌ¿ªÊ&zq«Ô,½Ê]D©ê“E±—í6crW*t7W½›ßì(Wåiµ¥ÌË_Yl`–µì²µã'BA¢Zª‚&³Ï2qüvi]dëÚ_©l?É)WAm…üÄFÓÙ‘;—…ö¿8›ñÄ]´JÖôü—¥]W˜–Cp¦ÑÚ\…"Ô`Qh¸·ÎLkTİ,pØ›£ñõ€ìıòÓO:ÃÈ(šº]gê£|g·FÑ”ùƒ»½O O¡—ÅÃd|YêÏffs³õà`R¡á/¢ëxVºU*ª­<øU>¥[ÄÈÂé	kÍjß24'^—š%€nCdYuÌµ<e4ªtf»W:³EQ‘ç[ÍÔ®eÓlŒ%¹›¶¢sV6Ÿl3#aÕÙFvÕG{IÍ¹†)eÄ	EÌ‚û òB‡²îXCP	ZY P‘ÉÙêk2ßZÇ¶ƒF¹CP–@iäX3UÇ§^:™ÃR(Æ=<Ñ8—·y¬ı¯cc¡[8/Ä²OÚ/\ômPó9Uj1^ä"‚
-§ª7àÜ+0@>»ºl®ÇëuÿåN‡Ê@ô2‡~¦—"÷µ=F°»åñ‰%Â).ï0‹‘{¼PnB3ò°QeFü
-‹÷H¾_¹Ws9W|7ê/Ü_-m„\Ç	ß¶.â–ï}ŸâåÏj¿ËİrÑw•¨'"lv§^Ú,Ä½"×|D ÆÍM˜ì6pÕ!ª l«¯½Ôv¸*šˆ?Øñ¬ò@g^±eØ’-"Ü1{ÍçN.D’óæ¡ĞŠ|ş¼ğ•1àåqÀ7uÀğW#€z¸©àX%È;›c©n]¹¥òÉ±Ö ¿*ì³Î§^ ûe	·t†ÿ
-´¦(weM‘`Á$ 2ñ‡ÅóF~;i\î	ª¹'ã¨µ]AƒÇs éş?tŞŒb™vÒØ¬ùÛbQ/Q4È%º|Wº‹E¹AÉ xg~²ùªÓøEÖñŞå¹ÖzÕú«E¾{Âé:›MaûéÊé"ß_‡Iê–rİÕ¯Âµ¯€ˆİX{ö¤~/h¶cîº³¼!öÓÃšæq‘ B –'û2
-’Z?¥EL¾'¥ËûòyªnĞ•¬f¬sÆÊFÅ®¦ƒ¬/·ØÔË(½ôŒÍGcİ|ZèCvğú1i‚‹‡ p&¡Z£«6üÅX7ï;ï(/Öƒåê6¥ÊòmÏDn2UÁpÑ±ï«ú•Q¼Š,J\¹éÕÍ³ş›Û·VÔ§¢–½ÑÃñ>­=§#ÿ6^´ƒ-Ãì4é©ªër‰îîïà1sÿ­‚$ÿC/ëçWEæIîê•wúµUÙ´ô:oD\R`Ì›¢jÌOR^EæÙ1^X8%Ì&¡Ñ|µàOX8İ£ÀŒGĞÁczŒyËâ¥0E®Z¤ğéÍ"ÓZe7¼[¼âeßïr/ÚÙÉê#p‘…ı@t)é¢DÔ2ÈT‰ÔÕq}Ç¹ë¥ã‚f"ß»?ƒü¿ÓÅ+Æª_„•ş|òH+ÚÆ›J\q¿Ëôos(;g»D´İ7
-:'ù SŒBYYü¥ñ_åkOIò3üŠ¡µC¸MöÇ$Ë… GÙ•"YÍLOÏMÏ@¼»ùïWÕïÛ!ÙÛ[éPDì™®êêzWuñÃ|’¯n?{¶J‘Á=c·”¼M¢{QÒ¢”Ï22ø×àç­œ?²‚Å„Ñ$y`„}*•	ÏHÉy
-KqõQN£{zÇ!÷>–£ˆç³"¹›”äØ~êF½İ¿oíîì¾$I4á)ämŸœ Ö™à9¯R.È¶¡ë¼Œ%®4‰X&p7ïÉ–±‚¦äªº…ä\¿|`…@âş¶IxARZ²€·WW3:eÈdíG{ÜW\”yÁ£ıÕÕ˜“ŒÅİÎhğöôôÕ`t}z3¼¼Ï./:=òûï$N¬«D×À^ÌÌÿûí«†ÀBùkÎû÷e’&åìã1Ù1&¸Ôëá')#Ebó¹—9Ê†e± ƒ[!…dÎµúÛê
-` G´ · 5r3ÇäŒ ˆ•ßH2Í•IInnÎ÷J®˜»Ëà9 cš
-$¨†Ñ\¨!S ;„Îõ›RU„&Ù$aÔ”R +ŸN' K²RÂä¼(Ã­ğÁÙ}>o ´hî"Ÿ6vñÀğ¼ˆçZ•dI™€ÆIÁ¤Jàğ´	]0Á«´ôØošÅ©¦¹H@­5êÙÉª4ƒäæ§]ñ,cÊdây[êsWEÁ€ı›r€²GÛ„ÓFiãšrÂï|mK…Vá^š3ã*STŒ$€«¢²Û[]5^Ù('‰Øú§Vmi{{w¬ìv¬ëéƒ5ôqIgøÛÛwpZ?Áá€Ûİí!I+É˜tòi×ÃĞ#(8 IÒTC¾»‹~^u»Jõ‚ŸÅãª&Á¨cKAqUõk9(¬j@–lšŸHí\‰«<h×ñâ€h\úQ×qÓ­²ÄÇk€®œuCz¸D­â4Y€¼ğE¢ŸÛ?‚—îÃ‡Î¾‚AOIo¥™èÕ‰€µôã®A*Bƒ_\\û®¬Ú#®h‰«£ØùÛÛä„i•–Qò‚‚Q8óH„4›È˜çemûs@Ltº9==:9»&‡{¤Ó7ÔÑ[ÁÓªd 5ä?Aø–‡Whöç#U<s,O!Rv;ÀNä*ü²|’ß·B±ùÓGvûôœL>kjªRÜ:C [W¿N¶ËÄsÁsÖ'ç¬ìÀÎ°]T0Z¢Ï¢íË¤Ä„b @õç1×°¸E4¨¬hWdO”ïØÙÛŒ?~˜ĞòlzÂ‘òbg‡|OË_ûh† t/I,x•Å2ÿÊhÊ+ADDÁÎ
-!Ù™¹A´ş•ŸÿòŒHÎ5ÕÃ0mÙ†Bo'¤ge4>L©¤ òÃÖ~¿ïï1N>]±bšÌÌDM,_'FØúU“±Çy*²HØJÌ‚1«tÒ@*r%ãœÏ˜"ßÅOuˆuÑHBQz¼£1Ê™+… 
-Ù+¦Möp‡Ú¨ì:ßû„ÏİgHY»¢ÂŒĞR°Iv6ÉsÄ¬-?ü¹ßûğİp%*§Xdx„LzGï™e~¼á96Ã2;ê-”ß±î=@Ÿ 2ĞŒ!-Ú¦#zvÎ”6:MdŸQºÓ%b/ëÒ'âF'}­¡«{²•Ú>Û¨¶Àß.÷‹–ï|ct8kkk¾¥V/ºXßìíºLcGÃÓwW¥F—ÃÑ‡ë³áàÕùi§77äZ‹l¬îFÆ“Ï2#“Î£dÚ%H0ÃdØ–=ŠOv$e,º!&»¢Ó«ç…s¸rq9Âü\2W¬¬ŠÌ™´ŸA†äùûu½”x“øYª#XĞªœŒL%Ómb¶Ğ¨å |é‘>\_^¼½¿9½¶§ZÂÏ…§¶¢_€´­6BGJ¦®À‡ƒÓôİ©ÕYÃ— ?é\7ÃÁõğ>€./–sÄß1RòfX#5Š&èĞ;IU††ÓÊ¨ú[Åá%GÁ çˆùc–r
-a–>0L$6n©`W´œLÀëú™y¬²òSÅ£1$YYwÚÇ“ïmoÿóÙ¢Ü^tİ ×}5¸9½¼;Å$}pßw0”h•ú‹ñN?T]vçÓL¿tŒí:e›²Ù±‘C%z{²İ¢æ–æNÏ±5$füÉQ" ³Gvëå§(/¬ËŒÄæe3pÊ
-JC&Ê Ÿñ³‡Çi,ôşâìçäW&c!!“ÍpÓy†‡Q2Ûp@¥Îó ô"bQ’LxaO™1dë”ˆ”ŠI“"]Mºg-¥dH†°2j,J®
-1!,+dKä¦[ÊÆØ+0¹‘E™<HÁDï›­vyÕª¡²õ\¼:8JüZº†«Î bUÆê£QlıÉ2Hm×uäØ¤3¢Õÿõàüæ´¯úİ/òÄ0Ñ¾öXì¹›©œJâuÄ†v§C
-MSX+t%Æ>å)Y·©DyÁ( T±ˆTIÎ˜ƒG Éì 5ÄX³^”¿wµ¸À¿@YùıË£€ÃÂÏÙæqÂåo ˆØ²`éLÖµèËYÊÀcPÕN†ÂPŠå‹½Q	èbî¨ÊÒ$»ıpMí¥hQÎİLïU²Ûúë ƒÇ‚Œ¬Jã¬SjïæÕ›„–˜Ù•x¨,•y¹òÒ”åW?]‘”Á™!ˆQ‹Ùš®TÚ«Òà4ßr?¥?†<NoSrKA®@tÎ	ÉÃN9˜%œÌdù*YÓ›y¢ôÎ	m"‡¨Q»ŒoÇƒ‹áèøút0<•ÁÍ’j×X^=ã•Hn[7IÕ¤AAÙo«$-Q‰àP›$R‰OR
-_,úy½³båëq G`³fæÂF1Æyx|1%Uİ<ômÊ±i"·oá¡ƒQä^;ü‚[•×J¯ÃÚšcä*(]‹bßo ¾G._Ù#(°Œ	ÒSÈ‹“DÈëob¡:e4ÃGKTt11¶s ‘õšà3€ôY_cGMbà K¥FÔS+^1›¢×™ëÏÕƒŒàÚ§8Øµ®O$½ºÉ’^ß(/]>¼ZİÖB–£Ì5K7x–Î¹˜æÎ!ÀOÇÜ=6 øx`éš^qQÇáES	ÒL¢LmÂ©½üøâEÏ§&^ÛT_èÃd’~|ùşüüØû«óËÁIÇÖ£–MÆfL›ÙÓøğ¿%Ø«]ÌCÀ†@åÕo›áêZ©Œ«‰ÇPßñ¬këyÍ^ÏĞìĞVeg"–fvgˆL–ÈjŞ‰’çdÂ
-V×™­çKª®¯ãRkAµ@Yfê<ß–8Ìkf7‡½öÒ¦Ğ¼¿VªšG!îÀ/5ëÿª”äÉ@Y
-†lK‹L½XFIØG‘êÁáªŸ@Ç]Ç×³²1	ÒéÌĞ—?üĞ4íÂ$¸!AlkãËVñZ*í ÇŞ^”2Z €Î²Ë+ù¬Uq¾°i eoˆ"è,/³!Kˆ-±4_^´77$“}2ç63š¶'U
-‰Ë©ä;Æº‡>Y­¥\’Akèe¶¹rLK¨ê‡øËĞN°Q'¸ƒP÷[^zgl©Qƒ6ši˜RÉáŠ?8¡zB>d€M½­i¦N®Ô<ˆ{í»o\ÄÜ¬7çş«õªê§ßÚ‚;®4‘/iÂ¬ê†k2U½*ÂUPÂ-WCÜ©³Ü,l´Ğ®¬zxBÄ¯ğ±9Wa¹½§Hr·Ûò»õİyÖã’çbÍ»tGƒ°×8CÌ×ºÚ¥¹K×¤¢wKÀHg×iÙ©;Ù¬Ú©l?[]!ÏPx±§kNÛ²k²(wÉÚ°Ä‚¯ä”€Pé£bÎdæ5¦IÚ—krZĞ)•¶k5ÄÔ]…1‘šI«Q76oÊ35ßÂ®v{S»ÕµSL ½µ¢å[£×ÜY‚ÔæOŠ@…Š 6 |ºi˜»Qòn|û´ )ÑÙ
-äC_rßh!ÓÁÙ ƒàÈAè¢ Ü$J¾v ¦,ëqèÈ òa›éQ£ÒÖÆ ¬AİiI{P#~ÿ®Àí²¸9£§ÿ+XÑ'¿ğŠÜá,V«¸@¢ÓMq=æ ‘6g&1OJi2ûh
-¿§¤,oJtnş0–¥Œ+?¢ç;‰zâŠgí#ÍJi‰¾5£,jZSdÊŠ)î5P:pÍG5;n"¢Š0jƒEë<— …¬xLë+3¶“‘VƒıºUõÿoî~\`Yp÷£ëÿòÅO}Hn#nj2xë³ İøÒ|C&8—gá]O ÆWì	·:€NÇO÷iU8~OÖÑ^ÖI×Îö¨ÑfäÒIš†'ğœæ–R"‡mï=Ş¹+}²…ãE{Ä=Ú÷7ê½QãHĞOÂA) Á.İ38ôƒúÅ”7Ø¬%'—ùlèi#tàÔ!½×«ÕÏ‹`³e#>˜İÑ¡Ùh+àı€€fÇ¦bÜÓz4g
-|<Ğ"Á~’—´ÌY6'à4Ü`mÖÉyÂ/) —b.ˆÃ­³ËX²¼*ë¹¨L>{O<ñ¨æôÃœµöçà©÷«rå=t"F>ëœ,/J¥ƒÒáëÙ‹“ÓWïß¸Ò‰§±,w¯ÍrÔI‰ad1twz¾?xÃJÀ^g© ©éÇÏóò¹‰
-ş¬ÉÂaåúx´7´ÜÄaŸÔ®˜M°3¯½ÒÑâpcÍæœ×ÒãêšÊlÄf8:#rçhRİ9wÌm(]‡ıºêÚò©	§u4MÎ}€–Š<xãú[ƒëëoøôJŞè-â»õ¶hñÚ»~ç]1®½A§ô]Îq4¨ìHª9o³1ƒ¤ï­
-ÿ„àO˜¬6WmÄ,›©nı„?féF¿î9·ù¶CíĞ?eÎù9°Ùç}’j¸œ¦cê-r±ºéòˆ¦¶ÏnîVÇ¹Iù¾$¼(XS¤I¬€ÄÂ›}:…?Ç‚+æE ­çáÅ‡EÙ 8«rĞ…QÆC9€÷'x+lbt×ÆŒ-îùî;•.ÈJRíâ9¾
-[2òL˜¼X°MòòÅ‹—?êÜ¡5ç4‹q…öî0¢½ï†¿€HUˆƒÿ½V[oâF~¶Å©„d@ÙK+R6¸„¬ÒD$¢Dêrì!Œ°=ÖÌ8YÔÍï™›1YØ¨/}13ßùÎw®æ÷‹r]ú½“N ÚòÃM6BÆ\ê³¢?£¿OKöB8I!æÉš> ß$IY’±¡
-=*ãd? Ø4YF	+·œ>­%Œë§0iŸõû¿õÏ>Ã”&k–Ånºp‰¬[ÁJVeL@Ïéº•©æÊhB
-¡||>ÀWRgp_=âÜÚËgÂ…÷¡ŒCKÂÑ¸çûEœ2‰¥]Ôá.î™%gÉ¹ï§dE’†Á2º™Lşˆ–³É_ó»Y4¿¾›møşRJW‰<W˜Æ·îÿùaÔS¨?Ü?HšQ¹]ŒYJÆq²Vîl¡.)'‰„Í¼pêbK0Â]"1)RÑ£Ğ•rÁùÿø^irµª
-SAuN„Û¾‡·^‹ÂÉ=á¹€!Ø8ƒ'"Ã .lWY•].8èÀ*Îi£VÏ£+÷¸_;ğFÉ:giØ’k*N¿¨8TY:`4rxŞ+ş$t†ŠrDÅR™¼5o+z;ê ÿùãGM¬™õ{F¿~ú´3z­C38I±¡dœ—ğú»%«’õÑk#¥ÿNhªãÔeF‹ÍÁ¸µÓºUƒ$#1¿BÄuqw¯Ï~0«=s¬#Ç9æö˜>:Ò WÖ4¼À¢Å´vÑBB«´£36 ³]Õ¨-Î.¢ü|wçØÔ{>o(l”™p‚ƒ0#I…óÿLB'4¥|úF'
-|T«K«SÙÿyŸ§|Ë«;<è»”ïç®QÉ|ƒ.Ã_•’Æµƒ=™ƒÄ-Î˜|w Sì,dt	Ç<ä*KÕ×_,*˜~hP[1FhïYÕµá%:(ÇÃá°1>3ô•ÚPOXáĞ˜5Ù8ºCurh1¸8ƒ`¯$/åVsÿ¼d
-qo‘‚|+3¤°Òä¤ŒåLã*'x´Â½†“áÎ_`Ú¢–¥­P¶¹ëÔ«+´nhx.´8€ë¢½kÓ*º_Mcëõzp-@ÍÄæí@!Iœ[áIªßØ8­ê}³çASZNoTfë¼¡/uÃc:=Ï¦÷­\ÇmçûvÂ9ã¡z¢Ä™•«0ß=Ü^NçËñlÍ'ËËë™ªˆ‘h²PWS¿vœÇÚ-&dÎ·øĞäe—P;€
-õ#A(€½æL6Cé¸ñV¦¡iîÉÿe÷Ø3…ñ»SH©­oSê<Géú@pñ\õAcéšdä3Øè§yçÔú8Ëõ¢Ğß$;Ìml,X¡ù«ÿ/Í[{SGÿ>Å¢"ÉÁsIî
-32›3
-D9©r•jÑĞ«½™X¾ğİ¯{Ş³	°\ÊeÃîtOO?İ³ùçë|’¯n¾x±J^Ş-¥×yŸŒnEñB>ËHïß½ß^æìr“ˆ&É%ôsÁ£Q‘°ŒŒ¥°WïçÑè6º¡„[ŸËşˆåsÜL
-r`j:Û[[ÿx¹½µı+9MF–F‚¼ï’Cà:,g³”	²iä:)bÉ+MF4¸ÇÛÓ+ò–f”G)9Ÿ]Ãr¢_ŞQ.P¸¿mÆI”ñæêjM© 1©fûÉ÷Ó9EÎÙhwu5¦ã$£q»5ì½ï÷ßô†ıËÁÙEop|vÚê?ş qBaİLÔğ9Å0>7ÿîÖ¯€
-å_ï¯Š$MŠù§Óƒh4Áí´¡çdœ¤”ÜóÄlÊä¨ÈÑ44‹é]i#s¬Õÿ®® ²qrF#—PqL	
-€L¨$Ó4™äòòä5²^É•n×a<#{d¥å)ñC6ç :ÈÄ©sıf|Rƒ Iv#E˜€´ĞÊ§{¤Õ
-È’¬49ãE¸>Ø#Û¯švIyuù´²‹G†G¸g<®œk!U’%E.'œJÈái•šSÁfœt0Q–™DYœjiyrşJQÏöH6KS$×,Ç³LEæp8b2íÎê
-Øe½˜$âå¿´%V;éÎÎ-Ú-µİq‘w…H[ÊØ]Gì¹ˆX¯hnŸ^“,ÛWq«l†]JŠ«€tûUµ²’ŒI¬1m{L:d•Z‘j	ø+ÇYYyôÅ—ï‹«ª"£{,VUHÑ5–“Âª
-eA§ù¡t¬E”¸Ê£Frp˜œ2ıÑ¼ô£¶S¦[eõ‡×€]1o‡"tp‰ZÂi±€9÷-¢Ÿƒ›Ÿ>A~íÂ­]Eƒ9.º–~®W'Ö~ÔÛ†©<¾´Ù
-‡­ßµUÃU'3Ilbxâon’C:fiA%ã„²êD¢u4ãœBbâŒ¥ıí{ÄÔ•ËşÉÑğğø‚¼Ş!­®‘.º,¨ì^yxÅf·™©Ò)üÓ<…×n:Q«ğ—Õ“ü]³d7ßbúÌn£î3ŠRTÕÙBA_Ç¨PŒÓ’ÑëëçYw™NYN»ä„-Ø¶q˜ˆ£z›eÒfÊ( ÉºMê5J®1º+FBÒÅzü>c÷'Qq<=d(Çùek‹üD^É¿v	ÈåVŠÈÙ,‹eşB£”Í£"©6(ëäz¥ö¾şåQœ
-Î‡I×ªÍ^/HÇÚh z˜FR(úF­İn×ßcœ|>§|šDU¢d–ç™¶ş©˜Éè}“‹,2¶2³ ”À*ä#Óô˜Šœ’qiŒeT‰ˆïâg¤Ä0F4—0F”£ƒò¢Œï@ØAè‰µÒîµ+»ÎO@ás÷3àÍ¶˜!³l­òJ•±ÍVçéä¯,ùÎsÈ·CrE¯Œe•Œ’PK¢[j5¤¯{é£.´Ì–ZÄõIñûİ!J!âù¢mj9bvgTù£óEú9ÅkwºDáe9WúBüN£IWûC˜ì'F¶4RîòÔhåñ8Æœ³¶¶æ» EŸsÆÛØììÛ-€ ÃAÿÃ9TªáéÙ`øñâxĞ{sÒouË®2±(ÊÊ‰daEyP ì¡êZ¢`.÷@=ö2‡œºé“_Ğ“`ÿ™"bk|l\F†lïÃ†€Œ‡fKÕnb©õÒÌí‘œB1‹=@ÊWøñâìôíMùîìr M‡ë9-f<sYHn„Ù•İ$™ŞsMÊ™â“p+'Æ”Ğlç)]]ö/Œ/)•@ëOÃ­–ˆ{ «n(š»Òo‡MT ×ÂdöÇŠ}Ş¼ûJ±û™ÈÜk›ƒj†>Jò¤@“Xy¥ ğğ®|8Û•±‘Âµ|FL	 Ú˜İg)‹ ¬Ğ é«:µ¾3=–µ[ù$ßÙÜ”ˆj)ÿ©åÚ¹í‹oÅ
-–ÑFˆßô.û§½ıl†‡½Ëƒãc(€çy?Zmûfƒ·cóÆ
-¶ÈœM«õb5ö¨O_U§88¦ œv¬ç ÂDgGÎ[lª»„¥¹C8sğ™)¸U1A»İÓkã¢Í8Ğ<Ç÷Íˆ´8ƒü/ÄD>"rŒ\è€LW§Ç¿%_¨td”B"Öp×¦FÅã(`T ğw•^¤HÖ3.E@Ô{R€× ù#"ÒHLªé¦Ô=«éHCi4…5Re9HrÎÙˆ
-aUA$ÿ(•ÜR:Æ‰ƒÁW– ;xB(ve^Sîúrå×ŠYÃ»±-°ÚÀÚ¾F¯.ÂgÕN?`ÓE8ş“İ”Ú¯É0¥Es¢#à¨wrÙïªAÃ„n‰¯ -«A€Ñ¢}ëéØsC£.“l¬aä©³­Gi
-k…îçèç<…¤Û®zÑzÎé]m˜‚"µ’*AÆâw4ioèAÖ!’q…Õ›9rÀ×œQ¯öa\ÓÉ¤ÏÂ!üMç²ÛÅMS
-9 Rbh¥EĞ\8î”„2å©u•¬vñ¹xz[W3ÕÚ0=Ñò ³Yg­Bç¸_o¨Àl)aô˜*F\£iôówç$¥pNh±bô&>_Ó-K}ê…u·tªçË‡øĞçÁÉàmJ®#°)Ÿc¦A1±‚CˆÁ	êWØCoæ™ÑcÚP¶D5 +ü}Ğ;.ú½A'F-+ª=Xµ,yı×2¹m±x$Ù¨drî{=KÒµAF
-]%…ğÍã¤ošv˜+ßnê<š€šµ2Î8JŠ1‰ÀÓ‹i±\hhæ%·•·!º'ó„ZaÓÍòâ?Š”ÒÜô.Ò] êqª_Â$äÇ	¼1·¥·!lÂ4*–ÚuƒĞ Öÿá»Ø Ç=TôY^ºÉğ¦Óµd¹*¾¾ì%Ñ1ÿA²Ì‚*§òº,ƒ2›Êû¢DH¬Nãlğ§4Ê°°G&11¹.f@:'9Şth	À¤K»š;FÍŠ¤PáyáÇ8óišd·5ó[a`P¢lm›õav¿;Ğ¹§UøôÃæÄ{+‹ÊJ	lÌ¸Õ€éWc£@–º–#$;«:º”|–›AM!“ë}«*0ƒ<ÇÛ.~<LªeÈ²tn|\éõ:´AZç_æUä± Åçk;Ö¨í´K¼<$'I«â¸`ÖZÜãï¿üâ;C…¯½Z^sÏ®N¡ì^Ÿœõ[vP`µeJL¥ğêÒğ<uü¥r»cEÏgÕ^İyˆåîgRÕ©¿9>í]ü¾ÔÆÁ"Êüµ8±é£¨öÆ7Ãü[+ëã\ªF:jßâ-ß”°~­Î’ÇK•<ÎKJUˆE×ÑqŞ|ª¶©1ò~xÌ .Ìoç†µÓØV@±¢h1±´véÅ¥y-¸#8^%R‹öôˆMc>g†æ9Z-Ÿ­_ş¹^‹µPuQq3¼sÁ—µ>hå·ŸíìŒRq4İqvv.ŸÕz÷#©ö
-3‚BÁÌé;ƒŠÒLD%€¯.ú²!.s}D¡ú¤B±¶c
-­ïÇ´İ‹ ¬	Ìökß.Yi6‚Êú·Cô2w!£	J:Å€Å;“8Á„ºìõÆ)7&¨+£”Ê Q²ì¾1F~D@}5LJ ¥ny‚;'‘Ü7Uöàf½9÷ÿİĞµ.l²o3K;½T¹/!yLÕÔ•0UªqËÕwêÂ''}õ&´+wW›Ìˆ¿ÂÕ¬¾_†_kÉr{Èß­ú+8Õög,kŞ7(r@'ã1Å¯ƒšı®tj>-Ñ¢bŠI ÈŒÓ£¢UÎê5\›î$nĞ}ñ¢üA~™¸ºB^ ñŠ\a0›2µ.‚cxİŠ)@r)ôG Ÿx$e‰˜ÆQ’våšı<âÑ¿®„`Ñ	?†c¦1VÊ(oÖV–g?s6Ş¨øùzñ,HÆõò)Â}ïGÉùÖQoêú-n´Şkù—²êñ¯­­JãO*­\UTëœM7Œ·­,4ãÉM’Eé¬’Ùşİõ_˜JsMôŸ—î¥ì_ŸêÕáB®0§¦{H’œƒ»œ§·`ßà°BB8¨¤yü1‘«+cĞ†àç£ºåãÁÆz¬Òº_Ğ¿ !6‘ò:¿„Êö+Ÿ¶Ú¨TF‰*(ôå6*Jß$©K,Aß—ë“,HpÜ{ÿ~I*½cL–;ªRWkúÔú=Ã6rùñÔš;W˜ñë²ˆºê«çW*äÊË4ì g6kĞ-*ã…ÄåÊçõg‡ı7Wo·³4– üÂ,G½KCË¡½|¢ñºt¼u'§îÒ'fBÙtw›»öu—á$åï—;Ş°±ÂÃ>iˆwóÚ‹vËÃ}vlÎy!cScÈ(FİØÏ,5ĞFæn¬›V¦ÆnC™ì¯«næ˜V¦Ãi8v<ÜÄ¼¤Çy4¯Ş+kr}¯?½‘×k‹4ä.•-[¼Uö¯”Ãkzÿrz;p‘™÷H—R~ q­Aµ@N¢®InëÁm´‰ÃD½?îÿ¾x6¡Ë¾r®ıŸşiåˆç©7Ü§ÛI]Éj
-øPî·.Ô¼ëII§’_ªYÈ» ƒ?ÿ­Z}[GÿÛşCf×‰1¤½–wcœà†€kLÓáœñîØ²ŞÙîàkòİOÒÌ¾øš»<<`ÏJI#ı$Ífï0åÍ/Êì«ß
-Ñçì½tn£˜‡1­ù¬şsı·@İ‹P¸Œ‡ÎHŞ	&â;±T>‹•ò€©îÜò¡`Œİ¥9*˜„r8ŠY#ûd;•W[¯¾ß€_?°séŒ”Ç#ö¾ÆN@ê$RJ<±ÍT¯³Ø%Yt„áïÎ¯Ø;á‹{¬ôá;3ïD¡r¯«L…Ìã±y³\öùXD ¦0b?eæ~ºŠ¥'ãÉn¹œDOF•M—he—øj¨H„ŸêI¬<ÅİO°+:ƒO"œ!iğãÄw=‘}ĞÏ»£Pİó>~-on²“v~ÑeÎH8·l æôêï›Íãz¯Ó¼ì^têİÖÅù.‹G2bé	&~Äú(“¾ã%®ô‡Ù¦åò@úà0µbíPğ1ìTş«\Â0(‡»#ÁÀªÜ‰çÆÔ „çZ3nY@N,Gw<„)XúÅO<O?‹@	Á~ªmÕ¶pa³\
-ByG’î²îÑõL2Ûg( _\¯ç(?ŠÃÄ‰íJ¹š—\)lë\1W†Â‰wEVe·\úZÎëˆ8	Á7œ9I«1£½ÜE–Õ2ÓŒ7|—‡nFPƒ´ÑÎ¾—We|¬ÀÅ
-ÜâAøÃ¨ÊBñgêïR>â‰jìÒ	B´Ê|Úzö1è@[¤š`A("áÇpŒDÕ>­wÌÓ~"½¸ÆŞB8ˆ><;‚U¡ åà4\%"ßŠÙˆßi²`Õ@iß¥íòd$½2ÎË×Ì“ı‡“TpJHVe÷Âr©2á&Œ÷(ŒDù±Ãì ³]Ô-%N~§$€‰mö–Ç Í0T!nÅcbC¥Üµì\Z‚»¨ ¹*‰0Ê9+W$lgé~ĞOÑ£,½üØ;8ä:Ğ6*Ø•Ï IÄ³øl–«à‚$ÒŠKWl M +z&$Ïµ„ìƒŸˆÈ°»/Ù¢D$ãÌù1DSÔ"9•Zò%¥¿Ë$XL;‚ïè¯'oS§:ÜÇøU|ğ˜2Tl,#´>Ú£B}*#‹ÉÈ¦ÓQc§ÉÆ,Ï†"nÌ%¦]Ùa‡SR1ÿä€Ù‘ğ;;‹rym_g3$+Q—ŒvK9 o)qKëwÂwUØæñtŞ‡Ô?iuz=VcÖf­†?šÀBL‘ï³"32¤-D•RšÓ\HW°ó\Ë&çw.ƒèåÌi¦÷t¦dü·xÀÈ'ğÃ˜¹ˆ¬tEO‘3äB‚(|ÃÌ¿'	AÃüËXÜãÍ.ø¿²šyã€»nÃxÈÎ|¥¹f8¤°]t ßü+Û?`ën“Øê
-’ª†1‹¸|7òÔ·ï‰¸Víµ‚;C	HÚPæÄ¬Š±ˆ
-â÷â_HZâÒŒ–æ¬ßÂ{†¥j2Í ÅÂÚ…Ê  GP<àãˆn9LBNxBÀ‡ŞpYŸCYƒOµ?"åct-€.,ó˜µ½³P…íJvXi1Qì+€IÀë·¤ûì“6S—Í³·ˆ.ığ»Ù€ÎêwXl×¡ÁºÀÕ)Âãz§y^ÿĞÄ\ÉŒ°ªK •õÈÓnè¸éD’ñ0ä“ôß‰#lÜcÚÚvàCâ á$=LŠZa‡‡Ì>’a’m>õ
-dr;ÍtõP3³°uğ!À¯e*Í y×HpÕt>ÂÏ=¨!Ø­Åi‘óg2P$Ü‹ÄRáP°éØÄCà)(ÙÏ>ùÏŒ±(¡¢ñÍ4´@‡rlk×E#9ˆm-¡’ï»¬I¿GDô-@N-Qˆ”JÖJÛÌÊ.;<Ğ']\_¼jW.ç‹7ø›ÜœZ-`b{{{Ğó·›å½Q<ö`~ñ‡ûÏ„ÿì àÄÊ¥½XÆ8hùwÜ“ØÂ2moS?,ïmjê½¾r'È»œYî@ğ»JÂBS¸ ‰¡Ñ1-uA{ÇÁs/ŞòÒóa¼»·IÏzA‹ƒä±
-Ò™¥ÕXÛñÂu¡ƒô$âA`
-ÂZ`¸¬®ÚfŒÚD”Ñ]t°%ñ ã<j0µLHÂÌ x€Å<!…"9
-©bœÄá$=šu×„6Êì¹M³³ QÔX;—J¬³Y­ç‘
-Ò#Ñ”RRR#‘TØ—/LŒƒ8ı¾,7†êCË¼!Š>\$3‹Ø¡0ƒáK€”¦MD„éi…‘ôÂ‡Æ“'!#ùg¯˜º£I{Ü>ê £¢®£,ƒÃ€†_›k«Óüå
-fÙŞU§eİ %B§ÅDšİÓ‹“œn	€
-³Ş5»úñ²öÅe×š<­60L'ÈÇv6ÇnkÙ™€›Z6Q‰À–¬è¤ Úœ{ce‹ÆH[˜}=g¡ç9ÛÄŒ¯fHR75ûtÚÏ3O¯­T»ÜÓk&!]ásu_eÀN_g¤ `l¥fé”G¹(k¡ÚÙ3å÷’Êouê èd¨†ìeEy¿û˜¬h™àOÂ‰tZPZíæÌÃ¸Ìõ,|Óf®D‡nĞ:ívÛ›Ûµmöfë5ÿ}éBG79QCÜî$;,1aä.ø³x?‰?Z:ĞKë! ¬_B¹<'©í
-¿Sxbë=u;İeÔyßšNZ=…]Üü÷«÷]ˆ,¼¤‹6ïCåÓˆ¨¡ÚùğAÈn§[l@/ura4¹¢Ÿñ@ä=åI¶†¥ï-ñFÉÅ¡œPyºGë¨CÑñl×ØG}³ pt÷”IèŠ;¨FÁïd"fÓzP.õÙ×Bç[¡ıÙ+s[báıCŞñI_¦HĞâ¡T"?“úûè½Ï(Ğ|ßşüäù‘¡?	È°zÍ{K×eº`ãxñZ{Ø$NÀöhèÒå‹å˜î9ú\zL%qÍD¸!²-“'Íã«wÖÒº;võvX˜ÈX9BéB]Á²	İ¦1áEOÂo‚A¶Éû€j™şÚ¾óª¬¯”]Õ*	E›ÙU.¶ZÅ ş„ÀÏˆ>#ÅçxRÄi]ö>6Ù\¬Ì/]bôN±¸i?dŸá£féK	#<„5Ö>wv¦L…°í-Ü+Júğ0Re?U¨“·jYb¤"5¢ˆ»e"·—ˆÜŞJešô‡Y9¦”Eü,lôØ©mg 5”'
-j2•íE9{8ÕUµ`uŸ-˜ú¬Í)Ö\å5 Ì"ŠŠ‚4=!-T{]’"G4|÷à‹÷Šò³u¾ß”ÿÛîFÅˆzzê<"Ääú›B§©W	÷“±¥ó7åó~4ÃØ»µ$¤R_Gº8ş=”Î¯ ïgîñêmjƒ*»¶ğÜA–¥|ü=şÙ¶nLD<¦ÃT9ŸRá¥WÍPØé’ÿL‡Ôa‹¹¬(4SñH Nr*Œ‘okIBxŠnÌ%Êêíi¡ÀbòòƒÙÊ×q0Ì%æI4•ÍEŠ\ãÄ‡ê~kÏğ=gÍiöêggìkö.»V£ûˆò¡Õºì@“%¢xŞ‡«g­e…y'U‹%ìKäã¬¹‚	ü^ª±PĞ¹’ŞéöŒúiŞûİÑZ¹¸í¼ğ©½/V»Kó<9,Áöi›bÂ¨³ÈrŠwwpçï0×³Ğ2šY bªÚ¡‘¸LNÌßèàU‘F^ŞaÜãéĞÉn›ËÙ-ØÂr¸ìµ@ŒÍVú*G‚XtÓ5Œ{»Bt7tsí¤›c	§{¨Âø8—[sÔó·˜ó$Ôô¼Y¨jÔÍN·×n~ÀÔçÔÑYêƒô[š}¾æƒÇjÄ’{2Ùˆ÷VpoÍgæ7Ü)Lÿ‡ƒ9FĞX°×îbh’¼&ş¿CfÓo"Ó¯ä3‹ğÖ €×&)Ş]×Ï.¯-|U¯ßô¦_ŒY7×3Ò–cÑ·‰£àDÏŞGé‹f"zÄâÙIÛ`ÄYÙÌKÕ­
-ÇCMş
-ÌöpÄºÂ›÷bêÜ‹ìº	·xßxä·ŞØWÁŸa'w÷“ÿÔ'Í·ïN[?¿?ûp~Ñş¥sÙ½úõão¿ÿkkûÕë7ßÿğÏZ;úÇúwÿ~şÂ®ô^nì_ßüõõĞ2-ürÁ9»îÉñ-©÷)íÇQa}n†Ìıt$Ğc?¾2¤½ş¦u;5ş%õÒh1^´“H°Ô6\×[7Ù+,lØÑW»Ğ£±½ıÔ}»ìåËu™ƒ¦Ùğ‘tº¶ä—Ó‚×%„û‘)7ú‚Â¨ğrtöıÖzi_Ë_ÿÕ<ksÛF’Ÿ¥_1Vù¤—"lÕÕ•9aôˆµql•ä\îÎv±@bH",0Ãìú¿o?æ…ÅÊ&µuª’Ebfzº{ú=õu¾Î'Ï‹gbú å<ßÇ‹U†EIÏR1ıëôNól+‰°X¬ãORÈ_Ê"\”q–Š2Ë˜Š³¿ÉÃÅC¸’BˆÊ7‹,ßñj]Šûi°~ùüù~ùüËÿoâÅ:KB%¾‹K€ºSYUI¦ÄÄàõºŒV/dªpïŞü(¾“©,ÂDÜVs¯õà'Y(Dî/#‘"	KYÀâÉñqn¤4¥ûÁ’ûáÇ2Nâr÷âø8’Ë8•Ñ ˜M¿¿ºúv:»»º÷önúîæí›`(şñÅæUªÌ·¡’¦sEº…'/ºç]ÃpVìÌ_ gÎA,ãDª*åFüæ¹,Ä©(ä&û$•“„ÇE˜Fb™%*ªşˆPYV¡`¦ÿÇ«á´d)ácuü÷ã#ØP|ó)„…Eî€ñ…D\b Èe	G+æRD2‘%œ=@=Ê‹ø0S<ôÜİ,‰ØvM8>)ñ!^… a[	d¦±ZÃµÓ4NWD¼ªæ‘‡h¶åZŠEU2-…ÅëkEà)!æ §2LñQ,•3†9³ûœ‹e˜(y8R|"¿.Ä“²¨jˆÜ¨îMÄ"ÛäÈâd¾HªHF{¶5³g,MêÎqZÊŒŠWÙVlÂt§‰^#cæR¦"/²…T
-x§5A’óú–v*‘«f‹¬ğEcKVä¸hÑ:—8@\jŠ”Ştf'?U¦Ù‘RƒMsÏEôñæ]V†F@ì5˜:ç0İ ëù! Â¤a´ëCËÊÍ! µÅx;=ë`paØ”§,©Jé[¿<,A*RÂ6•`Ôµ9^ÅVO¶Ûíd]n’É³ñÏy8ìmØóıÇÚ¦¨bZNƒ¸†"*v§E•~İ@¼ØİUi—A¸AmÛ€±>ÎòBæa!Cj3+6²\g‘ÕÁ‹,]Æ«ªÉoÂdğE@:³3H¾èç€¤olÙ·kpˆ*ì VŠ¨gUñ+q€Xš/–:#RÈ²*R!>eqd­HV‚êÀvË*åˆÀ±âø¼ÌQ$çÕêµÌf¯§÷÷³™‹qv&îÑ"önÉÉ™|ô|pX%å•;À§å:V§/W²¼ôÆĞÍ«^äx
-óI¬fY¬ä Şã?Gr5 Ÿ¿ƒÍ@»à³3€=lè2V@n>¤*Á>Ã‘& ~yswuñÀÿÎî¯n§¼½¸á}€À›4è9,R#ğÈÖÅD2±ôñ&G†3Gîi…QÍwÒäı İ²÷ÌĞ»ÈIOÿ"K¥¿°¼ÿh:\üÉİ^—}]}VİŠö,ßz?ï¤Dß”ºİÛ¥>£9…ÍÅ^–ëó'st/Añ6y¹xŒ‚âæ=•E‘¡G>Aƒ ı3h®ÖÙ-DÌ)²Êå"^Æ2ŸÔ=*wêğíÀÛ‚¼]áÃÃAÖwœ÷Ù û$VèZAWMËåàäšQş%¢L2²ò“‘/Ã?k7ÌM)¶5QÀóûw5Ñ&¬.c
-jòÇY)Şm(Î!`È3p	pè–Sı›Nµ'5æI“â{ˆ¦'§íçÕ\ÑĞIV]ˆ“‰¸YŠ›`#Pš]ëRŠF|À¿ìzÒLl²Bzd|ˆ%˜B¢Á{Xc0O+1O2˜ÀŞ®V”JêqJGˆä†S¹%Ç7îR›.ÅŸş$öÙ’ÆpÍˆ8qåpª«‚–ÂâåõÖhŸÂBïNõĞh¥İ€DŸuÈ™9tÔ<8Ö¡ ~4ôÉs,‘™€ü$öàã”–ĞtwBÇuô;ì)ğ©‡ÃM.áJêC–&‹7§ K›ğŒy´60M‚ï"4Ü‰W³½nmÖÉ¤ºÌ Bá´ˆù¢²dÆp’VÃk uqá¦XÔ·ËÌ0v#kôuË"°­rôjĞ¡¥†U—’Ï{"N°aÿº'äì‰ÏÜB¶[€ş›Lè§‚hòo05ê2¡Æ8Æ2ˆó?ğ‡6¸½»ùïé»+ñÃÕ»Wo/ïÿøMëßAfèÜ.	Ëû²È6t®”Ñ—Mâq=«ˆ—Ú¤bQM2åë‰glc%	T×›FZNÖ Eˆ9ûÂşó¯ë—ïÀŠ‡pêK@*]H¤	Ó%¿ÂÚŸ2†˜ZP‰,ÌS~p^‹eßá3mBI¼ŠÎf¹’_’,Ë_`Nó Áøg¶~@ÉoçF¼ÄsS
-—­2ã#¨zĞá#Àó>·Êf„Ü/K¡÷‹;§qDd¢İ™LW1XÄó`oÑås­¯?¹¬ek&ÕI«Í\o—×.ƒÇ\¼Ç-pÄÄ>woõ˜Ş²C`Õ —/Î_ÏÅ7œ©u¼ìXÃÔÔQûóŸù)pòª‘ö˜ºÚ©¥€å—;ÊÆÙügÌ¡à¼ì((w¹¤¼)`Å=ƒ‘DPœTá'~úÿíğÒ`ûÙğòôe•&qúà£vt‘Eò"\¬åÙÙ´´À}oÒ··ôÌŸùÙPGôAòkÒCÍH¢Óh4›îÀmx#Â€P‚œ]V•äÄ@ÃÆ,êÁEÍ{ò^á+-ÿuøñ‡±K WäÄ\ağ”ÈFÍdœ¿Ú+|ıá³á×4Š]ÆµS;¾Ç€Ô™^ƒä2ÀC !6¤Úİøp
-x0F‘hDœApHJux»V)³–ŞûšÖ?¿K÷ª×Ö<ÂXë§z=»pYÂVºU‘m0ºÓ#r¨k¾çXeÆ‘ªu˜$Ù–]-8/x•m©Z…p!Ê	±‚µK±ÅĞ7.	˜ÒÀ¿Ââåd™e“yXÀï¯ğ[êA˜»“N‚Õ^òu…3iÌÜæ#xX¡ÓÙ9°èµpA«‡±Ğ):Àš»q<Æ;‚9Á$h©—˜zB?‚İ™{—ºˆ^i›Ñ‰!öÛ†;QåìŠ)¨]œ8â 4‹T}=¡uÚ/$@±õC\€ÉnZºš.ºÙ$3ìI+B¿¥é,,j¿~®G²ìqX4Ipxa5èo¶î?ZaWÈ5±¾(Låe6™»È69()„×Vë›´r–Åh¦/Ú1@­Qârc¯‰`òáCà´bú2«ğ
-o PÓ‹Áí«ÛÙÛû‘x>riá§›7—¥´ğ¹ËõÙYJ„“øuĞœ¦táÎÅ0Í¥>„'#‡„|IdÚŞ…n=µ¸ãöç¢¬’É
-M§3:o‹KcÅHœ~1‰÷Á$ 6—?zQ*·³6ãÌa5y‡´—ú¨š]#^´²‡0ëÎ¼¥/XT&Á^fáNU«Ğû§Lr›	¸âc#?ÅÂ”ÖißšÙ,½ïz´0Ù|‰ÂPVU-05°ÉQê§:ı:^ËÖµNcTBé
-Vš^Ó =Bmí
-¢ßtÔkŠ'÷†úÆ¥õãn^§dõÚRĞ¨ĞZL!v€9fØb ’‡+Êùı –ÊkpÊo)Vè=ËYZYòÛ* ….€DEÆµ¨õGõAªÆJë}sĞÏûŞ"µÛ`ìOeËZ…S§ÁÒŠ™akgGè1!Mè¸Æ´óÔ—¬‘šqšQ›C“ô,"^oI–Û"ÌsJœê "¥¾¬K^çÕDÑ3L”Ôú2ó5J|æ‡ŒÃËıóA(ÁJØUü÷).<ƒgÅ<T›i4ê¥^„ëì@ƒÜ3Á€M¹ú7ø<Ÿƒd§Ë¢Áa/]Mã?Ö7}<Ã GvA+°ÈjïÉŒX9´ÄêšOFfÿÊ‘xˆó¼nX4,›PëâTgq/˜²Béû"êLmXÍ|í=™9ÿH_Ô&¶ò5Ö(ô]v‚ì€¨s®ºC;äÊğx_İÔù%®şü›Òµ_wû·¹#Û±ôˆ#òÏ©«eÇtswe«vœQùÉjº)bÂÿ'U+íW)^ÏQÒè÷wèGí¹niß£Èò§°À3?v c-İË˜=÷ãBôİÿ9‹Œ×Ç‘mªÕ^­CÓnÖPHŞ×8fûĞ÷º Ğö3·8¡«òàĞPˆMı¤éÑ¼Hx|n]’­‡¡Sßã°IG×¶Çş¿¼åoà{¶šS³“µ¡ü®éï/ó¨c2F”x)ç#Ş‰)p!xÕzÍÕİ^äÑS[SÃ¹Ã3‘DX¶8Ÿ]÷Eu?Ğğ*fqÓüw™*®=æv:]D¯>ô;°[Ê^`{2RÊ—ªæ’G•tap•¨ŒÂ5ŒÙÏ(±<É4mJ£z^ä='æÚïØç ª<
-mi&©u¿õj³ÑüÉ¢ô[`ñFf¼ïöÉ+ò.ÍÖ°]ñÁ–ykå©¾ë'b…½v<)LiÇ]t™8$V}À–ZHÅ@·¸•°‚Øâ¡¯»Ìâ¶<¿ˆÓ¸·×YwRé{âîÄFCF4òLÅDí ázÿEšÓš}µZŸm'aûîª8u^`ùYˆ¹ÆBö90ºÙK#¿Ä	²R’ÍÜyW˜õíMí¨ÏÙ»<Ë{(ğ¸a:W~§XcÚH•¬ö<îÆûh7çtæÆKö¸Øäöˆ0í÷ö{z	°èLŠ×ÆÒi¡¹¢pp‘8K½NPjh®›šŒûÛâÚZÂvüÜ§ÃşÑøP´*;oŞhPDŸ®»YíÉá‰/ÓMX.À·êÁQ¹·öXC“Î‚-$7w¢àÉœìHYm&ÔÒmKÖÑÖjêĞ²Ôçı[.±'õ2n^ºïé]eµ¡ë@Iw¤ºw}À<‚{@rœ¯Ñâ*™,Çâ­iB€'A$ÄnOÍm ¢…}çÂ¼'sõúzvysgC”ÚÀ·Óû«7Ó®ºqAÎÁ§T¹}ËÈ»#Y"Ü?h.à«¹Ü 7”òµÆlâ4›¡Ğ:˜ËwYUğ¼‹s¾C<Ÿ`HÀâ¬R!n¿ŞĞ{KˆÂœÑÅ‹P\GPÁPƒ™ŠÀêxÈ[Ò­ÕR† Rœ Áµ;-Ë–€ŞÉØ±”7œj4ïıÛ¬€ª…¤+:6 àÒ³Ñ‡  UY÷ĞÁyc`(¾Æâp¹†öPœ‰ælëïZğŸ`ôÍâìR%–¬˜¹‰ˆsuÈ”©í	=•„'›ÓqÃ	Ò­à&|À2½IF÷‹m8ŠÂÛÊè¿Ø©+‹O¬Œ,àõ:ø×E¶ÙÀ\|;B8«‹ >)ÌÒooå)İHk,áÜº'DyÆé·´ãmà£Klj'5vøë“ß·¬1ÆÕo[økœë…Ú€<váÔ› 5€qdü,xÌØ%aºªğ=E0sxè&˜‡Ãt37Yä1åW4´c”ä;…
-Úâ{¨]¼#»ÈØã4úEÚá6‹t’E¸€\`œËÍğ¤¦ël:)tèµI_-V%Ø—¬‹ŸŒ rh]AÒ+|™h¾ãjP›S¯MŒ;´ın©şF)¥`+t›Ô’o{‚°i†^ƒiVå*w Ir¾@5Á|¹§Æ´dÊ~¶Ğï(…¿Ü*ÖaÍaœ„: A˜b>&=@ŸÂ‚¼{;J'Ñİó\äìmH ìÔZÙ‚§MçÅmÍËä8›^+°~Á;yÛcöâ¼'v8œSL­é‹«92dîòGº·¥3 Ñ-n5hº]Ö×¢xçáƒyÃ¨•ş#OÄ›Ğf”>ø0ùAùKà÷z§Œ¯Oz4;À:NÃôj•²»Õjòµù¢”~SŠ²,~÷šM,è_³l“„OxFFì¿[M¶îŒg!-4ğ°-}¬eÃßğÓØˆ±V"ü3­ ÚŠÜ¸MøOYİbJï²ÍO±ö€'yRRém>ÜKü#«pĞÿ„eí–ößÁqè>K2Ã÷ŞùøÎš/tøĞ=ï–ÕLS³u¶”*˜¦ÀiR à\×•A5½j¤na­º¼×4»%^É¦…‹aª]ªP®m¸5²Kì‘ŸPm%$TUjjTf‘sÑvƒ"½OØäæº3ñíëi½
-1Õ)´ß¤xÎ¶»Ş*JE c™ƒyÅ`•±·ªÓ¡Å:Ë”~7‹úà0p£94İåê‡Ş¤‚é3ÅüŸ%ìO@@JÖLYí¾³vÖ©À-tC22&ª ôY`r@p Lşlì\•Æ« 0…gC¿.Œ^4ÛÔU¡€¯&—ä—;¸íCqôˆ¸i¶¤Ş<«÷Ñ÷UMt1§ëí>ÕW*èì¾[ú5º´J8ÏÚ{MäµöŞ¦ÿ?¢Öd áâ9š/¦—¨qqfÃNëÖ,‘ n°ë/öÕ(˜DÓ"«{òúĞE¨P"Ã¥-èWºX²ØĞË‘–ÆcóâR¶ÉáøõîØbTjòP®X¢LMÄv4»Œ4y><ßC¥+·ÄºÕıy¼·×ÓæıšNnğşüO­VmOã8şÜüŠY	mRTÇéNºr°ôx»¨ Ú•(ªL2¥iÙPİî¿±ã¸iH+]?´éäñ¼>3ã?¿Ó"ˆ77Ø„Şâƒs<)Í¤¶²zÿô¾mâ%¦Àd2åÏøª%K49h!2‚ôaÁ’'öˆ ğÔÔr˜ˆb.ùãTÃ‘Š’öîÎîo[ôõ;x2Sp¾Ç¤u®D!ÊL(ˆk¿.tjue<Á\gƒ[8Ã%Ëàª| pá^>£TÆ¹_; $dL£¤Ãqäl†ŠÜD§väÃİjq=ß‚'<Ç4
-Ç½ó““¿zãáÉõÍå°wÓ¿„møşR„+ÕjN)/BÎëß=‹:æíß>yÂèN'¯‚+¦§Á¿AË¡Eñ¡V §H&Ü¥„«¿{C˜ğ·Ğ‚%êRæ JK?V2ÅóÄ¤çíí#ŠƒVQ¥‡<Ôô3)óªv¨ı¨İõÈ•ÖFABØI²YDoÆ‹Œ’…£QØ0¦¯:7×'§ããş°måm
-¬Õâˆ>á¬ĞóÈêj·Ih4;ÕÛû»G‚î¢°ïHhdké˜	¥……äTOĞ¤_HFù1ÇşÏ”ÜÔš?Êy×íúÚ°7–§<%ï¨ŞŠ@w>äN#xŠİ´‡	 4ò{Ÿ³Ú‹1¾r¥Uª¹“±Á‰a#“KÆîîÉÜ*Ú¸åR<Y2…hÅGj¹Bz­Æ®ìa+‡ÏŸş¿H®ÙC†•Ğ +¸/‰-2æÆ1œ2)6Á+<Ä¤¤f}Æl)fH¥eò/êZ0ÉfP×¬I× p³Ô/Z€Ä™xÆuR<˜aõ³”µ‡Ã™É‹s`aŸRéµüXøQ7ĞB´Ú"¦›ëZ7ô™	ó©Q…1U2õÅpï|]¤–)ôÕß(¨{¨uòÉÍ¥Š»$¾"qERÕgr|YZMƒ{Ë¬¢£†Jœ¨·Ä%+Ù:àêXè¨IœDäšç%:Ö¬ã}x…Ù¤Û])…C».4³ÎXÏŞ4àÓ°uPæÏŸ>R`;!3)Ù¼;yÕ´aˆ¼»ö§ˆÅ”Éğ¾Z–ØôzôŞ–‰(wØí&2yJTèç—WVö_Íó-åc’³Â¬tÚ@ÈË¸Bj{;4MÉnıo[JÏ—ÖÊZ¯Y´m3ûD–×ÊŞ›¼ÜÃR?¦ª÷üy;fëÖ³;ee.su;8"æ:æ»«·Tÿzüµ?8¾üzíéIªov7é0gÖ/–'µ.U>j‡u`§»mØß§å5¢Oh P¨7ßEÇf×9“GS–Ó©D#ÍéæòÂóT¼¨ÆüRhòO5«Ğ’J]k7‹¸°cß½eüïªu´AÊz…~qÂoööÚÚa
-³2Ó¼È]\¦¨‚%M‹+BÇõ¡*ÔŞûÈU [üÕDõ`05Y¹GT¹¥šUƒÖ…â‚xûnñã?ToÚ0ı›|Š›T•¤j¡ë~icheŒV¬ ÚNÓÖ)2ÎA,\;²m·VÚ‡Ø'Ü'Ù9	…Nª… œßß½wÎÛwYšõ­­ ¶ 5E18|j3.)h}l}ÙÉô%L€Š9^9Ã¸ZÓZÔ£÷3Æ§l‚ 0]­²ÏuvmÄ$uĞ¾{
-y´·»÷b‡¾^BOğTKfá¨¨êµÕ™Im¡¾àuì’¼–•õgöÎà&a0Ñ—›s4Ö“{¶Ú€d%×ƒ@±´DË²çwíŸ9!…»nA‚c¡0	«që¨ÓyßŠ‡“Óş°uÚí÷ªÜÜ@"pœ[j)Á6ã)?ƒŠ×²B4Û™—"pÚî÷-Œu+å#AÇB¢­Á™¥çË“â‡P“iĞ:m˜WºæçÅ÷º™Q s-’"b…â^“×µİÚ®ÕƒJVhBİ9úÏTa÷ÔîHÛ0
-*D¼R¯ÃWT	ô9Yøóë7ô4H­&h@!&˜4àA¨91LHS@BBf(ïÃo&(Ñ!©N\Aj™$t-(NiÚ+¢PLŒ!\°‹ñJXgÃ*Ëxœ3sX5"š9ÏÊş?[aÔ ğm@Ÿ¥şİ%IVjÑÚRÈ¾’×À²L
-2‡hxÅspJ£ÈŠÎÈ+©ûúgÌ°RÛ:ã‚<	NËôŒ¹”îE¡4Œ¾X½náˆ®2ußÅWµ§rñ€ëªş w2,Ùäd¢7yåÂÚ2wƒºêg9š fR6‚R~acÿ?\,¿Ÿ'”ˆ'èÂªÎ
-5Q±‘$ƒ<î­ÍMXóµÌŠ—SôŸÌğÉÚIş2Á]Ì2ñP–_t9=(Ó6ô€´h¥7)ÜˆO:ÃÏá·êI{ØœÆİãN¯õ©Sım¯·ú´"h6›°[Îe)ñªŠ¾=ªä´ôïÕĞÎFô/ÌÛ†çQQ êçoeğË‘YWp‘éÌ—‡–ğ1“–^V>vû¥TïoÓ0ıœüªh:†Æ‡.´L0ĞØ(…1b¨r“KbÕµƒít?şwÎIÚ¨Ø$¾¤Õùİ»wçwFE^øáÎ;p8Gœ18áñÜX¦m“pøêğãıB]¢Æ˜s¾DÀ+«Yl¹’`•uè§‹ç,C ˜o²<UQiå­ÿqoïÁŞş}ú<†1s%˜“><'ÖÊ¨B•BWºNmRs	£4®ÆËñ9¼D‰š	˜”3:€Óöp‰Ú8qvAiÌ¢¦äĞ÷%[ !™ØÒ^¬Û½8·\p[ø~Ê%QÆ¤ÇÀ„>—J'­,ÆÖÿî{…æKb„´”Í¦ÓXIcuÛ ßú„iô³¥Ÿ5rQ{hæ/”^ñ½ÌÜ=bö4ÚRK0(ÒÁ C{‚{÷àNçæTe&Ç’Â# ºH™0xà{ÿ¨.TÆe0"¥\fĞ)ZrR°T<iğ\¶
-®Ï{wg­<*RWñÂ^³9‚)5‚Í±" He¡4®… Qq¹@é”¼b‹B`¿-ä8sfò)~-I~Ğİ;’ãÉã·OÆÏÎÓ£wéÒî³Å¾>«el2ïîn›Óçıøáü×„¦tÿ<­ş‡oİ3’3!Š"¿™ùQn‚%³'wQŞR Y2ô½Èr+px,—Lğ„|.S•ºn;
-›C?
-t4SIårRæÖ¥Ã¨ À'UÒ%sZ¿ë±¶ƒ„UÇÅ*ÁáMıFaƒT•2.ÿ¾¢>|pìù‡4W´Ş"Š¸kµŠÀ”ÃlŸ®¡¶“ĞÍeè»øõØ®¸]Åêj5ÎÎµ{áÉß7¶6İö‹i=/f6Î!¸xŸkuÉf4ˆö¶—XíE£¤3=;:;;~3şÜ]?Q}Q£§\v¿PÂf:™jÓŸ[$ínìÑÛ§Jü¶m·s‹½Ş|¶¼&7nSå·¶Ğ>#M¥L¨=™5cæÚ
-­
-B/‚?Ÿ»«á52º]zÑ K!j1?uSïOÛ0ıœü7	Ñ–•ìC
-P*(Ò> UN|m¬:vd;-Ñàß9M;T b;¾÷îİ»Ëã<ÍÃîÖV[Mc—"™ZÇŒ«¾)ˆ~G¶s=Gƒ˜IR1CÀGgXâ„Và´–ê£Or–LÙ`ú’å$ÑyiÄ$uğkµk&­½½ımz}†¾HR-™…Ëœkiu®©-t—º®¯¸¤HPYŸã¬g¨Ğ0	ƒ"¦¸ª/gh¬÷©Ú€d»a¨X†–dbMû°*÷áŞ	)\y†ÇB!o6FÑe¯÷3İöî†7·Ñğâ¦ßhÁÓpW78À×ÎşG˜k3eFŠÃ˜Ò­âLj…p}z t€»óh{Æ…ª¼³Ú¸š8æRkÁ¥ø’ ãÍVÛ/£±è÷6e»~õ¼~__¼`‡a*ˆÉ0á 1XñÚTdÖçœ§ä9d–O•2›Ösùí+.Ê:dœ`4ÀfLHK\Vpq=¸¹Fıá‡ª˜/TLÆø‚›†¥ëIı†ºãû’ùÂœ6¥×ˆ¤¡’EãEJ<¿V²1Ôœn!ÑYÎœˆ«.Üç†Ş•+˜”eæ
-iJƒ™Ué³6rÉ¡&ş,LUt\VÚ¸ Ã]õEßqaYãÉª=¾uvªb±­şHhz-œ*ü~2‚×¸·+«kC}X7òÅüRÇ-KÛ«¶oPÒŞ†X(fJ8‚1“[a@™‚²aSúa8%ğ(FRÒŒCsıöhqOGğ
-½T0ÂGam6¼ê†`ıÙÜ|;|ÄäDÛ÷AB˜1¬l6¨ÌFşcš­Ö!¡½|ƒ®0j½¾ã…5rİ¢|Ó:Ïú>ÿåY{s"Çÿ>Eëaï¢ EgçâD»ã$ô°$DŠ]
-µ,¬µìnfÉøî¾{ºgvöâT.WªRqÕšééç¯{zÚ‡ïãi\mììTašŒ]¸ô½G!].ÕZÍ›?ïÆÑ3ãl.÷¦şö«ä®'ı(E’õ‡Øõİ	€Ç<—^/¸?™J8NÙ^í»½ïŞîâÇ_ í{Ó(p\:p‚\"Š£y	h½®äHñ
-|…‚dœµïàŒ…Œ»tæCÜ€«dó‰qAÊ}_‡ˆCàJÆñp£Zİ¨&KØöSsûwÒ|¹8¨VGlì‡ld[ƒæe«õ±9è¶n{7İfïâ¦mÕàógùéæb›®`ıæP(İa<XMyŠ_˜odXŒD—	\g¯ŒCà¹Ë0Fƒì4ëøqn8‚^t½XÏ„¼¦½¿R˜Şş×Âä¡çÒõ<†?ĞJ½ZıT­Ã*(®¥ı rÊ sŞ)0^ıÉœ»ÊEcÍÀgjı€9Ä@1éM}3&§ÑÄ<#.Qæht0B¹ô–I³8"ŒgÆ]Ëİšªúá`ÛHËH8“s’Ïá< ÚwWWğ<e!„‘Ä(ÎÃQ7ª•X;A#ñk<uÀ“Ø'ŠØ©œZµ‚©4ĞøÌüß˜ò‹“)RI‰áÆûû¡¡5^Ï1Dd*~WQô¨ğ•³ŸÜ‘ó‘Â):U»Iıºv¥7¥@HıÇI:²`..Ú÷–"±ê`e´Ö Â¶Óh2¨²X2U9qÀ±!´³3u(i_ñÇ`oøb@Î¶N5b­yW’˜$;´ö¥Jÿ´é§n1iöÛÑÀ26È¯*n¨aÌÙd0#slkë_a_¼wvú–]gg{kæ[9Mñ§:ÁIå„á»#x“úÁ¨šßï=M“-2×h©œ!9ù8jpë!lùB|_Ê•Ìoó(’Ë8w9wzIø¡GEágÏÙ[ï	“iœè'ì÷IB)èa’XÛ7¼?%şÚPÛ9Èhâ+§ûûÄØµÔ_Y Rij¬Fj¶E¤Û#ŸcÁ¡ŠT÷it6È)å¬|¾,E*;ŸI&¬²PjÉŠª70«…ì+kP€šÿæèŠlË…[«Á{´Íq˜½Ù7ëyE5W‡ÕOÜ—*Ûc¦ ­G%V	kÒzx!²Êé®D×SäŠàúÛ×ÁõLzçáeĞeä ×,ñ¥¹*DÌD€nˆ<,m7²h±Æ_%·–á5'£F³Œkd›B§u«L*Ê™!{ÎZÇ›}=‘M´#ˆB†næB’1q$dÌ#%ı‡ÊZîà²Î‘”j÷İ<Äø=fê"Y–hj‰8£8R*e'éi¨ÀS÷µ–Å•ñ<Ÿ†kJ_¡”Î£óï‚ç2Ôô5&™È)\c¼z€úËÀUH\‚>¸CsÉg±¨1ÄXhœ?¬2#Ñ6½Ÿ_ØqâóRm+mÏ¡¹:sĞ5l¥—ıO(j5C8ï]_)Û6à&õÄ°/¼<<¯İGôÙœ3ğ%¨.[ŒÅ, –~”bÿ¬q’²OÓŠl–Q@M°-æÔfTuØ}[«ÁÆ‘Õ,À\ùö[øÊ‰?çNX/šñÇäj*wğïy$u	¨Î€³8À÷ˆm9äÿ~Ÿ¾ò¦«¾G•«¹Ô}¡ÄaQVzuhkZ/á3¦æ‹	Á'
-Ç—¦îà¶ÕıG«{ou[×7½Ö yrÒµT‘­Ğ\)®	–DdÉgR˜¸‰"¢‘íááa«}rŞk·no«]mx+œàİ7¡Y 74
-~1[Øà›O9Õ¿T*‰^KD¿Ã—İà®{¡ˆJZOmc‡Oßù%¦Ï‰?V¿ı1œÅø)iÉ‚6DmÛğëÎ±şØÎNúÎThå¾{ôıŞõ«‡j5çƒİ,Ìñ•63ÍW. ô{7Ô¥¬š÷J>ŠGây•ÔàE9˜—¢äuˆî²ZÚø½œJ~zíuÊT¯¢¥â#À×Aú‚M;/³é‡ÂiŸµoÔ[ËK®:×Ü[Ï>Æ—¨¼ˆ˜¹ü£´âRÒ'Ö4èÜBæK÷ÒüöSVêú‰³½u7jÓ‹È€ëÈıC¾—Êñ)·ÖV®¾Ğˆ7·¶¶ ™à\^_ŞöšİŞ sŞœ7Û'W­îàcëì¢H–À¶Ä‘îÏ
-ıq^“Ü—Ï}]6æx*9×i8­~ÃQõ#oĞUolûâµøj×ÏÕ;Œl*›t~3“µù•Yè^©Ôs%ióû!/àğ•ƒ€t.ÒÃœÁÈØÇ¼QõŸ.¤f¶t'Àœ‰‡Êfÿ{§íJÉPc,À¨L(Çøº?üFôÅNúª·5³êùñÅA6€âdÀ°[9¨C§Û:ÜœŞ¶zƒãf§w×må³B±,çCòòO°¹€iÌÑ¸tá­æä‚ÔT"³áB2_ÈÇ6ëALO•é^yr;ÏàÍCşDAÆ"k9×jéUŠDb)*/¡¡¢ğ¿éü¢g_ví^¦à}bÔ.¼QşÕ†’ËØÊ0æÉ÷²FÒÈ¿8¹([Ôá™Y˜¦Éà€.rFqÊÆ£iÕ…¯;XEVÍôÉ#=ËÁğÄ¶EÀH–Æ™Ëç°Ä`<mÕ³¨zV!lµRƒ¼m…j}FEkÙœnKçô9š¿i?T*µ²÷”°õ®3Õ½˜fi¤´bê¥a—m–¢Zº^˜ñ
-nïşG
->ÁÄÜ—î0y ›&#ûß¯˜cëÒq›r7HZÈÕ]“¦£åQJ¼¦˜¯D§½ñÄ¨ÅE$bg© ¦Jwí‹Ÿ‘ç¢”YÅËfŸ+@•au°şÌÊZ¡®¶;
-ƒZîzÑl¦<O(œèü ¾hGa‹ÖğûXÒp%XÕoSô†h'ŞÈ0yñ&uƒVTÍxCo\|äné6ö‹~Rü®¤Ë \lŒ
-h²o¥¡5İÿ~©şíTïOÛ0ıœü‡T‘¤êÆ¤iZ×Ñ 1E´M€*×qZ¯Á‰lÖş÷í¤+Û·}š6ö»wïŞİõıN1/ün³éCâcSÇœ.”&RÛ3ñÇøs»Èï™d	Içüû¦%¡šçtg5èAAè‚Ì ,ÖY4/–’ÏæöV¿Bmom½moom¿SNçyFw`Y—*/ò2Ëtk]':±\§L(“ãğô™`’dpVNñNªË;&•÷º¹„Œh&1¸ëû‚Ü2…2YE{½*÷úRóŒëeÏ÷–rÁ’0˜ÄÇÃán<Ï/FãøâhtDğğ 	gˆ+Õ34»D±ëxª¬A£éWF5Bk!åSK¥Ù-(Jª‡û9VH¦ /˜H¸#«–¢#
-kB´4–ã‚§Ôşß+\íi)\GfL˜,!¹˜A#Í³„ÉÔïÑÈ( A3ˆ|9¼n×œdü;úG$'SäÀ›‘İîÃÕMÏ¼¦$Ãºû`¿±4Ïã)„\MŒò*Y„´–×“L—˜«QÁ=ïÑ„4æD$™¡Ô5×‘½JMŠ.K,1—Kà
-D®PÊ”â(¬_K¥¡"?ˆOÎ‡•s¿’¸RÒĞs®ÚÓŸˆèD\
-ÉHb*]K@~‰ùsØ7ŒQ8w•.[‰“E°ñ›ëU*n‰¦ó°îD,‡5ÍÁ<šÍEi³¹t6´J¶­ëà(nnÂú	­Q4pZLãì‹Wû‹Æ@à¦øÉQ·:¨ÒLX¸ššö«¨8¦¿¡öÆÃ=Ü•/“óáYŒ+3G°ãâ¼ €wÏ!z•\îæ¬V…]À
-:Î›
-ÃÕ>¢úPO>"weu÷N§3ÁïÕ¡E¬ƒ>úÕÃ|ÿfØzÛlÏë–c4™<·fVèË¢½,Ú¶hÿnÏıŸTÛNÛ@}¶¿b*Ur‚BQµj¡UH[D[T\¤> Ek{’¬²Ùµv×”¨ğï½Ø$€m{væÌ™3góqTÍ«t°µ•ÂŒˆ9ƒ#^,ŒeÚú˜„ññ¯íJıF%0]Ìù5ŞXÍ
-Ë•«” T—½_±bÁf ‹u”ıBU+Ígs_Ú§NÑİî¼İ¦¯wpÂ‹¹ÌÀQ¾êÊ¨JÕB4¼mé±/P×ãğäQ¢f~Ö9Àq<¼Fm¹7=P³¨©x¦’-ÑMŒ°Wí¸W—–nW{iZâ”K,;Ùd|tpğy<9;8¿8=_|?=Éºp{%GÊ+ˆ±s«¹œ}CQQ“?iâäLˆé¥ä…*qÛ°)BÎ%Ó+0>Ê™Ã´–^Ã¾Ë÷5¤ fKš-$ŞÊZ€×±.æØ@X3´`)Ò )½¤ÑÖZpiC]ÌRS_PztùÊ¢é‡*Ãeá¤ıĞö‡.4H“*HK"Yúi8[ÂíŒ"©H´»ëÚ¦	‰‘ğ)tpYÙU§9tú½âf^Ûp—’]A™÷èå.MÛ@Óy‚7ÜXÓÉ–¹Ã ş™«MFĞĞdïsnÃù.lv©Ãv_uGû¯]qYÕvmcñÚ„ÜCkµìoBú­5Ÿ×ŞŸĞ¬Ÿ]U¥÷‹h6Úà=†ŠÔTtÁShùÜ¥ËˆSVk\Ğ£Ë|ºFc7Íô„ù6”q-#.ı“´íüõ< Ñ¸©,0¸f‚—°1Ú¿¹Ô7zhÑ—8(Ûƒ‘‰z|òlÈÃ±äŞÇ/p­+mûØûÓ³ìE.÷#¬»<ÌÔÎÒÌGxhûç³ã=¸û­VmoGş¿brB¹g»j¥š †¦nê:r¬Ä‘ªb‚ÖÇÂm8îN»‹ÚàßŞ™İ{á ¿¤­%·;óÌ3ÏÌìŞ‹ŸÒ0­û­VZ0˜s~Ãà\s¥™Ôf-†Áïƒ?:iò™K>&ƒPÜrà_´dI:I"4%ë—)ælÆ`¾‰ò2HÒ•³PÃ«â—4¿ïàÇp!‚0‰˜‚ó.ü‚¨+•¤É2Jø9¯7zb°"ğXQŒ×à5¹d\.opŞd›·\*"÷]	Ó\¢³_¯ÇlÁÒäìu‘îõ-"¡W½z}Â§"æÏÎOOŒß¾¿zûnpuööÂmÂ×¯0íØ22@€Ô\2©øY,ê×k¤iéš5`1œ]œÁTDô{’ë¥Œiı’@0M¢2)ÙªKnÆÕ”lyFñ a *W!·°:T&WjËùëCßl{¬¸)œBg¹4,R…·!š›”\2Æ`IŞ`yH¦…oæ|¥Lº·,Zræ×k©­j®ñkºŒm¥$ÔXÄbLéx&Õö.i\’ìó„i}˜"qŞ¬×Pïš˜‚—oá’Y«e¬¦''Õcìü'DiögÿCıWØl]/d —¿]ÂS8]ELY¶ÂUÈâ¹2¥RIÃÓwÀ„XŒów“Ÿc®aŠİ&JS»èP(@ÇÉªT9‰ù–àøˆs‹¡Öé‰ïÏd3é"¦_5¼¿=w»óW\ {´9w{óI­¹(oâïl
-±Ú&gK1HbÍAcƒImˆÌèOœ÷´şÿĞûRÜâYôHó?ØCyÛß;û<<’§¹³ƒG˜œg;“Ó@2\ÌâŞA°zö©Æ’§«s-68ø_úåpüK%²‰+ûë‚ˆPc£¦GÍíA¶[U— YÆÚšC¿‡ù46tÙØkØBm-J®–‘ŞZœEÉ
-¾µJùÒ/œAÎ‚'ìhDx›”ÊÒÚâĞ,<»ÕÛ\¯j©IK ±2K2õ}¼GkEF¸TòÙxÁtz®ÿqÈ::v~|7÷&–Df@ÄKnB¯sÔ÷Åpe*¹G$¬;t7üz‘nÔ¹%E³Ÿ«<å¹ª%]—y"dš¹­88è=Àêœ¯:¦:8'BZáÕªÕ&‡~Î¡Çz£?
-&<ëãş½R<No¥BÆIg•²dv2ƒ%¾‚TBÚ²TÀˆ` °´=§ù€ª=ÊÈ˜fRm$„¦¦ám*€1ğ2x*æê:øÎòü9TW#ã«Œu£C­ÚAN·å\«VÏ/)Ğ‹ÏQoøÑµU³½ ÿÑí¶\êÜjÔ%ĞÒÌ"f_Y®e!²²ÙfŸÙiUÑ§Ô¡oÕ¹ÕĞÊG‘²õº­&¦L¹º£íÚdMÈ0$÷SÂPşE ì	ó­r¬÷´ïö¾ìQ÷Úq6Z˜NºìœÍB›ÆÎ¦ÛÎ_çˆfĞ#·Ò¡ùñ9¤)™ãÁFê=P¶ªÓ>ó‘»ıZöübv8}»}¾÷‘,.®İ×ÃüŠ ·8¯ñÉ\(€ß/ !èÇÁÁ–èB™ƒ¦8kŸFfÔ³õœ®Vsµ×Ú°âX6Ö×i~%@^“âf-/¾ì.¥»/—ñ¼¼ü¶îÎñ‚Ë¾adËíÜ¾ÀÌ£–±Öõõ?ÍX[oÛ6~Ï¯ ü¸EË–oX‡ºi1´Kº ÉÛœEÙ\%R#©$N›ÿ¾#Zvb‰R’6İ¦‡È¿sxîçC¾ xz9&Ÿñ’ªŞıi¾”Ï—İ/ƒá8£pŞÃŸ)°§½Ã}À•Š	^bwèö[Î/¹NÙ-wP×¯ƒ•($)ïÛ·Âœéun,Y2]3Ç…LËÓ•Ö¹šy VEä‘y;ÓİQI*)7÷¸OèdDâh2˜Ñ8ÆÉ8J¦c&}ßıéh˜à¨·§ç®æHÌ”îvã–åOpçÌ}àŠ¤¹P÷y $Âiê=ÙèóŞ¢H­°*²RKwl$ı»`²%ËôF;¤
-ÂO¶[J€bYÒ›¬•¯òòì×Wc(4ıòjâ†İVi¶)ôÀB§8ApîgC6˜üìû3¿Q«ÛD¦,’X®ëÇŒ+©ÁŠßÙÕõ¦0jP\h‘
-Û#’°´Ö¢{ÇJú
-+Æ—névva‹’ÎĞzŸ9›
-[,Î‹Ei5\ÒÔ{×O.4KÙø_«êÍàH¸B.½X\óÒ}åÕ“2B¹¢Vç{¿;×w„t ÊTîxÑŒñJH{[‚°}Y‰+ô»‹Ş‚7k%rQ¤BY
-ÏÒ3ã/¯$/?şqyv:?¹<=~7?{÷zÓÀeG·©X‰Œæ0›·Qƒ ]__»ñÃë]0¯E\ŠÔˆS£·ôŠ¦"¯G¨|î:cSE$Ëu5Şç†ÔéCÓœò†ÆÚâThá[ÁÑÙ ÍOß#’2Ê52MšÁ/¨L¤WeBéRG&xºF…¢1J(Ö…¤õP6üoéu¹Ït}-dlÏsğ«"Ï…lÜL©Â4b§A^³ÍÇİèT %¥Şf•v6X5`œëU©Ôu„åÀ"Õ²ÙË¤
-E¥G°<NëUõpÅ÷İĞí7F¡}Ço°ÿÒ’ozñ¤m?õqH‡~8Šã€q@iL0‡ã‘?§Ã1	&Q2ü‡Û¾éÙní?ÙúÃ\û0¢¸Rİ›?'FCçÒÿ4vôõ+ú4Ú{ŠINL¯ìfFh2îUo£½ßl€-¶àL{ÕÛ`'Æ©®¤—Še¥Ò7À zMcDÔ:K`ş{¹¦®V"aõUïñc¾×ù?9ï‡34ûßÄw ;Û£xNVa)íœ’àÀâ¬ÆÌIÊ39Ç‹q®GèÑQÕ’‹Å~cZòÿK“NŞŸÿ0fôV-CoÄrÉ0Ò¡¿Ü¨‚¾V4İ¨•¿XèÏVâû8Ì1Õ
-­EÆc„Q¹<‘†¨µÒ4CGs´³‡†q’ À	ÔV9Ù
-œˆ[Õv/á>lİ·Õ¡Òº¿Êï›’±
-–ÔòY§ê{¸öÌ¼ ğ×M€¤pSS™Ûe»·“5YVÛ7Ò'‹&Ã£*¾ÒÙ‚	à¢>§ZµƒÒoç')”T³›rO»İ†ÇlØˆ<·—Œóe<ØWQ‰ö6›GÑû/Nõ'§œ#¦7.îşíÛnÛ8ö=_Á‚±=ëØ™EÒ&SOš`2È´AÒv°h
-C–h›Ytqšİöß÷^$Š"}‰›™—ĞF–xÏıBR¯~IçéŞŞğ§=òy?g9™²˜ø›YAø”œñEÊsš`ê†=ò–Å9E4[IB^%¼}­o=Å±xıÎ³ˆ‘_ùlÆ‚„“WÿLÔıëœÆÑ`"†âè‘bNÉ´Œcòô1c³yA‚$"1i’]É”ÃãIŸ¤1àÙ’ÑwuyvşööQ	&ŠyP‡ 'Ë‹ŒMÊ‚Fäsxæ¼ÌB
-Eyîí%Á‚æi 5Ów£²à1¢—(#AåYäùGN	[ š9	ÈõíÍÁa_ü9D‡8r¤ò†ÄF‹¯}ùˆœX¸kMzgÌÕí½4 ‡C’Ñ°Ğ;Í%g¹5ÉÁiEİÎíãbÊ“G9W”wúd<~sy3:Ã°z*fóÃT}ÕğÓ¦àÙ}Ç¦6¶
-*(şhÖšDsÕb·à„&ÁÔšÓ ç,™	\,	ã2¢`®À}—Î,„\ŸnàQxÌhŞkÍ’ÓâCN/%è5@v‹¬¤Õ”—‰´ú%@÷	›’G^’"{D:J0º@)•%‚Š–XMmN@<Eob`*@|e4!İÜ%9&‘	–äE„´×GlMÁ¶ÁI¦,Ë0,~/ pˆ$«LpŒø­QIÄ2<{ìe…Ä2âx"C…jek0”DÂwS“	…‰)™±%*¤Lµy‹P¢D„¦v?’	øk¢0eF>$lI³<ˆk×h^Çsàì"˜0 ñš4	°öj*¼Î%’°yjluü hó¢Hóãáğááa ñ`ÊfÍ†iá¿ƒÃá6£†"Hö®öş»'¬ù'@µ2ğø˜çeF»’YïxÉY„8*Í¤Ã€,$ûÊĞ/ ²A0jà‘à_Œ›ôş’&ÏŞ°Le„ÒÄ_¢Y<¾’èúÖ/–§§j´5GšÑ)ûrE“Y1Ï¯óì"š ^¼v<^ıX=p±z¡Ÿ¶uFSL‡6ş+@~,^IÆZñVº…h Øˆ@ö‘ˆ;¤«Ü•àzrrZ½ãüîW ¼+RŸÄÚ€Ñb®øûÏN¯×³f\«½†ŒW
-™¢@¿»ˆÛ"Öæ;á¼m·e#>0àËË_ÁùJ²„SşIy;r4ØH„†>¹¤[Q…h=4-XÃ˜3•È½”­òó Ëk¡ÀÍdDã©›ot&¦‘^Nºª ZëÈÓœ¦œ@15^bÅC)O8L·Á’H3—Q¯}LË§æ03ÀéaÈÜñ1KXÁ‚˜ıG’¶Ê¤¿µ¹È(xm²yx²x™ÑâZùP×&g÷]¤ÅcWqaº[¯gÅKQ‚Á²1N2VÑ@ü/h6£åèãe—0­w-Å³1CÃËŸU$g[bQèdë ¼&jqaD£5DØë¹ÈØ@všÚNKŠ&2Â§˜´DÃª3¦’uä©¨·†L½äÉèà¦®Èb6¬>±{dBód':53VJ+©‡n¥¢^L\OärM‹Û­×:J´ûÆT†ë
-©b-Şı¦0¥@İb½Q›Oèhê²D—ë’	öÖçP>K÷ê
-"Õa™i
-!Ëw
-Cô/Õ@óãã%ãe5<Î$›–+Œ[If6 Kª -(Ó¾*ûh¬9‘P’ÇŒóÂdÔÂ"’8iÏÌ‘?ç€êGÈiÛS¬®»¯Å,©î×óªr¡•Õ$w'DjO=xÙ0Ğ
-­m™ÂxÕö;ÃÂ|Õ˜²àXMWßıÎ¶5Öp ¼œN°+™nPİ‚§µdî5~Jí;³è¾¬éO´a:üléj;Z¸òò'	ûù“ıÜ*6SKsYC³I•Ïb6œq¥N|f³	îĞ†Ás7b7Àá`¥mE½'Çë#o¼®¾gÈ®îµ‡qrM5XŒ»»ÎSbú‘Xúëbz1ÏøCNî.¨Y4Êf%.å	iŠÁ|‡ J»¿6‡•}µì	!ò¥­{ïö9äèyrÈÑwÎ!›‘éİ-‡4	ö%=—?¬Rm ¶<zİÅ’ |îµIZ”"eè´äÅIÇ4ìùù³Ë&„÷È}Ÿu‘„'¢ëU.®É¢„¤‰® BG`,•ç8üà¨¡±ÖÒã§:7“¤äç¥IKFjm«Òç/¸p¨Ü¼¥+ˆqFƒè‘Ô‹+^İ­#m÷ÜÂºUöFGéßÎçJègNÜk-ö!&½ FóÔ3´TOê¨ê†Ê“|·N"À5SŸs-Ì“Çü€/+n^º#ƒï÷/ãd»lÏP¯­-×½Àé¸
-¬İ­ìhk+û‚İ1Ánë|ïÁBr"ŒÀ{
- =Gî½âBbîqÑMXÛL;X¤uÀBìÙÈhmrY`¾Õ3H±Š"lxÂ9ïÑÊ¬3%î&µÄ£4²J\Q) ¬V
-`ÖÀêãÍØTÊN-m+ÇÕ¡;ø*4*qh,)_ ÙAX6ju(HŸXéJ£qnî`;g.|]÷4KòíOº‘ø~;çeUç•ø}™‚„Y¬}¨3êÌKXfD£Zf¿<ÕzXî–Àf»q6º>+µİ¨#<èAˆ]«!ğw ùS¦Ó×E¿4É%¡êR´2«ĞzKvÛUHºBÔpAaÓ/`çy·ƒoÇSZ„óNüø#FG0ÿñ2Èº,acğa1f XìôúäâòêıùÍøãèêòÍèıùø×wï®ÎGo{ä“=r,vk½n24åöòïãÚ•ˆY¼Fm ‹cÍÃ¯¤•ğQ¯M†W›”¹‰îæ¥.şDm¦h‰s‰{WÆ5kVFGáq«§™Ou˜nİÊSÆc=ë¸‚’[ÃB4}ÒÁwÂMÑ.ğ¸\½ Õ3Ö±ÖZ=ÁZÇÚ¯wïr;ÖWõØrÅ	…ö9SIKüÃ½¦Ö+ìl|ÀŸì)?[ÅÕæ€DÉm}1ô!Éj›šP™Ô'2W1Îk6N3y±™ì zŸèVÖF²G“ILºÜS·e´[2·Šğ&v«ù´®!lA£ÃÈ´ğî}¡˜¨/C hXNW*£’¥ªœÙâès%Ó)K"<2¨!Zq¬Û)ãÆYCßp9UÏ¹ï$ø]uìdU¾¸ š¥nt½*£"… &jTj`ó„ëdMBŞDUü"â¥ì£‘±(ú2n¨8[–Ş†ÃºˆReWC§Uc]ö|’¸ÚËÅî*I÷î®ª#¿~%šÖÖQ¢ÎÈ¹çµƒ€QãØ¦ª,».cº-˜$RÓœ.\<v4ÛZfÓ–Ås±ÇÉş„6â\‹]MJÏwL?}ßŠ†Ft*¿aû":U$ñ‚7˜xV&‰ØßKÈo¿}ü£!2iy"¿
-: ”SNĞíààñÇó›ÛËwo;moßîù¼ã>;¶â„ÂÄÉ¿ºT(ñÌeqìÜ YĞÅDœy‡F¯¨OŸGœªr«`çÚ³ÛšALë‚˜a.®J±í«Ñ*ÅñX-÷ô~Mq$”*!‡±yÊå®LjfwëKåkÏwÊ˜¤wšåñQ}UòêÊÉ{î«¹B¹ßÌÎ!Ğq­
-ÇM¾Ô¹ÕV°u[5âvÄ_¹xfÅŞı˜ÏXÄ¸F¡–Œ"«]äî®Ó'o.oÎÏŞ¿»ù×øöüzt3‚Ûˆ™^6b†:)"€[E[ƒU7y(¡íÒy9Ñ‹Gq3|=ÌÑã•	o…1Å5Ï%/YÊ¡˜P($?­¬Yà.GT@‡ı
-©q%¤Œt'5˜§=Ô#…zÙP¢jË šSô¹hs:y5í–^k =øÙÁ^ø4¨dqXzïGíÖfC‡îÌ«°ph8Š/Ÿúòg-óúæ|Ó~Ú|âÌ{•£˜Ënõvš-¢ÖòºG6käáÖ¥­D§´¶Ìëú«Wf¸PÚt#¸öî«¥w½°†š>ÜdåĞğ²–¥¢·¥ÊP[ìT|òÛ¹rÇĞµ~ß¿®;ˆÙ=İ†¡fàôM^ÅM‡v<ñ¡yj«¥·ß6„aªÕ)\*@«v™Rp(ê`ÇÔ½Ş÷ñylM¢ş1b#ŸhV`_W9|Z9|Îâ–ÖS#ˆ¹å’6ìŞü*^SÆEƒÅÊ@/éX¡§bciÑn‚ÛÅ«Ñ•ù?(h¯5¿ª—ğ½Û8Ö(Ú«"®Š/~6_!¬È•$ß†<Å×yàwŞ
-¹Qğ7FCÿ±”ßm‡!•_µ‘62ÍøBcˆ»ˆ-DV+ÄŞxß’¤!M¼Â8©¾=>@5Ûµ¤İuvAÚâlÍË%&ùõÏ·½ÿí[[wÛ6~×¯@»9¥”•¥¤yèÖ‰í8¶w×{rRç²¶WHHBB‘, JÖiüßwŞ¥Ğn7§òƒ-‘À`fğÍ7ƒ‹Ÿ$³¤Ó>ì‡äÍŒK2á!#ğ7¡B‘xBâyK&ĞuıyÅCI&æ4ŠÈ³ˆšÏİ‡AÀö±-şü''/âé”Ó(&Ï>ÆöósÉÂ`0ÖM±õ?cAÔŒ‘I†Ä“•àÓ™"4
-HÈ}IĞ+šÄ0€âqÔ'IÈ(<[p¶Ôı^¼z}‚¢´jFYRI.•àãT±€,¹šÁ0PÆ©ğ0´mØéDtÎdBá¡3úi§“Êüëåaªâ0¦ÁåQH¥|£½OËM^³ùş¼cB‚–gT1Ã‡¹‹}ìŒ>#9èÄ#Â Ï*O¤¢aï`¾ñ]PÒ1šxmıöš1ø&c2S*‘»Ãá”)ßÍZ,¦Ã ö‡~Úi¤øœæÁß2ù;£§´²ŞÄD°_S.À×
-@ ˜d‘Ïúd§Ä§Qöö½Á‰İ¡	'ÿûqğè½õ|Â#jÏƒOİ ïÜ˜¿u!Ú5ø}T9¿fÁÅÕ§(Eí‹DÒp¾ƒ¯©tõ›ˆcµk?ã¼íœãhÚG•Z¬aùóÚÁ&L uî‘±OÔ*)ˆ³®%TÍò§4ä€=é\\õIÀ»dÇáM6–´>Ëºi}ËÔT<hĞñ AÉƒf-jjTôÙYœ³Hq¤$è¥¶€¾Joöo>3nŠ34ÔÁT1h1ê“Î š¦‡ş¼Àİ¿˜zÇ¢ r$­ÒÅÕ:¼Tf`‹ûCÏ~;Ä¼X™	'{Æîn¯>óçL¥"’„B‚:[AWÈ\şG:eDÓ9YÎ¸?Ì’™ê9 Hv¼"cZål›ÛA``§¾-ƒ–Ğ£f&U gß¢Bvâ*§cÈfÎŞIù˜ÍpvÆgÆ Ùíé†%ñç5Mâ^BfdLíBZìîv{Ò`îÛ^AfIîÅ•“<úÈV²›w¹ğ*½«Â 7ì#Ÿîc²··G.ırB7“Ú«g}”ûèªQ¤mWPÈ|œ„<é^úYÈ½b„^‡x¦Åœ‰)óú¤ ƒÕúæn(Â²™0ŸO`Ş0€LÄùXP±òª0ŠÎ‰…	:û|}½X½q»zôµx2j¡ö;a•um†‘îŒî%{û™*UY\J–CêÂCs ‰ä‡Hõ¡Æ ±·AXƒİõZ“§µæ7æou”V„®CÛÑŒù‘–˜&!,\§|Á¢pPfîª`JWºÔ³J¤ıƒbŠˆÕ¼å/ä²Œ×€ô ôÖCÛö›që¬zB«MúÑ›<òÃ4`ÇlqgY…:¶nb.s€Gï¯&İP÷ï npÈ½(êuU£·"(Ö¨üéù®ı^%í"òAÄûê ™ *xß„îBó;`ZÂË	gH²VQXü€ò‚òHU¨iõt¢—K)\í|Œâe&ßIøqğäïH×n”IÇPñ#È¬\–qÆne0’¯Üjë“İİLïn‹ÌÒš®O<;¤>O¼ŞšP*õÃˆÒõ“¸ÕÔPêå#š<£X×ù>ƒ¥|UùÊ×‚.\ FS«µ9Gÿl
-áBUˆ-ó9!ä°a¦P'£«q‚ŞMP©8bú‹VšÍéG˜÷T°šm`‡…£¦#èTå¢[sF>O¾î“
-‘äÕRbÁØ=×g_ÿ=Ê^Én×x®W’•‡ÓƒŒ|7	É˜Éj}N#,ûŠÊöŠ¹8Ë4VøÎşœ*˜èRÓbSÓ0± LyŒÀADbÔ§+{…":ß™ €¨RœWğªp®•Ü ÷I4Œœ–h¾ç¶eXÉÿTLSd,‡³ˆÁ°nG
-Ng–q9µ¯ãr ùB¹çúsEØ5Ô[rMoÊ‡¥bÎ…{Ñ»©ÔÛ6ÚÊJ8´¬ë6 äÍ{·HK‰¬¥µÔR^phd5.cœ·Éå%±×¬˜Ó{w».[:•³uÊÈ 	#fíõ[¸Iíl]¦W6]û´Ü‹L«Şímp¥ã½‘)r+eŞ»™"u+šÖÈ|„qÀºÖ{¨¼­y	®fÊ$,U.IÕ/“°äÉµÏä‘®g…ä{JT_½ï‘&‘3;¼µ¹¤©Òø<5š:ã´¼\AÍ6LÓŞ§Ê©´†«"‘kqK¿ÆÌ:º ÅY÷÷uÊÉ‹O\¥ÒjnÑ…&ŸÔÒ	w›áêv„ıÍSõ-ÊŞ¬aa‹œ¹6ğ¿åÛ¨ø“GÅ™N©ÙØhU¨|‘Y_Ël#¥)ÙÁIKXŸ»ö=Hg®úšh.ºò& Û6OöÄ	àâXŸ`Ì™¢Ù™’¹C wŒÀRç–‘`}]¾ùXp%ø-¢¡x’Š›´-]îGv+ñr?Ğ.¿åx/Pı9OĞÛ’v+ë¬úIk¾ÏµGš Ú°+—Oô#¤(îØiı^œÙe[æÓ1Hf		¨¢zÍO¥Šçz¨÷îõÍ§ÚU€{w>ÅëMo¡²EÃğœ.AÊf4°›xîäÇlK³—¨½ßSå
-;¼¤YJÄ¸=Ğ3²I‰‚).¤rb‰–ìdÓ•F0Ôofa}É®æ«A#âÖŠnopÜ÷¶ñåX‰­ç i:ebÄ„ˆE×û€ú
-qàõÉÉèíë“óÑñÉÙùÉÑá›“ã"+`–ÒYÛƒ¬OiÃ¡3İÜ®ÃÊ”`®eNÌş¹»£iüA&9ÔÒyßÃØ7W$«c¸ï¬ƒ½é:8³-j÷ÁÕ(}°„å÷¹š¥ã4Öz!k¦LşùÉOµì-Ó1À©;ŸF}²ó>yÜ#ß§¼#¯)_W¬lOV‰•‚ÙmXò™WIî„…€ŠV²w¥7Ve´å}ÍôöÆIyÂó#?@
-àáæ»ufhÃ§ú’É–Tï›TÛ^ğ)RZ…XKX¬–+Íx|‰¬‡Ä)‚KãÒªİj¨ÂİAŞ©@L_IáÒĞW*Ù$>cDæ5øP±©0èDz±°Îî5ã“´‡ƒNfá¨W=0td'YcvÍüT±ü*‹‘æÉsãh–¬ûN2 ^)0B"}<=N€¬Ÿº3.ŠgŠ¥ Tœqˆâ>‰7ÓÍ­HOgÿ>{q…‰‹é›Õö•Û^ËÏÊ¹^İÒ\ïvî`†'¸s—”ÜK}ã"¼Ş`çÑ¨:	ï]^ypôßãáBß«,0uÑ¤÷¤³'ùœ‡TôÌ2IUIË¢bn³©ER˜k¼,Ï\vôk¦UÒ	W}­dœºÍCacü¦–ú[çÁÜBªÃK}‘$
-Š
-T^WgÆ-Ó-’Ú¡xÅaƒ/Œ×¡0¨òé"æµ[¡†SÍ0[6½o65Ü†RmÀèöUBm¨t»§k[4İZnfŞmnşvĞ´ñÊzãíÛZnnZ”ş¯¡Zõ6µTÍ0fkoüÏ$¼˜¦7§§Ğ¼˜ÇÒk>=n®€K´Q<ÛÙ+h¢Ë‘šv£Ïpğ1äY¼l’÷ækÀë¢î"—Õ¼íW6S_i#«áZ°^LFXuóæoM>ñÖê¼Pø7–m¬ßkæÈ.'Úx¯(k°—-ØÛÌ~Ew„#¦!§C³Ğ›xg†x£ÖÈ——ø{Kq-@7ÎVëùÛupÆŸ¦Ü™›jÿC¤°!²C7Ä™µzô}~]¾İ~ù#·_¶üôğS7µİ [µÍTóe¶Ó
-EF. iEÔşsm3{nú¯²úfİMçÿ¥RmkÛ0şî_q+):ë²VCc	vZc×¾8bì”•°ö¿ï”8®K7Æ˜ÀŸï{^ôúm»n£h2¶Îıª¡.ÖX|S\†wZ¤Üc	7;øĞlÚÆ!EÑsãÜL!'ÊwrtEfò™\\.ôu’f³ù'=»€7SxŸÅñh?#àÓM~ùÊ³âs³¥JlÑ–hÃÈ„ß·†r`DøäLcá$à©3Ÿ(àaŞ@[k­@€‚ÁvşJœG÷fİŞ#=Ù5æ%k‡ÖËa8‡?R\.—‹É©:…q3ë‘l^C†Ä„ !jH°ô0qÿ k¬Ñz)JãØÓÆĞèÄ£¡3°ÍŞ/f0²EmÜİÁã*§PŞTb8Îê–ŒG™-/’4ƒ˜è±yu	»àò1ÜWG›’ùGÕ½¹b6mİ”(»Êz¿tw‚÷¢k‡ñ2,ÖÍÿ“t4!7(Å“øÕ |ÅÑ³+üüQØo”„2õdª
-é¢ì[şAÍşj‰$Æ=\¢¯²$Õœæ<İGáêşUË1Â0Fáİ§ğĞ¡,ô DÖ^Àr*Ñ8ú“"õö„	±¾O¯¿¤g"ê:Ö­øË5HÔÕrÒÙò±_Z,ğ´óÍ×äÙ@Ô¼-Ç°€Ï|·Vd¸"‡5“fûÇßQ`eCdto©–µT]oÚ0}Ï¯¸“’ V0µ£k×iÒ¤uo¥²L¸k&É§›øï³CLJÙ‡6?˜`ßs}Îñ½~ı&_å×í-eÆ3º )?S«pµÄ•¸€ùn²u(</æ´(öÿ¯-Å$e²÷ê‚ûÃ—½á¼ŸÄÃó~ü‚ğ"9Ç¤ßzŞÔÈ{P‰¡T²ZU‚‘Wm–s®í^R¦±dY
-:æF=5ÁAËğ¤ÊªK ğwÜf;r3èÃx<‹vzüZ2@È»É'Bàü®Õ¶ø£=bëU³ùé¶ÛÕF®ÊR¤0;ÉÃFwOi^¢´jéLKÎá™S O¢ÈºøX“!sãjğêÀÇâsNe’‰5‰W±ú÷ˆ"çÄ©›%+¤¢J… ›úş¬@üø›öÃHQb5‡5÷I0†ú+Åo¿p?˜-˜Hé+7t»ºÊô?*G§ıß³¨*£Q€1åœ”Š	ÑSlWnüwhF‘*:È(gßuŸÙ²r©Úµç—{kìÕÔ	ãX|Î´Pu!ÿˆZ•µ6 e={¯–Í)<+JQ4gé"hvS`à“¦’%E§bÙlİZ¸Îå&h}˜~|{=½½ó	‰-İº0ÿş®‘õ>l&4Lÿ*•Ò¤u|m‹AŒ¶·usw@¿ÕìÔ·êh¤ñÊ²»%Z@ã|_·Èõı)WŸxcÌctğm½­÷¥TÛnÚ@}÷WìC$@"ø¶`ì4i)yAM¥ª‘úd	×c²Ê²X»¶Ô4âßkì¸€É¥ûbywæœ¹ùô9}HÃ4	äÙFl ^ê2ÎFÅ=ù²B‰
-2ŒIôDæ›uºÑ¨CÂu
-›»p¶w¿2&@ëæå¾‚[HYş¨CÇœ„QÏa6¸8M<LÇu-ãÙ ÅIóHpFva‹„Ôäš€RğDú•IyzM‹iTxR×v\/Ä§“Ä³e>Ğ¹¾!ËåíâçrIF¤gF½êˆ˜Ú5µb&šËU™poøÏ"¤cÇµÀ¢`aO]œD6'ş	ø†¡Äå’‰<Fm&¹dßH}ÈàÅşcjİ$*@}o<uiÁfá„Z ğf†5è•Æ,O[ƒ¢'ê™*Løï;”«ìAÿĞŠªí¼ânşßw6uëÃ9|Íe,0+7{ú’ä •ïì ³ª7axïÖ`Öğ´Å7Î‹œTVzG¬g+pËUwú]©Şê8¶‡3\F\Ù¿^G•+ğ1Î†üªÃR¾—±=•ÇT]¨¶ÄwHÏ×!{!0şUx)¢NU7E>ryUµBÉ
-³rQñb'üAÕŸ—!ŞK¹ÕwP¹?7¡ªBtJ’p.6:W—q¿ìH®‘ôkï–gyö×—7§DùşÇê¾:GØÒÀ°Õ(T­Fˆ¤öß·®<Û!‘¹CÒêPT†ƒ][cküÜıYÒ¬H·-Š½ÓŠ4;º2tvPGpÌîuAğrº†Ê€^¨	j€: ×kê—ˆUd®Ìeñï³d¦e¹Ö÷%A€ã¸9ÆœÓ§ÿ·ÿü·ÿö½ôi›ı2ä¿0Ô/Ö0Ì¿0Ù8Wy•Ds6g|NúáĞ/i4G¿äãĞı¢GÕ¶Ñ/Ñt~ıüâ,Ù/l–üòò„ıùò!ø/‚æ|»_õé/Ëó¼D–ş²fãTıôK™Ùÿø¥œççô?.—dÛÿ˜²K:$Ó%‰²÷<FÉüåÜµß®â”ÕôËù_ôKükãÿCä/ÉMÿ}.q[%¿k>µÌå0Vsõåá~ùßêÿúç³)ûe;ÛñK´ÌCÍçÉm»ÿòíîgk|âÿËôËøé©ä÷=õK^ùß>G?ôó{>¯ıµ¹_>J¢ş—8û%ÎfÿRõ¿ÌeöK÷­§a“ì—yÌ²ÿñ¹Ö÷î£í?Šj.—x™²1ú9ëçÿH†îòí›ÿ=¯Æ,Ş—ï?Ï§K™EétşÚfÑÙ—Svöj5ï—~š.m_’&ß.ñRµsÕŸ½üC‹¿õ±t>İy¯èüøK3×³gÓïœv>ÇxöÔ/Ñù0óçÿŸ}¾ûí1Ó³=É|vâÙğô—í|†_>ïö—Ë/g¾ıö,ŸÿÇç×ÿÛ/Ãøå”Ï÷Ï¯SÏ()3°ÒÿcšÚóÍÄçÃŸæsÏ_l[ı%i«³>o«<~Úu¥ÿø|[^¦/mÏ«b9ßçükïG_Ÿäü6Cı0"øó³ÿø>Î‡şÛ¨ü%úìk£»æ¿'Ñÿ:ÔşãÙ~·¿ÀÿB_îh‹‚ÿã—ˆ„ĞMRGP8CIEpÏòkgè5#È+B 9J#`<AĞ„@n_?_û4 ¸~?ğ‡¹ø¹ã÷±»ÿû?øü÷Ïš$ı†³‰—Êá¾4Iâ‡a(´+¨M¢©Bâ,6=–Òé¢y•M%DS¦ËS,CO,§jT#P°ËÑ¥ÆxöækÊ¥İhjpX×[RQ†Ôœ$®]‚{…~N ©ÉÑÄMw¼{kO:¤vx›2$ëòZ=Î¿>^Ç¨¼ç?e*x$È¸$ÊmØy{x~:\®ÑĞ—0oÍWí)±Ò¦±Aaù8”ôŞ‘2[aŸçª57kÌ$ Ÿ“©·ÖüvmÇ	IœŞ&½õ»¶Ö3F°Â|xP${ô°pÆ¬C!šÃíúqŞ¤Ö @k‡ó ôëAİÑ óØVÄÔ›9(ùë£ÕzfO¬gš
-·Áü¯ÍĞrÜi 9Í¦o_NP¹ƒFS4YÂ_[‰/áÃ\M˜v$¡=Î¿K€{r¶îlm2t•ÙôÙ-a›tŞˆû*ıŞÙ|UÖŠMíK!÷¯/Fu¨ñë¹š#ÿöyávä
-œ}Ä†Šüğ üù“\$‡S¡\“®…²Ï°±¥5YBé<ªS&GÓ&Åw?‡C™sşN”ys£3àÎJGJ(ni†—ğ×IÇ9—ô.Ï®	SîÊqa§6P&Œ\äL±µÉ¾4iıE¦ È-Ğ	”$+»Æ²¯(9†©-•89¿C‰ÑîÏac/(±Eö0Ä¬—¢YåÑ¹f¾˜O]˜àÅQÆ¶LG¾’JÛEî>TÎÏDg3ÒrÚJÎKPš<VxÁßDv%ëŠRÇb­,(?iŒ‰Po»m–— wp!ÁázO.Ó„ŒŞÊ¶n’<‰¬Mô¥…ŞÑÜt[)‚øó^‘Û„ùéö,DZÆ£Ô'~ñ0ã‰ë(jÓ y "êu?f¦÷Ñ&†Ú8ŠŠŒsn2ôèPÆçŠæ¦òw¾Ùó%À~Æ˜9”)^hÊİÎ/Ñ—ãëë-Š“Yª*¨Û—¡òãh×ÚÍ~ù=xk„j5Úaî~Må_¾lkœÀR~A[CcXıS	BË„ğå¼IhfAÌ&cçë˜MŒãÓäóQ	»s1VÊ.jnyªš—…[}hO!ICEÓÔÆ–“äÕÉ¢9¤ÖK¶©QÀØ/Á–b”ı2î\
- °ÃLÆYfƒ7­PfÀÊb)·xy·pïçİ™í7B2>[‘`osÏöUò‡şAÎ¬Ê¼ö°dk@p	îûĞGO$s±§m´‘iìÓÄ®Vñ¶Mjl=q³i§G™—ˆ(ç‚ÒàãÍë¶µ¼'_wÏ‰€G¼Y"D¾>o™ÅÖ™dYìë2^Öìu»"^×çŞßIßL˜µVå5õûh^Pò‚ôèkÊ MN©ğÑŠõ–=Ñ'­ÃJ	¡&m^‹‚ë%[Ş~¥fqgú÷rÕöÆwÎÛ63VŸ…ûr¢—îIP×ü‚€Y\¤XLC|¬…wĞš>6:ÖË6Œ(×–Şä\Jüâæí«1átö_M	`.ƒ¥§™ıj²¨_ŸØ§¿³Fü|œ°ƒß­C›Í!†?!f³œß["³Ş‚C=¾âÙà ÏÃ1–á9¹÷3ö[(ôÍ·pPáwĞãÚÎáå5>ÁÏ„¸âå¿A›^so­6ß€ÁCŸ¥£óàq~íËÁóØ¡z¤qîïq¿‘uÍj6~û†ûoÚJ}Ò|ë™ì´D>üü˜6Íš6ÁürË½åOúnèi+
-©úãh?2uvæœØÔç…Î4™è4‡'B'àŞX%7¥±ÙÂÒ‚¤˜–ô8TL˜µ’0­¬Ë*ˆÄEº €‡ü.ø} RI;4.=ZT¯ÑZà³Rå«7Æï
-eŠi¾dxİFaz³OT“şR¦—È‰.8.ûÏ£ÓÀ Ú5¹,í4Šâ osØ_^sçJó¬Ôx%Ób»eÎ*AH“ëPŸ,îf')Óã˜0ÑÀ/×g±âÑ-^L-›İm‘¯¥e{„fæUÍš×·0bÃ`2‹ŞÂÈŞ;€œ'HYÇméÁ‡\iäÃX£«©•PÕ¬™°mèÎæ?àØ0Ík:q1Có˜¥æ=p3¼$Hf'T@³*‘Û$ŒTÖ¼“½JÆük·p³Ç>qAùiÛqërí—ÊM6ÂİŞ^ä[İªg|ÒƒÈ 8½š
-ÁT‡TIòyjıp¥a9}÷Àfâe UÇ}†‹rÄ˜µ&[wQÈBâ¦MØ¥1tDı‹é^¦ûğÆô¤—x7Ø°1ŠËa” {&Şz¼ÚëİF¼»/–¯»èïMàdxÙkÇùM¿¯t²xYZ‘)%?ûîŠÃX×20³ë›·›}h]9ßÚƒdyÑp…AÒòÎBŠıò»/UbÉ¥öÒ˜c0÷i÷®×C“êĞQ2wİl+Z–üóÙ3@†ò«±‹5hL©¿I,eRô€	›&“º}&uÊ},Ôfò¥}LÙÆ|µ`÷sèŸøÏ	ßH`
-°…éŸè•‚r³¹íMÇ½Î,BİÌĞš7:èå»¥
-º-şâ\ "xùÉ%/ÿ]€?…—áOqí¤N'î±˜Â7HN·Ë0ö|ªnî
-„`àXÁÓÏ¡¶1ÆÆò(6‹ªl½\V`R¯z”dº¼|]¢’~ôÅ¥Ò/T†!-©«]¶—w4´îop%±ËUGfÍyw/%Bo)máÁi@F~ê^}Ç*ñ¶9éåñjO&puM¼ÒT<Fâ®Å,ix5>ëÓ`Éôì×=ÅUqÅ÷ïJÉ>%ëÊùqô4¶NÊ‹v§Ü…‰àN-dŞ îÂÚe¢  ÌÚ!…näÎ-$F4>]ıeÖ¡%`ÎukïĞÙK5l€%…ÅÖâ•CqdPgĞbŸµ~å&ô}@¤T§*&Y×œ0mé®{D0¡|÷&*_±öÊ¸>¸’g+Ş)RèºoÖ£Zzƒy·W
-Ñ{	¾Õ`TÊY^­ìØXƒ¸£ÑAtA]Dåv`ÄZ œ¾Ğ8÷Ó|H>ÛÅÆ°—çcm`tä Ã@N¤f›gÄ.¯]ı’èwv+Ú–·cK°¸c<Rl`Ø*%ç
->±—å<Ü›†
-}„aÖkù*#’`O.|èê[J‚‡¦EÚ=„g	É`$w,21Ù¹dCgxC(~´°§óO!£<SOh/ÒÄ©İğ•¢<úiâWhZÈ4è–ï+	Z5l¾˜ıAËeÏ¹%Å‡©ÏpÆÈh	´ü[Ô ıOP¡?-ù¿Qƒ$øÿ58şH¾Ğı÷ÔàÔŒ:kı¯¦Ú¿CXÍƒ$ß“®Óï“]Ák’åæÑ*a|ø¡€›‡soÆ‚3ˆ±a\%ÄŠô¢ Ør ±òyuÊ4Å†zÇ›èÈæòu“Ûg	¢óAëËA&ÒM„¤"9<P±c÷¹\y?sİQÄqÂ3ªPoxRü%ÌEoñ
-wN)÷\>pØv­?|r˜1âz¯ïóx-–Gzk÷vôµªc¢uãr%€e-í9iåêQœ—-ïG¯–…7|Š{T°1éøP‡d¢x[W¿dù6’•:-›éÆæJío«mÙTmŠx=Í+õR3èBWT&«5ú
-¹Î;5¥ªÓ…qíæ(ºú|’‹^SN|šV~²ˆ„˜ÀÉşRgWm{O¼ªeW[¯>—Arò2‹ç<ä,Ô®70[nn–ãYFé>J
-TkyXğëÒÊLcîÕôl¿mı'ß€Ş¹)JZ'ÎÜõÈÚÈÉ+¼Gy:*„‹èvÒ3ÙÙï±x}&î¤y·ŒW¥›†/)ÂpÏ¥y¥;û÷ 4ùş†µH{=×v	ht_ü[Ñ*í¾ÉW¿¨"’XŞ-}íQÏÛMÆ²1Ø0!æ©PëAlgwrğ€ŠcjìH¬F£ÂÌ]¥ÆöğáÁÍÖè¾y—ê8ü/-Ia•*ÍªÕ8dDän¾„Fƒ¯‹$í,ìíÚÛŠ¬$EüJ$ºı¸Bnû¹ehÌür¼ %1Ô$Ñ?ÿ: ]4§Âå8*ÆŠ:§KânE¨	3	—½IÌÉ9aXÓÇqIôĞ¦×°¢¡è8üæ>.I8Ío¯CÑÃ‚ÏyzH_ˆ·¥¿ˆ[ÄHP¤BÙJüŸ ÇşÕ©|÷ªœw3cäıĞ¦P÷Ÿx\xzüó†¾~^T‡>ˆ}oIlSÍ@R¶€Né+”È—üJEŠPwò‹#)yxkÚñMôĞûX «Àß>¤YEô-9(õ›§àW/Á)½YàìDƒ¦?ß!wÒó¸^¯ÙkÏ ~è¶Ÿ÷Õì÷’6«×Ÿú³sÏÉƒÛ5ÖAóš9mÌWL¸Mf‡5:ùêÉ+5Ó=[ë}i­V8B;GËÅıÊê­Ù?ôqS}¼T¦M'Îñïú'NKÊ`Î®¡)Tî ¶»¼’Hè¯]ƒ®KòD&=G†ERÖ<9Ïõ†0½Ã…»gUw	$©û• w<Üš¨Ş8ôfZ•u)<`ğœ€r=–G`Üè)¶RdºÇ¶¹Úèszn™¿/×ˆT½‘‘à8,O XmµĞÕTed»lGÚÈO¹ÀİX(™\ágcê=üô|sõXO–Şçl¹U õÎ†İe]»İ¯4–_ŞVZ†|ÙÃ6Dğ´ZÂ³Y–İĞE€{Vö¶™b…2tHppcD:ò5<¢TŸqŒ{Úõ¡¦À'Ê
+	/**
+	 * Translation strings for el-GR
+	 *
+	 * @var  array
+	 */
+	private $translation_el_gr = array (
+  'AUTOMODEON' => 'ÎŸ Î±Ï…Ï„ÏŒÎ¼Î±Ï„Î¿Ï‚ Ï„ÏÏŒÏ€Î¿Ï‚ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î±Ï‚ ÎµÎ½ÎµÏÎ³Î¿Ï€Î¿Î¹Î®Î¸Î·ÎºÎµ',
+  'ERR_NOT_A_JPA_FILE' => 'Î¤Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î´ÎµÎ½ ÎµÎ¯Î½Î±Î¹ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ JPA',
+  'ERR_CORRUPT_ARCHIVE' => 'Î¤Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ ÎµÎ¯Î½Î±Î¹ ÎºÎ±Ï„ÎµÏƒÏ„ÏÎ±Î¼Î¼Î­Î½Î¿, Ï„ÎµÏ„Î¼Î·Î¼Î­Î½Î¿ Î® Î»ÎµÎ¯Ï€Î¿Ï…Î½ Ï„Î¼Î®Î¼Î±Ï„Î± Ï„Î¿Ï… Î±ÏÏ‡ÎµÎ¯Î¿Ï… Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚',
+  'ERR_INVALID_ARCHIVE_LONG' => 'Î¤Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Ï†Î±Î¯Î½ÎµÏ„Î±Î¹ Î½Î± ÎµÎ¯Î½Î±Î¹ ÎºÎ±Ï„ÎµÏƒÏ„ÏÎ±Î¼Î¼Î­Î½Î¿ Î® Î»ÎµÎ¯Ï€Î¿Ï…Î½ Ï„Î¼Î®Î¼Î±Ï„Î±. Î‘Î½ Ï„Î± Î±Î½Ï„Î¯Î³ÏÎ±Ï†Î± Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ ÏƒÎ±Ï‚ Î±Ï€Î¿Ï„ÎµÎ»Î¿ÏÎ½Ï„Î±Î¹ Î±Ï€ÏŒ Ï€Î¿Î»Î»Î±Ï€Î»Î¬ Î±ÏÏ‡ÎµÎ¯Î±, Î²ÎµÎ²Î±Î¹Ï‰Î¸ÎµÎ¯Ï„Îµ ÏŒÏ„Î¹ Î­Ï‡ÎµÏ„Îµ ÎºÎ±Ï„ÎµÎ²Î¬ÏƒÎµÎ¹ ÏŒÎ»Î± Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Ï„Î¼Î·Î¼Î¬Ï„Ï‰Î½ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ (Î±ÏÏ‡ÎµÎ¯Î± Î¼Îµ Ï„Î¿ Î¯Î´Î¹Î¿ ÏŒÎ½Î¿Î¼Î± ÎºÎ±Î¹ ÎµÏ€ÎµÎºÏ„Î¬ÏƒÎµÎ¹Ï‚ .%s, .%s01, .%2$s02â€¦). Î’ÎµÎ²Î±Î¹Ï‰Î¸ÎµÎ¯Ï„Îµ ÏŒÏ„Î¹ ÎºÎ±Ï„ÎµÎ²Î¬ÏƒÎ±Ï„Îµ <em>ÎºÎ±Î¹</em> Î±Î½ÎµÎ²Î¬ÏƒÎ±Ï„Îµ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Ï‡ÏÎ·ÏƒÎ¹Î¼Î¿Ï€Î¿Î¹ÏÎ½Ï„Î±Ï‚ SFTP, Î® FTP ÏƒÎµ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î± Î¼ÎµÏ„Î±Ï†Î¿ÏÎ¬Ï‚ Binary ÎºÎ±Î¹ ÎµÎ»Î­Î³Î¾Î±Ï„Îµ ÏŒÏ„Î¹ Ï„Î¿ Î¼Î­Î³ÎµÎ¸ÏŒÏ‚ Ï„Î¿Ï…Ï‚ Ï„Î±Î¹ÏÎ¹Î¬Î¶ÎµÎ¹ Î¼Îµ Ï„Î± Î¼ÎµÎ³Î­Î¸Î· Ï€Î¿Ï… Î±Î½Î±Ï†Î­ÏÎ¿Î½Ï„Î±Î¹ ÏƒÏ„Î· ÏƒÎµÎ»Î¯Î´Î± Î”Î¹Î±Ï‡ÎµÎ¯ÏÎ¹ÏƒÎ· Î‘Î½Ï„Î¹Î³ÏÎ¬Ï†Ï‰Î½ Î‘ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï„Î¿Ï… Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'ÎœÎ· Î­Î³ÎºÏ…ÏÎ· ÏƒÏÎ½Î´ÎµÏƒÎ·',
+  'COULDNT_CREATE_DIR' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï„Î¿Ï… Ï†Î±ÎºÎ­Î»Î¿Ï… %s',
+  'COULDNT_WRITE_FILE' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î±Î½Î¿Î¯Î³Î¼Î±Ï„Î¿Ï‚ Ï„Î¿Ï… %s Î³Î¹Î± ÎµÎ³Î³ÏÎ±Ï†Î®.',
+  'WRONG_FTP_HOST' => 'Î›Î¬Î¸Î¿Ï‚ FTP host Î® port',
+  'WRONG_FTP_USER' => 'Î›Î¬Î¸Î¿Ï‚ ÏŒÎ½Î¿Î¼Î± Ï‡ÏÎ®ÏƒÏ„Î· Î® ÎºÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ FTP',
+  'WRONG_FTP_PATH1' => 'Î›Î¬Î¸Î¿Ï‚ Î±ÏÏ‡Î¹ÎºÏŒÏ‚ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ FTP - Î¿ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ Î´ÎµÎ½ Ï…Ï€Î¬ÏÏ‡ÎµÎ¹',
+  'FTP_CANT_CREATE_DIR' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï†Î±ÎºÎ­Î»Î¿Ï… %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± ÎµÏÏÎµÏƒÎ·Ï‚ Î® Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ ÎµÎ³Î³ÏÎ¬ÏˆÎ¹Î¼Î¿Ï… Ï€ÏÎ¿ÏƒÏ‰ÏÎ¹Î½Î¿Ï Ï†Î±ÎºÎ­Î»Î¿Ï…',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± ÎµÏÏÎµÏƒÎ·Ï‚ Î® Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ ÎµÎ³Î³ÏÎ¬ÏˆÎ¹Î¼Î¿Ï… Ï€ÏÎ¿ÏƒÏ‰ÏÎ¹Î½Î¿Ï Ï†Î±ÎºÎ­Î»Î¿Ï…',
+  'FTP_COULDNT_UPLOAD' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î±Î½Î­Î²Î±ÏƒÎ¼Î±Ï„Î¿Ï‚ Ï„Î¿Ï… %s',
+  'THINGS_HEADER' => 'Î ÏÎ¬Î³Î¼Î±Ï„Î± Ï€Î¿Ï… Ï€ÏÎ­Ï€ÎµÎ¹ Î½Î± Î³Î½Ï‰ÏÎ¯Î¶ÎµÏ„Îµ Î³Î¹Î± Ï„Î¿ Akeeba Kickstart',
+  'THINGS_01' => 'Î¤Î¿ Kickstart Î´ÎµÎ½ ÎµÎ¯Î½Î±Î¹ Ï€ÏÏŒÎ³ÏÎ±Î¼Î¼Î± ÎµÎ³ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚. Î•Î¯Î½Î±Î¹ Î­Î½Î± ÎµÏÎ³Î±Î»ÎµÎ¯Î¿ ÎµÎ¾Î±Î³Ï‰Î³Î®Ï‚ Î±ÏÏ‡ÎµÎ¯Ï‰Î½ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚. Î¤Î¿ Ï€ÏÎ±Î³Î¼Î±Ï„Î¹ÎºÏŒ Ï€ÏÏŒÎ³ÏÎ±Î¼Î¼Î± ÎµÎ³ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚ Ï„Î¿Ï€Î¿Î¸ÎµÏ„Î®Î¸Î·ÎºÎµ Î¼Î­ÏƒÎ± ÏƒÏ„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ ÎºÎ±Ï„Î¬ Ï„Î·Î½ ÏÏÎ± Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï„Î¿Ï… Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚.',
+  'THINGS_03' => 'Î¤Î¿ Kickstart Ï€ÎµÏÎ¹Î¿ÏÎ¯Î¶ÎµÏ„Î±Î¹ Î±Ï€ÏŒ Ï„Î· Î´Î¹Î±Î¼ÏŒÏÏ†Ï‰ÏƒÎ· Ï„Î¿Ï… server ÏƒÎ±Ï‚. Î©Ï‚ ÎµÎº Ï„Î¿ÏÏ„Î¿Ï…, ÎµÎ½Î´Î­Ï‡ÎµÏ„Î±Î¹ Î½Î± Î¼Î·Î½ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³ÎµÎ¯ ÎºÎ±Î¸ÏŒÎ»Î¿Ï….',
+  'THINGS_04' => 'Î ÏÎ­Ï€ÎµÎ¹ Î½Î± ÎºÎ±Ï„ÎµÎ²Î¬ÏƒÎµÏ„Îµ ÎºÎ±Î¹ Î½Î± Î±Î½ÎµÎ²Î¬ÏƒÎµÏ„Îµ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Ï‡ÏÎ·ÏƒÎ¹Î¼Î¿Ï€Î¿Î¹ÏÎ½Ï„Î±Ï‚ FTP ÏƒÎµ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î± Î¼ÎµÏ„Î±Ï†Î¿ÏÎ¬Ï‚ Binary. ÎŸÏ€Î¿Î¹Î±Î´Î®Ï€Î¿Ï„Îµ Î¬Î»Î»Î· Î¼Î­Î¸Î¿Î´Î¿Ï‚ Î¼Ï€Î¿ÏÎµÎ¯ Î½Î± Î¿Î´Î·Î³Î®ÏƒÎµÎ¹ ÏƒÎµ ÎºÎ±Ï„ÎµÏƒÏ„ÏÎ±Î¼Î¼Î­Î½Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ ÎºÎ±Î¹ Î±Ï€Î¿Ï„Ï…Ï‡Î¯Î± Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚.',
+  'THINGS_05' => 'Î£Ï†Î¬Î»Î¼Î±Ï„Î± Ï†ÏŒÏÏ„Ï‰ÏƒÎ·Ï‚ Ï„Î¿Ï… Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿Ï… Î¼ÎµÏ„Î¬ Ï„Î·Î½ Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ· ÏƒÏ…Î½Î®Î¸Ï‰Ï‚ Ï€ÏÎ¿ÎºÎ±Î»Î¿ÏÎ½Ï„Î±Î¹ Î±Ï€ÏŒ Î¿Î´Î·Î³Î¿ÏÏ‚ .htaccess Î® php.ini. Î ÏÎ­Ï€ÎµÎ¹ Î½Î± ÎºÎ±Ï„Î±Î½Î¿Î®ÏƒÎµÏ„Îµ ÏŒÏ„Î¹ Î¿Î¹ ÎºÎµÎ½Î­Ï‚ ÏƒÎµÎ»Î¯Î´ÎµÏ‚, Ï„Î± ÏƒÏ†Î¬Î»Î¼Î±Ï„Î± 404 ÎºÎ±Î¹ 500 ÏƒÏ…Î½Î®Î¸Ï‰Ï‚ Î¼Ï€Î¿ÏÎ¿ÏÎ½ Î½Î± Ï€Î±ÏÎ±ÎºÎ±Î¼Ï†Î¸Î¿ÏÎ½ Î¼Îµ ÎµÏ€ÎµÎ¾ÎµÏÎ³Î±ÏƒÎ¯Î± Ï„Ï‰Î½ Ï€ÏÎ¿Î±Î½Î±Ï†ÎµÏÎ¸Î­Î½Ï„Ï‰Î½ Î±ÏÏ‡ÎµÎ¯Ï‰Î½. Î”ÎµÎ½ ÎµÎ¯Î¼Î±ÏƒÏ„Îµ ÏƒÎµ Î¸Î­ÏƒÎ· Î½Î± Î±Î»Î»Î¬Î¾Î¿Ï…Î¼Îµ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î´Î¹Î±Î¼ÏŒÏÏ†Ï‰ÏƒÎ·Ï‚ Ï„Î¿Ï… Î´Î¹Î±ÎºÎ¿Î¼Î¹ÏƒÏ„Î® ÏƒÎ±Ï‚ Î³Î¹Î± ÎµÏƒÎ¬Ï‚. Î‘Ï…Ï„Î­Ï‚ Î¿Î¹ Î±Î»Î»Î±Î³Î­Ï‚ Î¼Ï€Î¿ÏÎµÎ¯ Î½Î± ÎµÎ¯Î½Î±Î¹ ÎµÎ¹Î´Î¹ÎºÎ­Ï‚ Î³Î¹Î± Ï„Î¿Î½ Î´Î¹Î±ÎºÎ¿Î¼Î¹ÏƒÏ„Î® Î® Ï„Î¿Î½ Ï€Î¬ÏÎ¿Ï‡ÏŒ ÏƒÎ±Ï‚ ÎºÎ±Î¹ ÎµÏ€Î¿Î¼Î­Î½Ï‰Ï‚ ÎµÏ€Î¹ÎºÎ¯Î½Î´Ï…Î½ÎµÏ‚ ÎµÎ¬Î½ ÎµÎºÏ„ÎµÎ»ÎµÏƒÏ„Î¿ÏÎ½ Ï‡Ï‰ÏÎ¯Ï‚ ÎµÏ€Î¹Ï„Î®ÏÎ·ÏƒÎ· ÎºÎ±Î¹ Ï‡Ï‰ÏÎ¯Ï‚ Î±Î¯Ï„Î·Î¼Î±.',
+  'THINGS_06' => 'Î¤Î¿ Kickstart Î±Î½Ï„Î¹ÎºÎ±Î¸Î¹ÏƒÏ„Î¬ Î±ÏÏ‡ÎµÎ¯Î± Ï‡Ï‰ÏÎ¯Ï‚ Ï€ÏÎ¿ÎµÎ¹Î´Î¿Ï€Î¿Î¯Î·ÏƒÎ·. Î•Î¬Î½ Î´ÎµÎ½ ÎµÎ¯ÏƒÏ„Îµ ÏƒÎ¯Î³Î¿Ï…ÏÎ¿Î¹ ÏŒÏ„Î¹ Î±Ï…Ï„ÏŒ ÎµÎ¯Î½Î±Î¹ Î±Ï€Î¿Î´ÎµÎºÏ„ÏŒ Î³Î¹Î± Ï„Î·Î½ Ï€ÎµÏÎ¯Ï€Ï„Ï‰ÏƒÎ® ÏƒÎ±Ï‚, Î¸Î± Ï€ÏÎ­Ï€ÎµÎ¹ Î½Î± ÎºÎ»ÎµÎ¯ÏƒÎµÏ„Îµ Î±Ï…Ï„ÏŒ Ï„Î¿ Ï€Î±ÏÎ¬Î¸Ï…ÏÎ¿.',
+  'THINGS_07' => 'Î— Ï€ÏÎ¿ÏƒÏ€Î¬Î¸ÎµÎ¹Î± Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚ ÏƒÏ„Î¿ Ï€ÏÎ¿ÏƒÏ‰ÏÎ¹Î½ÏŒ URL ÎµÎ½ÏŒÏ‚ host cPanel (Ï€.Ï‡. http://1.2.3.4/~username) Î¸Î± Î¿Î´Î·Î³Î®ÏƒÎµÎ¹ ÏƒÎµ Î±Ï€Î¿Ï„Ï…Ï‡Î¯Î± Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚ ÎºÎ±Î¹ Î¿ Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€ÏŒÏ‚ ÏƒÎ±Ï‚ Î¸Î± Ï†Î±Î¯Î½ÎµÏ„Î±Î¹ Î½Î± Î¼Î·Î½ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³ÎµÎ¯. Î‘Ï…Ï„ÏŒ ÎµÎ¯Î½Î±Î¹ Ï†Ï…ÏƒÎ¹Î¿Î»Î¿Î³Î¹ÎºÏŒ ÎºÎ±Î¹ Î¿Ï†ÎµÎ¯Î»ÎµÏ„Î±Î¹ ÏƒÏ„Î¿Î½ Ï„ÏÏŒÏ€Î¿ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï„Î¿Ï… server ÎºÎ±Î¹ Ï„Î¿Ï… Î»Î¿Î³Î¹ÏƒÎ¼Î¹ÎºÎ¿Ï CMS ÏƒÎ±Ï‚.',
+  'THINGS_08' => 'Î£Î±Ï‚ Ï€Î±ÏÎ±ÎºÎ±Î»Î¿ÏÎ¼Îµ Î¸ÎµÏÎ¼Î¬ Î½Î± Î´Î¹Î±Î²Î¬ÏƒÎµÏ„Îµ Ï„Î·Î½ Ï„ÎµÎºÎ¼Î·ÏÎ¯Ï‰ÏƒÎ·. ÎšÎ¬Ï„Î¹ Ï„Î­Ï„Î¿Î¹Î¿ ÎµÎ¯Î½Î±Î¹ Ï€Î¹Î¸Î±Î½ÏŒ Î½Î± ÏƒÎ±Ï‚ ÎµÎ¾Î¿Î¹ÎºÎ¿Î½Î¿Î¼Î®ÏƒÎµÎ¹ Ï‡ÏÏŒÎ½Î¿ ÎºÎ±Î¹ Î±Ï€Î¿Î³Î¿Î®Ï„ÎµÏ…ÏƒÎ·.',
+  'THINGS_09' => 'Î‘Ï…Ï„ÏŒ Ï„Î¿ ÎºÎµÎ¯Î¼ÎµÎ½Î¿ Î´ÎµÎ½ Ï…Ï€Î¿Î´Î·Î»ÏÎ½ÎµÎ¹ ÏŒÏ„Î¹ ÎµÎ½Ï„Î¿Ï€Î¯ÏƒÏ„Î·ÎºÎµ Ï€ÏÏŒÎ²Î»Î·Î¼Î±. Î•Î¯Î½Î±Î¹ Ï€ÏÎ¿ÎµÏ€Î¹Î»ÎµÎ³Î¼Î­Î½Î¿ ÎºÎµÎ¯Î¼ÎµÎ½Î¿ Ï€Î¿Ï… ÎµÎ¼Ï†Î±Î½Î¯Î¶ÎµÏ„Î±Î¹ ÎºÎ¬Î¸Îµ Ï†Î¿ÏÎ¬ Ï€Î¿Ï… ÎµÎºÎºÎ¹Î½ÎµÎ¯Ï„Îµ Ï„Î¿ Kickstart.',
+  'CLOSE_LIGHTBOX' => 'ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÎµÎ´Ï Î® Ï€Î±Ï„Î®ÏƒÏ„Îµ ESC Î³Î¹Î± Î½Î± ÎºÎ»ÎµÎ¯ÏƒÎµÏ„Îµ Î±Ï…Ï„ÏŒ Ï„Î¿ Î¼Î®Î½Ï…Î¼Î±',
+  'SELECT_ARCHIVE' => 'Î•Ï€Î¹Î»Î­Î¾Ï„Îµ Î­Î½Î± Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚',
+  'ARCHIVE_FILE' => 'Î‘ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚:',
+  'SELECT_EXTRACTION' => 'Î•Ï€Î¹Î»Î­Î¾Ï„Îµ Î¼Î¹Î± Î¼Î­Î¸Î¿Î´Î¿ ÎµÎ¾Î±Î³Ï‰Î³Î®Ï‚',
+  'WRITE_TO_FILES' => 'Î•Î³Î³ÏÎ±Ï†Î® ÏƒÎµ Î±ÏÏ‡ÎµÎ¯Î±:',
+  'WRITE_HYBRID' => 'Î¥Î²ÏÎ¹Î´Î¹ÎºÎ® (Ï‡ÏÎ®ÏƒÎ· FTP Î¼ÏŒÎ½Î¿ ÏŒÏ„Î±Î½ Ï‡ÏÎµÎ¹Î¬Î¶ÎµÏ„Î±Î¹)',
+  'WRITE_DIRECTLY' => 'Î‘Ï€ÎµÏ…Î¸ÎµÎ¯Î±Ï‚',
+  'WRITE_FTP' => 'Î§ÏÎ®ÏƒÎ· FTP Î³Î¹Î± ÏŒÎ»Î± Ï„Î± Î±ÏÏ‡ÎµÎ¯Î±',
+  'WRITE_SFTP' => 'Î§ÏÎ®ÏƒÎ· SFTP Î³Î¹Î± ÏŒÎ»Î± Ï„Î± Î±ÏÏ‡ÎµÎ¯Î±',
+  'FTP_HOST' => 'ÎŒÎ½Î¿Î¼Î± (S)FTP host:',
+  'FTP_PORT' => '(S)FTP port:',
+  'FTP_FTPS' => 'Î§ÏÎ®ÏƒÎ· FTP Î¼Î­ÏƒÏ‰ SSL (FTPS)',
+  'FTP_PASSIVE' => 'Î§ÏÎ®ÏƒÎ· FTP Passive Mode',
+  'FTP_USER' => 'ÎŒÎ½Î¿Î¼Î± Ï‡ÏÎ®ÏƒÏ„Î· (S)FTP:',
+  'FTP_PASS' => 'ÎšÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ (S)FTP:',
+  'FTP_DIR' => 'Î¦Î¬ÎºÎµÎ»Î¿Ï‚ (S)FTP:',
+  'FTP_TEMPDIR' => 'Î ÏÎ¿ÏƒÏ‰ÏÎ¹Î½ÏŒÏ‚ Ï†Î¬ÎºÎµÎ»Î¿Ï‚:',
+  'FTP_CONNECTION_OK' => 'Î— ÏƒÏÎ½Î´ÎµÏƒÎ· FTP Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î®Î¸Î·ÎºÎµ',
+  'SFTP_CONNECTION_OK' => 'Î— ÏƒÏÎ½Î´ÎµÏƒÎ· SFTP Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î®Î¸Î·ÎºÎµ',
+  'FTP_CONNECTION_FAILURE' => 'Î‘Ï€Î¿Ï„Ï…Ï‡Î¯Î± ÏƒÏÎ½Î´ÎµÏƒÎ·Ï‚ FTP',
+  'SFTP_CONNECTION_FAILURE' => 'Î‘Ï€Î¿Ï„Ï…Ï‡Î¯Î± ÏƒÏÎ½Î´ÎµÏƒÎ·Ï‚ SFTP',
+  'FTP_TEMPDIR_WRITABLE' => 'ÎŸ Ï€ÏÎ¿ÏƒÏ‰ÏÎ¹Î½ÏŒÏ‚ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ ÎµÎ¯Î½Î±Î¹ ÎµÎ³Î³ÏÎ¬ÏˆÎ¹Î¼Î¿Ï‚.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'ÎŸ Ï€ÏÎ¿ÏƒÏ‰ÏÎ¹Î½ÏŒÏ‚ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ Î´ÎµÎ½ ÎµÎ¯Î½Î±Î¹ ÎµÎ³Î³ÏÎ¬ÏˆÎ¹Î¼Î¿Ï‚. Î•Î»Î­Î³Î¾Ï„Îµ Ï„Î± Î´Î¹ÎºÎ±Î¹ÏÎ¼Î±Ï„Î± Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚.',
+  'FTP_BROWSE' => 'Î ÎµÏÎ¹Î®Î³Î·ÏƒÎ·',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÏƒÎµ Î­Î½Î±Î½ Ï†Î¬ÎºÎµÎ»Î¿ Î³Î¹Î± Î½Î± Ï€Î»Î¿Î·Î³Î·Î¸ÎµÎ¯Ï„Îµ Î¼Î­ÏƒÎ± Ï„Î¿Ï…. ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÏƒÏ„Î¿ OK Î³Î¹Î± Î½Î± ÎµÏ€Î¹Î»Î­Î¾ÎµÏ„Îµ Î±Ï…Ï„ÏŒÎ½ Ï„Î¿Î½ Ï†Î¬ÎºÎµÎ»Î¿, Cancel Î³Î¹Î± Î½Î± Î±ÎºÏ…ÏÏÏƒÎµÏ„Îµ Ï„Î· Î´Î¹Î±Î´Î¹ÎºÎ±ÏƒÎ¯Î±.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'ÎœÎ· Î­Î³ÎºÏ…ÏÎ¿ FTP host Î® port',
+  'FTPBROWSER_ERROR_USERPASS' => 'ÎœÎ· Î­Î³ÎºÏ…ÏÎ¿ ÏŒÎ½Î¿Î¼Î± Ï‡ÏÎ®ÏƒÏ„Î· Î® ÎºÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ FTP',
+  'FTPBROWSER_ERROR_NOACCESS' => 'ÎŸ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ Î´ÎµÎ½ Ï…Ï€Î¬ÏÏ‡ÎµÎ¹ Î® Î´ÎµÎ½ Î­Ï‡ÎµÏ„Îµ Î±ÏÎºÎµÏ„Î¬ Î´Î¹ÎºÎ±Î¹ÏÎ¼Î±Ï„Î± Î³Î¹Î± Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Î›Ï…Ï€Î¿ÏÎ¼Î±ÏƒÏ„Îµ, Î¿ FTP server ÏƒÎ±Ï‚ Î´ÎµÎ½ Ï…Ï€Î¿ÏƒÏ„Î·ÏÎ¯Î¶ÎµÎ¹ Ï„Î¿Î½ Ï€ÎµÏÎ¹Î·Î³Î·Ï„Î® Ï†Î±ÎºÎ­Î»Ï‰Î½ FTP.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;Î­Î½Î±Ï‚ Î²Î±Î¸Î¼ÏŒÏ‚ Ï€Î¬Î½Ï‰&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Î ÏÎ¿Î­ÎºÏ…ÏˆÎµ ÏƒÏ†Î¬Î»Î¼Î±',
+  'SFTP_NO_SSH2' => 'ÎŸ web server ÏƒÎ±Ï‚ Î´ÎµÎ½ Î´Î¹Î±Î¸Î­Ï„ÎµÎ¹ Ï„Î¿ module PHP SSH2, ÎµÏ€Î¿Î¼Î­Î½Ï‰Ï‚ Î´ÎµÎ½ Î¼Ï€Î¿ÏÎµÎ¯ Î½Î± ÏƒÏ…Î½Î´ÎµÎ¸ÎµÎ¯ Î¼Îµ servers SFTP.',
+  'SFTP_NO_FTP_SUPPORT' => 'ÎŸ SSH server ÏƒÎ±Ï‚ Î´ÎµÎ½ ÎµÏ€Î¹Ï„ÏÎ­Ï€ÎµÎ¹ ÏƒÏ…Î½Î´Î­ÏƒÎµÎ¹Ï‚ SFTP',
+  'SFTP_WRONG_USER' => 'Î›Î¬Î¸Î¿Ï‚ ÏŒÎ½Î¿Î¼Î± Ï‡ÏÎ®ÏƒÏ„Î· Î® ÎºÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ SFTP',
+  'SFTP_WRONG_STARTING_DIR' => 'Î ÏÎ­Ï€ÎµÎ¹ Î½Î± Ï€Î±ÏÎ­Ï‡ÎµÏ„Îµ Î¼Î¹Î± Î­Î³ÎºÏ…ÏÎ· Î±Ï€ÏŒÎ»Ï…Ï„Î· Î´Î¹Î±Î´ÏÎ¿Î¼Î®',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'ÎŸ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ Î´ÎµÎ½ Ï…Ï€Î¬ÏÏ‡ÎµÎ¹ Î® Î´ÎµÎ½ Î­Ï‡ÎµÏ„Îµ Î±ÏÎºÎµÏ„Î¬ Î´Î¹ÎºÎ±Î¹ÏÎ¼Î±Ï„Î± Î³Î¹Î± Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·',
+  'SFTP_COULDNT_UPLOAD' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î±Î½Î­Î²Î±ÏƒÎ¼Î±Ï„Î¿Ï‚ Ï„Î¿Ï… %s',
+  'SFTP_CANT_CREATE_DIR' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï†Î±ÎºÎ­Î»Î¿Ï… %s',
+  'UI-ROOT' => '&lt;ÏÎ¯Î¶Î±&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'Î ÎµÏÎ¹Î·Î³Î·Ï„Î®Ï‚ Ï†Î±ÎºÎ­Î»Ï‰Î½ FTP',
+  'BTN_CHECK' => 'ÎˆÎ»ÎµÎ³Ï‡Î¿Ï‚',
+  'BTN_RESET' => 'Î•Ï€Î±Î½Î±Ï†Î¿ÏÎ¬',
+  'BTN_TESTFTPCON' => 'Î”Î¿ÎºÎ¹Î¼Î® ÏƒÏÎ½Î´ÎµÏƒÎ·Ï‚ FTP',
+  'BTN_TESTSFTPCON' => 'Î”Î¿ÎºÎ¹Î¼Î® ÏƒÏÎ½Î´ÎµÏƒÎ·Ï‚ SFTP',
+  'BTN_GOTOSTART' => 'Î•Ï€Î±Î½ÎµÎºÎºÎ¯Î½Î·ÏƒÎ·',
+  'BTN_RETRY' => 'Î•Ï€Î±Î½Î¬Î»Î·ÏˆÎ·',
+  'FINE_TUNE' => 'Î›ÎµÏ€Ï„Î® ÏÏÎ¸Î¼Î¹ÏƒÎ·',
+  'MIN_EXEC_TIME' => 'Î•Î»Î¬Ï‡Î¹ÏƒÏ„Î¿Ï‚ Ï‡ÏÏŒÎ½Î¿Ï‚ ÎµÎºÏ„Î­Î»ÎµÏƒÎ·Ï‚:',
+  'MAX_EXEC_TIME' => 'ÎœÎ­Î³Î¹ÏƒÏ„Î¿Ï‚ Ï‡ÏÏŒÎ½Î¿Ï‚ ÎµÎºÏ„Î­Î»ÎµÏƒÎ·Ï‚:',
+  'SECONDS_PER_STEP' => 'Î´ÎµÏ…Ï„ÎµÏÏŒÎ»ÎµÏ€Ï„Î± Î±Î½Î¬ Î²Î®Î¼Î±',
+  'EXTRACT_FILES' => 'Î•Î¾Î±Î³Ï‰Î³Î® Î±ÏÏ‡ÎµÎ¯Ï‰Î½',
+  'BTN_START' => 'ÎˆÎ½Î±ÏÎ¾Î·',
+  'EXTRACTING' => 'Î•Î¾Î±Î³Ï‰Î³Î® ÏƒÎµ ÎµÎ¾Î­Î»Î¹Î¾Î·',
+  'DO_NOT_CLOSE_EXTRACT' => 'ÎœÎ·Î½ ÎºÎ»ÎµÎ¯ÏƒÎµÏ„Îµ Î±Ï…Ï„ÏŒ Ï„Î¿ Ï€Î±ÏÎ¬Î¸Ï…ÏÎ¿ ÎµÎ½Ï Î· ÎµÎ¾Î±Î³Ï‰Î³Î® Î²ÏÎ¯ÏƒÎºÎµÏ„Î±Î¹ ÏƒÎµ ÎµÎ¾Î­Î»Î¹Î¾Î·',
+  'RESTACLEANUP' => 'Î‘Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ· ÎºÎ±Î¹ ÎšÎ±Î¸Î±ÏÎ¹ÏƒÎ¼ÏŒÏ‚',
+  'BTN_RUNINSTALLER' => 'Î•ÎºÏ„Î­Î»ÎµÏƒÎ· Ï„Î¿Ï… Ï€ÏÎ¿Î³ÏÎ¬Î¼Î¼Î±Ï„Î¿Ï‚ ÎµÎ³ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·Ï‚',
+  'BTN_CLEANUP' => 'ÎšÎ±Î¸Î±ÏÎ¹ÏƒÎ¼ÏŒÏ‚',
+  'BTN_SITEFE' => 'Î•Ï€Î¯ÏƒÎºÎµÏˆÎ· ÏƒÏ„Î¿ frontend Ï„Î¿Ï… Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿Ï…',
+  'BTN_SITEBE' => 'Î•Ï€Î¯ÏƒÎºÎµÏˆÎ· ÏƒÏ„Î¿ backend Ï„Î¿Ï… Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿Ï…',
+  'WARNINGS' => 'Î ÏÎ¿ÎµÎ¹Î´Î¿Ï€Î¿Î¹Î®ÏƒÎµÎ¹Ï‚ ÎµÎ¾Î±Î³Ï‰Î³Î®Ï‚',
+  'ERROR_OCCURED' => 'Î ÏÎ¿Î­ÎºÏ…ÏˆÎµ ÏƒÏ†Î¬Î»Î¼Î±',
+  'STEALTH_MODE' => 'Î›Î±Î½Î¸Î¬Î½Ï‰Î½ Ï„ÏÏŒÏ€Î¿Ï‚ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î±Ï‚',
+  'STEALTH_URL' => 'Î‘ÏÏ‡ÎµÎ¯Î¿ HTML Ï€Î¿Ï… Î¸Î± ÎµÎ¼Ï†Î±Î½Î¯Î¶ÎµÏ„Î±Î¹ ÏƒÏ„Î¿Ï…Ï‚ ÎµÏ€Î¹ÏƒÎºÎ­Ï€Ï„ÎµÏ‚ Ï„Î¿Ï… Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿Ï…',
+  'ERR_NOT_A_JPS_FILE' => 'Î¤Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î´ÎµÎ½ ÎµÎ¯Î½Î±Î¹ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ JPS',
+  'ERR_INVALID_JPS_PASSWORD' => 'ÎŸ ÎºÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ Ï€Î¿Ï… Î´ÏÏƒÎ±Ï„Îµ ÎµÎ¯Î½Î±Î¹ Î»Î¬Î¸Î¿Ï‚ Î® Ï„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ ÎµÎ¯Î½Î±Î¹ ÎºÎ±Ï„ÎµÏƒÏ„ÏÎ±Î¼Î¼Î­Î½Î¿',
+  'JPS_PASSWORD' => 'ÎšÏ‰Î´Î¹ÎºÏŒÏ‚ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚ Î±ÏÏ‡ÎµÎ¯Î¿Ï… Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ (Î³Î¹Î± Î±ÏÏ‡ÎµÎ¯Î± JPS)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î±Î½Î¿Î¯Î³Î¼Î±Ï„Î¿Ï‚ Ï„Î¿Ï… Î±ÏÏ‡ÎµÎ¯Î¿Ï… %s Î³Î¹Î± Î±Î½Î¬Î³Î½Ï‰ÏƒÎ·. Î‘Ï…Ï„ÏŒ ÎµÎ¯Î½Î±Î¹ Ï„Î¿ Ï„Î¼Î®Î¼Î± #%d Ï„Î¿Ï… Î±ÏÏ‡ÎµÎ¯Î¿Ï… Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï€Î¿Ï… Î±Ï€Î¿Ï„ÎµÎ»ÎµÎ¯Ï„Î±Î¹ Î±Ï€ÏŒ Ï€Î¿Î»Î»Î±Ï€Î»Î¬ Î±ÏÏ‡ÎµÎ¯Î± (Î±ÏÏ‡ÎµÎ¯Î± Î¼Îµ Ï„Î¿ Î¯Î´Î¹Î¿ ÏŒÎ½Î¿Î¼Î± ÎºÎ±Î¹ ÎµÏ€ÎµÎºÏ„Î¬ÏƒÎµÎ¹Ï‚ .%s, .%s01, .%4$s02â€¦). Î’ÎµÎ²Î±Î¹Ï‰Î¸ÎµÎ¯Ï„Îµ ÏŒÏ„Î¹ Î­Ï‡ÎµÏ„Îµ ÏŒÎ»Î± Î±Ï…Ï„Î¬ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± ÏƒÏ„Î¿Î½ Î¯Î´Î¹Î¿ Ï†Î¬ÎºÎµÎ»Î¿ Î¼Îµ Ï„Î¿ Kickstart.',
+  'INVALID_FILE_HEADER' => 'ÎœÎ· Î­Î³ÎºÏ…ÏÎ¿ header ÏƒÏ„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚, Ï„Î¼Î®Î¼Î± %s, offset %s. Î’ÎµÎ²Î±Î¹Ï‰Î¸ÎµÎ¯Ï„Îµ ÏŒÏ„Î¹ ÎºÎ±Ï„ÎµÎ²Î¬ÏƒÎ±Ï„Îµ <em>ÎºÎ±Î¹</em> Î±Î½ÎµÎ²Î¬ÏƒÎ±Ï„Îµ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï‡ÏÎ·ÏƒÎ¹Î¼Î¿Ï€Î¿Î¹ÏÎ½Ï„Î±Ï‚ SFTP, Î® FTP ÏƒÎµ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î± Î¼ÎµÏ„Î±Ï†Î¿ÏÎ¬Ï‚ Binary ÎºÎ±Î¹ ÎµÎ»Î­Î³Î¾Î±Ï„Îµ ÏŒÏ„Î¹ Ï„Î¿ Î¼Î­Î³ÎµÎ¸ÏŒÏ‚ Ï„Î¿Ï…Ï‚ Ï„Î±Î¹ÏÎ¹Î¬Î¶ÎµÎ¹ Î¼Îµ Ï„Î± Î¼ÎµÎ³Î­Î¸Î· Ï€Î¿Ï… Î±Î½Î±Ï†Î­ÏÎ¿Î½Ï„Î±Î¹ ÏƒÏ„Î· ÏƒÎµÎ»Î¯Î´Î± Î”Î¹Î±Ï‡ÎµÎ¯ÏÎ¹ÏƒÎ· Î‘Î½Ï„Î¹Î³ÏÎ¬Ï†Ï‰Î½ Î‘ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï„Î¿Ï… Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'ÎœÎ· Î­Î³ÎºÏ…ÏÎ¿ header ÏƒÏ„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚, Ï„Î¼Î®Î¼Î± %s, offset %s. Î¤Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ ÏƒÎ±Ï‚ Î±Ï€Î¿Ï„ÎµÎ»ÎµÎ¯Ï„Î±Î¹ Î±Ï€ÏŒ Ï€Î¿Î»Î»Î±Ï€Î»Î¬ Î±ÏÏ‡ÎµÎ¯Î± (Î±ÏÏ‡ÎµÎ¯Î± Î¼Îµ Ï„Î¿ Î¯Î´Î¹Î¿ ÏŒÎ½Î¿Î¼Î± ÎºÎ±Î¹ ÎµÏ€ÎµÎºÏ„Î¬ÏƒÎµÎ¹Ï‚ .%s, .%s01, .%4$s02â€¦). Î‰ ÎºÎ¬Ï€Î¿Î¹Î± Î±ÏÏ‡ÎµÎ¯Î± Î»ÎµÎ¯Ï€Î¿Ï…Î½, Î® ÎµÎ¯Î½Î±Î¹ ÎºÎ±Ï„ÎµÏƒÏ„ÏÎ±Î¼Î¼Î­Î½Î± Î® Ï„ÎµÏ„Î¼Î·Î¼Î­Î½Î±. Î˜Î± Ï‡ÏÎµÎ¹Î±ÏƒÏ„ÎµÎ¯Ï„Îµ ÏŒÎ»Î± Î±Ï…Ï„Î¬ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î½Î± Ï…Ï€Î¬ÏÏ‡Î¿Ï…Î½ ÏƒÏ„Î¿Î½ Î¯Î´Î¹Î¿ Ï†Î¬ÎºÎµÎ»Î¿. Î’ÎµÎ²Î±Î¹Ï‰Î¸ÎµÎ¯Ï„Îµ ÏŒÏ„Î¹ ÎºÎ±Ï„ÎµÎ²Î¬ÏƒÎ±Ï„Îµ <em>ÎºÎ±Î¹</em> Î±Î½ÎµÎ²Î¬ÏƒÎ±Ï„Îµ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï‡ÏÎ·ÏƒÎ¹Î¼Î¿Ï€Î¿Î¹ÏÎ½Ï„Î±Ï‚ SFTP, Î® FTP ÏƒÎµ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î¯Î± Î¼ÎµÏ„Î±Ï†Î¿ÏÎ¬Ï‚ Binary ÎºÎ±Î¹ ÎµÎ»Î­Î³Î¾Î±Ï„Îµ ÏŒÏ„Î¹ Ï„Î¿ Î¼Î­Î³ÎµÎ¸ÏŒÏ‚ Ï„Î¿Ï…Ï‚ Ï„Î±Î¹ÏÎ¹Î¬Î¶ÎµÎ¹ Î¼Îµ Ï„Î± Î¼ÎµÎ³Î­Î¸Î· Ï€Î¿Ï… Î±Î½Î±Ï†Î­ÏÎ¿Î½Ï„Î±Î¹ ÏƒÏ„Î· ÏƒÎµÎ»Î¯Î´Î± Î”Î¹Î±Ï‡ÎµÎ¯ÏÎ¹ÏƒÎ· Î‘Î½Ï„Î¹Î³ÏÎ¬Ï†Ï‰Î½ Î‘ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ Ï„Î¿Ï… Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'ÎœÎ¹Î± ÎµÎ½Î·Î¼ÎµÏÏ‰Î¼Î­Î½Î· Î­ÎºÎ´Î¿ÏƒÎ· Ï„Î¿Ï… Akeeba Kickstart (<span id=update-version>unknown</span>) ÎµÎ¯Î½Î±Î¹ Î´Î¹Î±Î¸Î­ÏƒÎ¹Î¼Î·!',
+  'UPDATE_NOTICE' => 'Î£Î±Ï‚ ÏƒÏ…Î¼Î²Î¿Ï…Î»ÎµÏÎ¿Ï…Î¼Îµ Î½Î± Ï‡ÏÎ·ÏƒÎ¹Î¼Î¿Ï€Î¿Î¹ÎµÎ¯Ï„Îµ Ï€Î¬Î½Ï„Î± Ï„Î·Î½ Ï„ÎµÎ»ÎµÏ…Ï„Î±Î¯Î± Î­ÎºÎ´Î¿ÏƒÎ· Ï„Î¿Ï… Akeeba Kickstart Ï€Î¿Ï… ÎµÎ¯Î½Î±Î¹ Î´Î¹Î±Î¸Î­ÏƒÎ¹Î¼Î·. ÎŸÎ¹ Ï€Î±Î»Î±Î¹ÏŒÏ„ÎµÏÎµÏ‚ ÎµÎºÎ´ÏŒÏƒÎµÎ¹Ï‚ ÎµÎ½Î´Î­Ï‡ÎµÏ„Î±Î¹ Î½Î± Ï€ÎµÏÎ¹Î­Ï‡Î¿Ï…Î½ ÏƒÏ†Î¬Î»Î¼Î±Ï„Î± ÎºÎ±Î¹ Î´ÎµÎ½ Î¸Î± Ï…Ï€Î¿ÏƒÏ„Î·ÏÎ¯Î¶Î¿Î½Ï„Î±Î¹.',
+  'UPDATE_DLNOW' => 'Î›Î®ÏˆÎ· Ï„ÏÏÎ±',
+  'UPDATE_MOREINFO' => 'Î ÎµÏÎ¹ÏƒÏƒÏŒÏ„ÎµÏÎµÏ‚ Ï€Î»Î·ÏÎ¿Ï†Î¿ÏÎ¯ÎµÏ‚',
+  'NEEDSOMEHELPKS' => 'Î˜Î­Î»ÎµÏ„Îµ Î²Î¿Î®Î¸ÎµÎ¹Î± Î³Î¹Î± Ï„Î· Ï‡ÏÎ®ÏƒÎ· Î±Ï…Ï„Î¿Ï Ï„Î¿Ï… ÎµÏÎ³Î±Î»ÎµÎ¯Î¿Ï…; Î”Î¹Î±Î²Î¬ÏƒÏ„Îµ Ï€ÏÏÏ„Î± Î±Ï…Ï„ÏŒ:',
+  'QUICKSTART' => 'ÎŸÎ´Î·Î³ÏŒÏ‚ Î³ÏÎ®Î³Î¿ÏÎ·Ï‚ ÎµÎºÎºÎ¯Î½Î·ÏƒÎ·Ï‚',
+  'CANTGETITTOWORK' => 'Î”ÎµÎ½ ÎºÎ±Ï„Î±Ï†Î­ÏÎ½ÎµÏ„Îµ Î½Î± Ï„Î¿ ÎºÎ¬Î½ÎµÏ„Îµ Î½Î± Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³Î®ÏƒÎµÎ¹; ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÎµÎ´Ï!',
+  'NOARCHIVESCLICKHERE' => 'Î”ÎµÎ½ ÎµÎ½Ï„Î¿Ï€Î¯ÏƒÏ„Î·ÎºÎ±Î½ Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚. ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÎµÎ´Ï Î³Î¹Î± Î¿Î´Î·Î³Î¯ÎµÏ‚ Î±Î½Ï„Î¹Î¼ÎµÏ„ÏÏ€Î¹ÏƒÎ·Ï‚ Ï€ÏÎ¿Î²Î»Î·Î¼Î¬Ï„Ï‰Î½.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'ÎšÎ¬Ï„Î¹ Î´ÎµÎ½ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³ÎµÎ¯ Î¼ÎµÏ„Î¬ Ï„Î·Î½ Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·; ÎšÎ¬Î½Ï„Îµ ÎºÎ»Î¹Îº ÎµÎ´Ï Î³Î¹Î± Î¿Î´Î·Î³Î¯ÎµÏ‚ Î±Î½Ï„Î¹Î¼ÎµÏ„ÏÏ€Î¹ÏƒÎ·Ï‚ Ï€ÏÎ¿Î²Î»Î·Î¼Î¬Ï„Ï‰Î½.',
+  'IGNORE_MOST_ERRORS' => 'Î Î±ÏÎ±Î²Î¯Î±ÏƒÎ· Ï€ÎµÏÎ¹ÏƒÏƒÏŒÏ„ÎµÏÏ‰Î½ ÏƒÏ†Î±Î»Î¼Î¬Ï„Ï‰Î½',
+  'TIME_SETTINGS_HELP' => 'Î‘Ï…Î¾Î®ÏƒÏ„Îµ Ï„Î¿ ÎµÎ»Î¬Ï‡Î¹ÏƒÏ„Î¿ ÏƒÎµ 3 Î±Î½ Î»Î±Î¼Î²Î¬Î½ÎµÏ„Îµ ÏƒÏ†Î¬Î»Î¼Î±Ï„Î± AJAX. Î‘Ï…Î¾Î®ÏƒÏ„Îµ Ï„Î¿ Î¼Î­Î³Î¹ÏƒÏ„Î¿ ÏƒÎµ 10 Î³Î¹Î± Ï„Î±Ï‡ÏÏ„ÎµÏÎ· ÎµÎ¾Î±Î³Ï‰Î³Î®, Î¼ÎµÎ¹ÏÏƒÏ„Îµ Ï„Î¿ Î¾Î±Î½Î¬ ÏƒÎµ 5 Î±Î½ Î»Î±Î¼Î²Î¬Î½ÎµÏ„Îµ ÏƒÏ†Î¬Î»Î¼Î±Ï„Î± AJAX. Î”Î¿ÎºÎ¹Î¼Î¬ÏƒÏ„Îµ ÎµÎ»Î¬Ï‡Î¹ÏƒÏ„Î¿ 5, Î¼Î­Î³Î¹ÏƒÏ„Î¿ 1 (Î´ÎµÎ½ ÎµÎ¯Î½Î±Î¹ Ï„Ï…Ï€Î¿Î³ÏÎ±Ï†Î¹ÎºÏŒ ÏƒÏ†Î¬Î»Î¼Î±!) Î±Î½ ÏƒÏ…Î½ÎµÏ‡Î¯Î¶ÎµÏ„Îµ Î½Î± Î»Î±Î¼Î²Î¬Î½ÎµÏ„Îµ ÏƒÏ†Î¬Î»Î¼Î±Ï„Î± AJAX.',
+  'STEALTH_MODE_HELP' => 'ÎŒÏ„Î±Î½ ÎµÎ¯Î½Î±Î¹ ÎµÎ½ÎµÏÎ³Î¿Ï€Î¿Î¹Î·Î¼Î­Î½Î¿, Î¼ÏŒÎ½Î¿ Î¿Î¹ ÎµÏ€Î¹ÏƒÎºÎ­Ï€Ï„ÎµÏ‚ Î±Ï€ÏŒ Ï„Î· Î´Î¹ÎµÏÎ¸Ï…Î½ÏƒÎ· IP ÏƒÎ±Ï‚ Î¸Î± Î¼Ï€Î¿ÏÎ¿ÏÎ½ Î½Î± Î´Î¿Ï…Î½ Ï„Î¿Î½ Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿ Î¼Î­Ï‡ÏÎ¹ Î½Î± Î¿Î»Î¿ÎºÎ»Î·ÏÏ‰Î¸ÎµÎ¯ Î· Î±Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ·. ÎŒÎ»Î¿Î¹ Î¿Î¹ Ï…Ï€ÏŒÎ»Î¿Î¹Ï€Î¿Î¹ Î¸Î± Î±Î½Î±ÎºÎ±Ï„ÎµÏ…Î¸ÏÎ½Î¿Î½Ï„Î±Î¹ ÎºÎ±Î¹ Î¸Î± Î²Î»Î­Ï€Î¿Ï…Î½ Î¼ÏŒÎ½Î¿ Ï„Î·Î½ Ï€Î±ÏÎ±Ï€Î¬Î½Ï‰ URL. ÎŸ server ÏƒÎ±Ï‚ Ï€ÏÎ­Ï€ÎµÎ¹ Î½Î± Î²Î»Î­Ï€ÎµÎ¹ Ï„Î·Î½ Ï€ÏÎ±Î³Î¼Î±Ï„Î¹ÎºÎ® Î´Î¹ÎµÏÎ¸Ï…Î½ÏƒÎ· IP Ï„Î¿Ï… ÎµÏ€Î¹ÏƒÎºÎ­Ï€Ï„Î· (Î±Ï…Ï„ÏŒ ÎµÎ»Î­Î³Ï‡ÎµÏ„Î±Î¹ Î±Ï€ÏŒ Ï„Î¿Î½ host ÏƒÎ±Ï‚, ÏŒÏ‡Î¹ Î±Ï€ÏŒ ÎµÏƒÎ¬Ï‚ Î® ÎµÎ¼Î¬Ï‚).',
+  'RENAME_FILES_HELP' => 'Î‘Î½Î¿Î¼Î¿ÏƒÎ¹Î¬Î¶ÎµÎ¹ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± .htaccess, web.config, php.ini ÎºÎ±Î¹ .user.ini Ï€Î¿Ï… Ï€ÎµÏÎ¹Î­Ï‡Î¿Î½Ï„Î±Î¹ ÏƒÏ„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ ÎºÎ±Ï„Î¬ Ï„Î·Î½ ÎµÎ¾Î±Î³Ï‰Î³Î®. Î¤Î± Î±ÏÏ‡ÎµÎ¯Î± Î¼ÎµÏ„Î¿Î½Î¿Î¼Î¬Î¶Î¿Î½Ï„Î±Î¹ Î¼Îµ ÎµÏ€Î­ÎºÏ„Î±ÏƒÎ· .bak. Î¤Î± Î¿Î½ÏŒÎ¼Î±Ï„Î± Î±ÏÏ‡ÎµÎ¯Ï‰Î½ ÎµÏ€Î±Î½Î±Ï†Î­ÏÎ¿Î½Ï„Î±Î¹ ÏŒÏ„Î±Î½ ÎºÎ¬Î½ÎµÏ„Îµ ÎºÎ»Î¹Îº ÏƒÏ„Î¿ ÎšÎ±Î¸Î±ÏÎ¹ÏƒÎ¼ÏŒÏ‚.',
+  'RESTORE_PERMISSIONS_HELP' => 'Î•Ï†Î±ÏÎ¼ÏŒÎ¶ÎµÎ¹ Ï„Î± Î´Î¹ÎºÎ±Î¹ÏÎ¼Î±Ï„Î± Î±ÏÏ‡ÎµÎ¯Ï‰Î½ (Î±Î»Î»Î¬ ÎŸÎ§Î™ Ï„Î·Î½ Î¹Î´Î¹Î¿ÎºÏ„Î·ÏƒÎ¯Î± Î±ÏÏ‡ÎµÎ¯Ï‰Î½) Ï€Î¿Ï… Î±Ï€Î¿Î¸Î·ÎºÎµÏÏ„Î·ÎºÎ±Î½ ÎºÎ±Ï„Î¬ Ï„Î·Î½ ÏÏÎ± Î´Î·Î¼Î¹Î¿Ï…ÏÎ³Î¯Î±Ï‚ Ï„Î¿Ï… Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚. Î›ÎµÎ¹Ï„Î¿Ï…ÏÎ³ÎµÎ¯ Î¼ÏŒÎ½Î¿ Î¼Îµ Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ JPA ÎºÎ±Î¹ JPS. Î”ÎµÎ½ Î»ÎµÎ¹Ï„Î¿Ï…ÏÎ³ÎµÎ¯ ÏƒÏ„Î¿ Windows (Ï„Î¿ PHP Î´ÎµÎ½ Ï€Î±ÏÎ­Ï‡ÎµÎ¹ Ï„Î­Ï„Î¿Î¹Î± Î´Ï…Î½Î±Ï„ÏŒÏ„Î·Ï„Î±).',
+  'EXTRACT_LIST' => 'Î‘ÏÏ‡ÎµÎ¯Î± Ï€ÏÎ¿Ï‚ ÎµÎ¾Î±Î³Ï‰Î³Î®',
+  'EXTRACT_LIST_HELP' => 'Î•Î¹ÏƒÎ¬Î³ÎµÏ„Îµ Î¼Î¹Î± Î´Î¹Î±Î´ÏÎ¿Î¼Î® Î±ÏÏ‡ÎµÎ¯Î¿Ï… ÏŒÏ€Ï‰Ï‚ <code>images/cat.png</code> Î® Î­Î½Î± pattern shell ÏŒÏ€Ï‰Ï‚ <code>images/*.png</code> ÏƒÎµ ÎºÎ¬Î¸Îµ Î³ÏÎ±Î¼Î¼Î®. ÎœÏŒÎ½Î¿ Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Ï€Î¿Ï… Ï„Î±Î¹ÏÎ¹Î¬Î¶Î¿Ï…Î½ ÏƒÎµ Î±Ï…Ï„Î® Ï„Î· Î»Î¯ÏƒÏ„Î± Î¸Î± Î³ÏÎ±Ï†Ï„Î¿ÏÎ½ ÏƒÏ„Î¿Î½ Î´Î¯ÏƒÎºÎ¿. Î‘Ï†Î®ÏƒÏ„Îµ ÎºÎµÎ½ÏŒ Î³Î¹Î± ÎµÎ¾Î±Î³Ï‰Î³Î® ÏŒÎ»Ï‰Î½ (Ï€ÏÎ¿ÎµÏ€Î¹Î»Î¿Î³Î®).',
+  'AKS3_IMPORT' => 'Î•Î¹ÏƒÎ±Î³Ï‰Î³Î® Î±Ï€ÏŒ Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Î£ÏÎ½Î´ÎµÏƒÎ· Î¼Îµ Amazon S3',
+  'AKS3_ACCESS' => 'ÎšÎ»ÎµÎ¹Î´Î¯ Ï€ÏÏŒÏƒÎ²Î±ÏƒÎ·Ï‚',
+  'AKS3_SECRET' => 'ÎšÏÏ…Ï€Ï„Î¿Î³ÏÎ±Ï†Î·Î¼Î­Î½Î¿ ÎºÎ»ÎµÎ¹Î´Î¯',
+  'AKS3_CONNECT' => 'Î£ÏÎ½Î´ÎµÏƒÎ· Î¼Îµ Amazon S3',
+  'AKS3_CANCEL' => 'Î‘ÎºÏÏÏ‰ÏƒÎ· ÎµÎ¹ÏƒÎ±Î³Ï‰Î³Î®Ï‚',
+  'AKS3_TITLE_STEP2' => 'Î•Ï€Î¹Î»Î¿Î³Î® bucket Amazon S3',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'Î•Î¼Ï†Î¬Î½Î¹ÏƒÎ· Ï€ÎµÏÎ¹ÎµÏ‡Î¿Î¼Î­Î½Ï‰Î½',
+  'AKS3_TITLE_STEP3' => 'Î•Ï€Î¹Î»Î¿Î³Î® Î±ÏÏ‡ÎµÎ¯Î¿Ï… Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Ï€ÏÎ¿Ï‚ ÎµÎ¹ÏƒÎ±Î³Ï‰Î³Î®',
+  'AKS3_FOLDERS' => 'Î¦Î¬ÎºÎµÎ»Î¿Î¹',
+  'AKS3_FILES' => 'Î‘ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚',
+  'AKS3_TITLE_STEP4' => 'Î•Î¹ÏƒÎ±Î³Ï‰Î³Î® ÏƒÎµ ÎµÎ¾Î­Î»Î¹Î¾Î·â€¦',
+  'AKS3_DO_NOT_CLOSE' => 'Î Î±ÏÎ±ÎºÎ±Î»Ï Î¼Î·Î½ ÎºÎ»ÎµÎ¯ÏƒÎµÏ„Îµ Î±Ï…Ï„ÏŒ Ï„Î¿ Ï€Î±ÏÎ¬Î¸Ï…ÏÎ¿ ÎµÎ½Ï Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚ ÎµÎ¹ÏƒÎ¬Î³Î¿Î½Ï„Î±Î¹',
+  'AKS3_TITLE_STEP5' => 'Î— ÎµÎ¹ÏƒÎ±Î³Ï‰Î³Î® Î¿Î»Î¿ÎºÎ»Î·ÏÏÎ¸Î·ÎºÎµ',
+  'AKS3_BTN_RELOAD' => 'Î•Ï€Î±Î½Î±Ï†ÏŒÏÏ„Ï‰ÏƒÎ· Kickstart',
+  'WRONG_FTP_PATH2' => 'Î›Î¬Î¸Î¿Ï‚ Î±ÏÏ‡Î¹ÎºÏŒÏ‚ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ FTP - Î¿ Ï†Î¬ÎºÎµÎ»Î¿Ï‚ Î´ÎµÎ½ Î±Î½Ï„Î¹ÏƒÏ„Î¿Î¹Ï‡ÎµÎ¯ ÏƒÏ„Î· ÏÎ¯Î¶Î± Î¹ÏƒÏ„Î¿Ï Ï„Î¿Ï… Î¹ÏƒÏ„ÏŒÏ„Î¿Ï€Î¿Ï ÏƒÎ±Ï‚',
+  'ARCHIVE_DIRECTORY' => 'Î¦Î¬ÎºÎµÎ»Î¿Ï‚ Î±ÏÏ‡ÎµÎ¯Ï‰Î½ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚:',
+  'RELOAD_ARCHIVES' => 'Î•Ï€Î±Î½Î±Ï†ÏŒÏÏ„Ï‰ÏƒÎ·',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'Î ÎµÏÎ¹Î·Î³Î·Ï„Î®Ï‚ Ï†Î±ÎºÎ­Î»Ï‰Î½ SFTP',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'Î‘Î´Ï…Î½Î±Î¼Î¯Î± Î±Î½Î¿Î¯Î³Î¼Î±Ï„Î¿Ï‚ Ï„Î¿Ï… Î±ÏÏ‡ÎµÎ¯Î¿Ï… Ï„Î¼Î®Î¼Î±Ï„Î¿Ï‚ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ %s Î³Î¹Î± Î±Î½Î¬Î³Î½Ï‰ÏƒÎ·. Î•Î»Î­Î³Î¾Ï„Îµ ÏŒÏ„Î¹ Ï„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Ï…Ï€Î¬ÏÏ‡ÎµÎ¹, ÎµÎ¯Î½Î±Î¹ Î±Î½Î±Î³Î½ÏÏƒÎ¹Î¼Î¿ Î±Ï€ÏŒ Ï„Î¿Î½ web server ÎºÎ±Î¹ Î´ÎµÎ½ Î²ÏÎ¯ÏƒÎºÎµÏ„Î±Î¹ ÏƒÎµ Ï†Î¬ÎºÎµÎ»Î¿ Ï€Î¿Ï… ÎµÎ¯Î½Î±Î¹ Î¼Î· Ï€ÏÎ¿ÏƒÎ²Î¬ÏƒÎ¹Î¼Î¿Ï‚ Î»ÏŒÎ³Ï‰ Ï€ÎµÏÎ¹Î¿ÏÎ¹ÏƒÎ¼ÏÎ½ chroot, open_basedir Î® Î¿Ï€Î¿Î¹Î¿Ï…Î´Î®Ï€Î¿Ï„Îµ Î¬Î»Î»Î¿Ï… Ï€ÎµÏÎ¹Î¿ÏÎ¹ÏƒÎ¼Î¿Ï Ï€Î¿Ï… Î­Ï‡ÎµÎ¹ Î¸Î­ÏƒÎµÎ¹ Î¿ host ÏƒÎ±Ï‚.',
+  'RENAME_FILES' => 'ÎœÎµÏ„Î¿Î½Î¿Î¼Î±ÏƒÎ¯Î± Î±ÏÏ‡ÎµÎ¯Ï‰Î½ Î´Î¹Î±Î¼ÏŒÏÏ†Ï‰ÏƒÎ·Ï‚ server Ï€ÏÎ¹Î½ Ï„Î·Î½ ÎµÎ¾Î±Î³Ï‰Î³Î®',
+  'BTN_SHOW_FINE_TUNE' => 'Î•Î¼Ï†Î¬Î½Î¹ÏƒÎ· Ï€ÏÎ¿Î·Î³Î¼Î­Î½Ï‰Î½ ÎµÏ€Î¹Î»Î¿Î³ÏÎ½ (Î³Î¹Î± ÎµÎ¹Î´Î¹ÎºÎ¿ÏÏ‚)',
+  'RESTORE_PERMISSIONS' => 'Î‘Ï€Î¿ÎºÎ±Ï„Î¬ÏƒÏ„Î±ÏƒÎ· Î´Î¹ÎºÎ±Î¹Ï‰Î¼Î¬Ï„Ï‰Î½ Î±ÏÏ‡ÎµÎ¯Ï‰Î½',
+  'ZAPBEFORE' => 'Î”Î¹Î±Î³ÏÎ±Ï†Î® ÏŒÎ»Ï‰Î½ Ï€ÏÎ¹Î½ Ï„Î·Î½ ÎµÎ¾Î±Î³Ï‰Î³Î®',
+  'ZAPBEFORE_HELP' => 'Î ÏÎ¿ÏƒÏ€Î±Î¸ÎµÎ¯ Î½Î± Î´Î¹Î±Î³ÏÎ¬ÏˆÎµÎ¹ ÏŒÎ»Î± Ï„Î± Ï…Ï€Î¬ÏÏ‡Î¿Î½Ï„Î± Î±ÏÏ‡ÎµÎ¯Î± ÎºÎ±Î¹ Ï†Î±ÎºÎ­Î»Î¿Ï…Ï‚ ÎºÎ¬Ï„Ï‰ Î±Ï€ÏŒ Ï„Î¿Î½ Ï†Î¬ÎºÎµÎ»Î¿ ÏŒÏ€Î¿Ï… Î²ÏÎ¯ÏƒÎºÎµÏ„Î±Î¹ Ï„Î¿ Kickstart Ï€ÏÎ¹Î½ Ï„Î·Î½ ÎµÎ¾Î±Î³Ï‰Î³Î® Ï„Î¿Ï… Î±ÏÏ‡ÎµÎ¯Î¿Ï… Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚. Î”Î•Î Î»Î±Î¼Î²Î¬Î½ÎµÎ¹ Ï…Ï€ÏŒÏˆÎ· Ï€Î¿Î¹Î± Î±ÏÏ‡ÎµÎ¯Î± ÎºÎ±Î¹ Ï†Î±ÎºÎ­Î»Î¿Î¹ Ï…Ï€Î¬ÏÏ‡Î¿Ï…Î½ ÏƒÏ„Î¿ Î±ÏÏ‡ÎµÎ¯Î¿ Î±ÏÏ‡ÎµÎ¹Î¿Î¸Î­Ï„Î·ÏƒÎ·Ï‚ Î±Î½Ï„Î¹Î³ÏÎ¬Ï†Î¿Ï… Î±ÏƒÏ†Î±Î»ÎµÎ¯Î±Ï‚. Î¤Î± Î±ÏÏ‡ÎµÎ¯Î± ÎºÎ±Î¹ Î¿Î¹ Ï†Î¬ÎºÎµÎ»Î¿Î¹ Ï€Î¿Ï… Î´Î¹Î±Î³ÏÎ¬Ï†Î¿Î½Ï„Î±Î¹ Î±Ï€ÏŒ Î±Ï…Ï„Î® Ï„Î· Î´Ï…Î½Î±Ï„ÏŒÏ„Î·Ï„Î± Î”Î•Î ÎœÎ ÎŸÎ¡ÎŸÎ¥Î Î½Î± Î±Î½Î±ÎºÏ„Î·Î¸Î¿ÏÎ½. <strong>Î Î¡ÎŸÎ•Î™Î”ÎŸÎ ÎŸÎ™Î—Î£Î—! Î‘Î¥Î¤ÎŸ ÎœÎ ÎŸÎ¡Î•Î™ ÎÎ‘ Î”Î™Î‘Î“Î¡Î•Î™ Î‘Î¡Î§Î•Î™Î‘ ÎšÎ‘Î™ Î¦Î‘ÎšÎ•Î›ÎŸÎ¥Î£ Î ÎŸÎ¥ Î”Î•Î Î‘ÎÎ—ÎšÎŸÎ¥Î Î£Î¤ÎŸÎ Î™Î£Î¤ÎŸÎ¤ÎŸÎ ÎŸ Î£Î‘Î£. Î§Î¡Î—Î£Î™ÎœÎŸÎ ÎŸÎ™Î—Î£Î¤Î• ÎœÎ• Î•ÎÎ¤Î¡Î•ÎœÎ— Î Î¡ÎŸÎ£ÎŸÎ§Î—. Î•ÎÎ•Î¡Î“ÎŸÎ ÎŸÎ™Î©ÎÎ¤Î‘Î£ Î‘Î¥Î¤Î— Î¤Î— Î”Î¥ÎÎ‘Î¤ÎŸÎ¤Î—Î¤Î‘ Î‘ÎÎ‘Î›Î‘ÎœÎ’Î‘ÎÎ•Î¤Î• ÎŸÎ›Î— Î¤Î—Î Î•Î¥Î˜Î¥ÎÎ— ÎšÎ‘Î™ Î‘Î ÎŸÎ”Î‘ÎÎ•Î¥Î˜Î¥ÎÎ©Î£Î—.</strong>',
+);
 
-Æİw©XŸvïÇ>D˜=^OàÖ»¦Ğ%~ø«H©x³ÍmÑÕ‘4_0ï¦àÒBˆD[½ŒÅ·>ŞáôÕ/â¥Sû²¤7qO3@\ß'-Ä¯ÍMlv¿‰î	=:•<__sà$±i&ÜH47»„¯£•–D°BguÕ æ–&Ó!> ¸ø[P÷÷˜Ï+GW,fÃa…^¢õEæETÒËt­‹ìÂ7+K˜!‘ÒêÅPíï0dÊj¼=!á'°
-²¸4¤\Õ1qZ¸>(kòKišsgâ†fÆ‚ev_Š:YÕ;s:¹-Z~«xè[SO}áèoì9ñ¼B¼ƒÛ'?îM0Ûš)xÔº™×Ã±µ.(˜í•ÚUP^à#}Ìòäæáÿ+JÅVEõ	üBMÓ2fé/û]ıUXàïHûÅÿòüÕÿb²F^àVX+qÇ}ö&\¨í¤7?‰Ğí38§¸çœ§ÑÚ÷)®YBÛGîSÍ/ú¸zr¡¯ŞïÏ9ş—s¾€•f› ß¹ĞÌE~ú4o?§> :œt^#q-÷Înb™èûqYr›ÆR_şúŸc÷~w°ş}³ÿİVÕì·Õ@QpFçè¯lû°¹‹sfË‡qRê¡
-âíšàƒ³ŸÑ5‘Ÿ¶ôZ m
-Wø²`ï…¼¯uäò®úoE²•jŞs¦ØY}İeWp´u¬À)kpïX	I§#C}òîâ¸˜÷;ûAåäXê’íÃÜ§xår}pb<B/îÄàf­lÍŞC„¹—ª¸ODÆÂ“¾X]êaà—¶K*4œá‹p‚4^¶yGxI„©'!æI1$—66GÉ~lïÕ'iéDˆ•£aœ¢gÃÊÒÎyîÀÅÄSï=şàáqğHé…](7:Í]‰ïªá|òx‹XÂÔ¼Bº"{"¯ç…AßQqi­Ø¼§¾ÚÊÄôNMQB§x ¾:ö«3‚ûÌŠ²¦î_İæÚW»C±6òİ!ñÕañ A(+)«jQs³,ısÒ‚Jìñ/®sş/Îı2Õ€1jgc†‚¸¡ :ß}OĞgÓª4éâ@[,&õ•¥×}ûÌüĞ0WQ½Eèàšw€ëY@-ïË	Y¯ÁŸş»ïFn.û"pò|kn­arµ«ƒŠÔ£Ë­Â'‚m{Åò½ñ=`ÇzJ\%YY¦îú¨ÀÜ¹·kÒé>œW¦€ØŞ’S¦¿¨İ’Éoê;Æbì¬À¸¹5ff¾¼4q†+àãfxM§5¿¿EdÒô"ñó#½½¼yÎVÎ¶:†…÷„[›Õh¯W6ÜŸ—‚¾mG8ŞÖ²–zËƒ7•à Å²O5á£)¼¡—Öıî#´Ú.=Ûyªl‰tT×ÎU•,¼J¨Û­øßÿö
-íGíßáîßbîøs³_1—a×Â{ÒŒ5
-eê²Š¢ı3rÃ#ôæR şŠ^éè%~c’¿Ñ/çEìPß õ_ùyø~P¸ŸIİû®ˆ·÷7ûIĞî“Ã‰)
-¤û)>Ï“‚/'áuŒ@ïS)dßµ;”i¿i‰K§‘Ëø·/}ö9-Õÿ2±¸oëF}N`
-åË$ÃêµäjöRg€³—«(wÍÌ=RÚk©m;ÑŒÍjThô€S3¨{IÙ·ĞPVµ­¦åR”ÄÉÇ„ÅÅõ’Îü¶Õ§„ŸĞ çòÚ—„—gj+š„ÌÑšĞw±[(_é{]¯‹¢§P>±î$À‘€ŸãVVWèJüsÆPæ’¾™Ë…‘2ıŒr:Ğ^-,èkqÀªôEÊÃrH«û¸šD©‚å«yj¹s½;09¥-QØGfõóv*KÔàé—M+xÄšÒ¹èï]¦—¸®£Ã@ªûº¦´6l\°"õ¯µW\fkl»ª}xÓ:ŠNe¼;ÔÓ ‰z¶k8›`İhÆ*wÀ€h[ğ³¸eü‰Úû}4‘"qS÷bËQç¸)÷Jx¯l{•HÈs7ñëjš.6~ ~wòÏı£/	øÊ>³$:ñ”¸·¤€3ÌõiOw'Î4ìfpá¦ñ4ó’>ÄËêĞ"\«‹€$YïôÓ ?êDaÊÃİ¥.4´æÁV¯í–¬OãyAîN¥D—Ş›ä[ê|‡êîNÜ‰<…8ºØ‡|œ®siæì‰ÚOğ<Mı„¦$šIæï}ë6Uœ|Az±ùzÓC< ãl4
-ãğ‰É¢L…ús]PÄ½İÀ¥bT]jÎƒÚ)°¹ 6í9c·Éèñ	.+o9ODêéÅ)'ìÉOÕJ6Ë#i½ƒ¥„İ®±ôx¢Pz›c³˜ó-]„d®$¿ÂşÊïcGqö˜TÒûY@RîZü„Cß‹SìŸá¬XåW¢õIöçıªûOÑ÷ıñ,¼_Ñ—z½¹TS^Î‰Şïc´éñSôş¡ï´Êwïß.ÿˆÒùû qü‘ Ş|òalš÷ª°í·”•÷w’hü'eE{ÿxğ<¶Å?Kçq(ç»§”å~Òv	.~ÕìoÍLÏP»/'ÕŸ“ÔN_c‡5æëEOÉ^ı®>¿ÿÊ€ù/)+…å?“UBi±†?îHÚWÜ†f@{Å9p—=Z;ßÊt÷ZÖê‡“MN<ù|6Ìû­f{M2ÁSiißTvü»>C†b)µÅš*OO³Ã¸'Å}7¼_K÷¸My/ïA+€ ö˜£²±-n™ÓŞLI{ùªúCãå½8è1©'EC®õ€¹üŒšµèÓ-i¬ğÕDñüÀÍ×Á!`Né8–¼‚Œ6=¦Ë¼]FËVñHwÁ[(q÷7ØiPD—Q‰w8;Äy(ü‚Ÿ7/³ĞàĞò }Úp­™9'ÛÊãFPUTÉßdää:jŠİ¦Ay±ÕÈt³"aÚ=Øn”0¹ÔTpÓ›^Lu
-³oß³Jôú4Ø[|½}EáOøM~¦>q:ñ«#î«IåÀiXP%E*µ¹$j!ëYY¾}ó!™FGÔÏ~wòO’=¾æzP‰PDTÏ’şØ¥°$ocÉÍ1¥Ë^ë»ØÓ†2ï&(7t9ß7ôü•]8îçVÓÜk²’U%âÈ´kŒÁ:¤q+…&´¾ØUVCÏîĞ‰D¿!ƒ®òO ÛïRß•‚Ò,{¢æsá®ùÒ&íšÔ»‘W¡ûõ	E‚Ú3«A¨JVÍMxğ
-ú>µĞéœ÷ÀoöÚoHpT¤¥Xœ	Ff²‘‰>kC¥8>Ãv1°ï±ÛB¬ÌÀøÉÁõF.6‘0aÚL¬Üô`lÚß8i(ßDûqÏ_RÜÜs»õ*˜]$:é»~å²—l§ıÀæ%É¤§gOĞhĞQ‚&•¿Bf{«¦É®ŠşahÓODç¿ÿ"ü,ßãå|,õ9©	å;Ë”:S"w‡¸ıìÍÿkXE—>$øE:)Ò	¬ŸĞ„$!ù!1î$ˆ­Fıp‘¶«“Ò"ïæKH…
-ë¾¸€/şV‚5¶84Vƒ¿úşp¬ş¿&k³¿7.š>ğœº?t¢f}›%_Èuø»–Z9…_}š³Ä%ûÙ=ŒôêüJU‹/T•ùBUAgÉ‡©aKyyyÔÌ7æµyÊÉ>–i)Ë·¿n¡—1&‹?d6«İ}3r¹]‰sHÒ·Ê§n5ƒO1µuK„'fÖÊu!Ûj¾xÉ®n^’³Ü²$DzÃó@^8Ç/Zq¨
-F\]/ï/¥é¶a}ºÍãúæÖ¤¯ru.@¼,P¿zî`ú¬YñöLˆX»)·õ ,ãâOz6Ÿ°¦Üù–³(Œ?!—Jî3«6èŠ£”\§À¥ÃM	°_\ÖQ·h^r<2´à.qƒ¶®«³rRå½}iÈ,¹R/ëë„í×`<Óï©÷ŞåTë^ö´šÈ­3'¼–ÎSy{ŠÚNß?²g±’¨xïÈ^-€ªœ}Úc7"ÎË43¥³Æf¦²ØÏê_õx?l¹Y…TÀ’&aêKÙ6A7µæÄÇ’õ)PK5:@È®MGÀ“£>ßğ®Oò±‚d{`Ï4KÁ'"ãîBOWïñ¦»Úpšğ›ä— — eµäÎ<3—eûÊ«’¹Q‰T”§Éz5ìA™XÖÅ«$pÍ=ıúÉQ	OŠ™í^š‚¬³ÛõĞ#z[Àu·©ñõô[ä‚4
-0H½mâ ©™8
-#I±òß›·VH$š!L$Î rkŠŒŸ†' f ¼dÔÕ.\€«“õîÎ÷ÇÄıš¾8²ıú“ôÅ?Ê àg:Àß½kû²Z÷A`F~§2!Ìvìoö/2àÇs?lßBIìm»;Ô•.Ú¢|˜´orEx¾:j¢‹âYâi3a(+("Ñ‚vX•ÛD èa#¾Y’söŸ“ÿøLş/ìÈ¾ıyŞ“nİnÑ•BË¼ğ´öHÏŞŠ‹}=<ŒÏ 0Oıh½¥Ÿ¯ï=c±çJØ4ÚâHÃFÑeùsŸ ÀO?ÈPâF Ã¯±îÑâZ(a©cEŸÃH“ŞÍQùZá¬]¶İv¼v~6ËÁoñ„QÆ}â‰CµôFFhMF¸•‰L0^ÔçŒ‹¼XE&†‰·×•›*ÑŞ´°ùk—~s¹›mÄ&”›å–y¯8»¬)ÑÂB,j>Ké;p_…»ûrs
-/åÌ‹,Şö•K—cJ‘ÉKş˜%ü€<ÒlÖ|Ú·ì„éŞºÄ ¿Oã<\¢ëUÙî2(Æ´4†Êsk.’5rÕlİ±÷½ŞïlÊñµÈû¯C ÆóæqábŒfd˜2­Ø}—`eLN=wx!ö“±‹-ˆ`»Ô_ç{Z8:9ójtóüš•hG N*«%‘Wav›jh×GêQ{3©9 Teë'ì;Eûˆœç#¼­ø0­ÚZÈ8ÉÀ¤¼±ğ¸çSM‰6Óé^™}à¨QQTˆæŠTY€Ğ# »zÂnyOoõûsrÎDkím~·Pãè~é•Axìt	‚»´Úqİ˜‡éVí~'1Ş'ÔW¬•±+¼R Å€å<›É²Ûıø§ø0^tkšÆ¿uÄçô'X„…¹ü—4á³à$s¾,dø±ö·Âlùpıó[(âÎªğŸÌäv”ßeıt¡-ıL˜§6ún•.âÕéCn½o9ïæo‰õŸe oş ¼ïtmõ68õVèY;ğIßÿƒĞÚôƒÃ?¡ã‹Î’pÍ‘>®/\g)X÷†Íş‰Îú8¬€ïB‹‡»Ã·œèA¯§FúÖ¬dã¿S†wBÿKÁı¶˜á‹lş±nR–œ}ïÈ/]ç6ºX_y¾ü¦1	MÆ| FÈáÒX`¬A»ËP¾5>"ÍY¦µ¥ñÊ`Ë¥Î˜@<›Zèß¹ÄÓt¬5 §0ÛTh)’3ÀúIâ‘‰0&£Dæ˜1"AkS¶ÏÀH½”1ËpËZ÷qW¥G!„qH‡›{›İÛ¾wµz{7z]D@à#JÕè%‰b{rş ˜–Ù7q{°»gáë<E¡¾²‘‰Oô©Š=[t¶(p2ÄëĞ-êºÄ 7—s–Ü,ÆN0Ô8H‚|¨ÔõQ-mßšUwÑ·ÈÏvÑ“‘_?G¸fÂ›§eÆ`ïu"°Œ¿eã÷CwõGJKA$”§¤óõcÅi§„ûCüıŞ.àÏÜ]'Cøuà.9ÚèÈ^òT3i82‰Û¦S_.Ó´hó˜¬ƒ ¾›'Ñ÷˜Áoãçû2“uuaë¤xtÛùç0Úš¦F»ôWCL}^À¿š®ó	Xvv ±ôÙ§´ü|é­ DW×™Q"D_N&çµÙ†*>(o®ª¸´e/€dºi&v‚[ Ëhå%ŞÌ¡L¿Wá"¦«Ú^ĞÇs}¤ZBŞA‰öOêf”MÍ&y)–Yz¿.¨˜,ª˜]ü¾I9â|U-pòŸÄsx7‹7£²ëÅïï5Èufôı¾Êzm]eUÇÙ}<© Ç°që0„<zÍåSjíÃın3÷]""BÍAn#Ù¼$ÁTHf,,60%è¢«óª¤
-tkw·ZR‚=Ø"üdŒ¨ôI³pØWÍáÅBáæaÊinãÍñA-ÔüõÖ¯¶Û¥*†Ø´å°s­¹¿t‘}EØïˆŸ8Äşe×/(kÿŠ²4TO£v«¡ÕIú.İîõëùó€¯ò?²¿¹öO¸ä¿a M‹À÷ Ãïƒ¹ª9¤ÕöEŒÕ'ç¬?^­Öj
-9Å˜ò“XnüW´è{ƒ€O‹ş8íªÛ×`Ş^d†oÜÒ‡s¼İm+­Kı¶’+óş\³gfµšŒòì/5jÙC|	ïÍáhW1§4/@B{Ö¥fk}Ë“İ©ü9E^œ#-6ø¤$².,æTù® -Ø‡/Ïª@ÍÒf®!¶!¾¬¼Ñåş®ªá¥p/Jäº—xqXSKòs¦å†à¦sU~ŒäëA7¯;¿½) à‚¦?1_7¢ç¼­åô’Ø=ğæâ¿nštaA>ƒ bY÷ ÏûúÜDV ®ÄD7ù
-“£:Zç>ÕÚ\˜Îuâ·WîÕƒFë—+Ã~uSğ†{ê(3esÏVV±R½xt@{_£Oö{œ¶¡­‡OéÌ2™óÎMÑ,ÅqHÿÍ{ü1ËüwŞ+…ähM¦ó¦bÃ©å˜Jqì©k4Öürq3?K7%¢z``|AB~ÍÁú é’|oßÖÖ}Í¿‚uñFK€Ê“öi®ıIG3é¢N¼óç'½şÜåE×BQRydeî£ˆøZÄR]+`¯ïò¶Æµ•ÃŒ5NRqÁ@ÜÀˆ©<ˆÖ¯Æ(+¦Ç>%ØoÜ£Á`ÿ0D¨6ÂÕ¼™LdwÂ_+K`éìp_ø
-ÖqäN&=À°OC°nÄ.şFâwlm¤ÖI8Ô±pù¼p)8ÍŒ^áÆEqIö”BH­w;:jÍ`,¶ØÙf^¾à ÊúJ„bJÅA¥s„â0ÜqòûBâ—–>ìøıò<¾çİ¨›y?ü@G›×§gï|”¼E/’6òöN€ü¦²ı2¢ô‰…®_Qôk=i˜²–´È
-~‹-SÉå»ô¾D±²å–!¦ZZş-ñÿ
-iC3Xã?¹÷oáŠ¿÷ökn³éÜy¹Å¨é´L5q{ÿ)
-3tñC¾3ğ¡—$ıË|~Ü¤{èóPø
-Çÿd*–m‚ZmRsæ·~k¢‹ğSØ‘{Èr‘F_×Í i™©;uÿâ#û!aZ>¨ö;XŠ~w\’s~–ÅÈñ0ğÛÂÑ_ãÅ»Ær?Æ‹wÃ9Ÿ¿.®;m¤IıHÍš‹ïI­ÙÖ)¹?y‘IEëŸH$œ¤FğvÍ¢¾º®MSä¶Ô	üw£r£YÃ&|_”ûæYÀà»Åİ¾dhşyØkŒû=Š‘ıĞ¹dø1¸üw±eˆcÔ
-UëÆZQ7áb²ˆè.[)çäºàu‘­Õã&´+S)ót¼lKyş}d0Ó¸0}yõ"¼„²¯¾=\€`æ½YÚ%Òq‰œmŞ¢p¸+U:‘,u{e¢–et/ŞQğ*Ã›‰OÍ]AX:‹¢;¸Ò`.˜¸LY¨*mQ{ ÆEu¢¿$¿q¶Ô¢èøx‚H:›Yw3Ny‰øs‹…áîchoH+6•<¬ÂÂ{lepõıõ°e¶}YÄD°"/û²Ø‹ñèœ}¡>õ×d¤ç2&º‘£s·¹Pf¸®
-íóoÕE<Bn„8'Á^ñ$`T§ümQ‘q!õ÷¹9¦ê¾ún6O',êå0O)ÆE½}ú'Ùş
-ø3ÔWfNË_nœYŸg²DqW(¢¬Ë!­Í¨nëâ¿¸}|²bD/¿ú€Höë˜#ÿeªü8–Îs÷øg÷J'0uVYw	b"Mğ­ñ!vjˆ8gœôá"¿V˜3ÒËŞóŞc3~"YBkPÃR•sŠôß˜;`œô¢	š™¨UbHºÂÅÄæüÛ-‰³¥GíVPêiRíû”ÚûíØøx¥ [ô3ôÛ+"!ûĞ’`½Sm˜$¡-z¹`—;Ò(\W^q»7.iGhğÊtêI­i£e}H¦I5úèVHØ!{vs¡OöÖ%€$äÜuíT¡¦É;fë^œxtx·Ü½W8•Œø}Ä­Ãñ4¥)d0£ã1×h¥x;šGÇ€·„O—{`èM§³ú]qÃúqá[W1Sñ pªÉ85FhşuĞ7[À1ÌÿDi†¿³	Lõ±	Åo©˜"”­¯N¢vJÈ:Ä•šRè¢8‡GmÜ?Ôá`èòë_€ÿ*{ğÅÀü•=øhÎïö@úÍğ&¤_ØBÛE¾^?×¸¢i }XÃ	ÉÏTl¾ÑübÓ
-ù}ÎæyÌá°“êÃ†ãâ~ı¯øyBà¿ê?OüW=âç	ï˜Ö'{+’ooK¢éÂÓ¤¤B¯¨“šZè´¦IÇğÁãšf¶ÅÏö<{øŞJ*=á4%‚ 3‡æNC4m`$4@r»Eš9ˆfŠ²ºlÀMHõjşÉIn)$SšóD»ÄÌme¼6~z“ªá}l"ƒş0]¯ªC/]ıÇ~ŸÈ'Qr* îÖŸ:Ştó¼Õ,)Å{'sş-°üÃ@İôá“3LÕuİô8{íhF=÷«óËÕ jğÅv¹YÂ‘‚R«+µ§Ç³Ëx»k† ò¬ø¢jÊ%eífGÉ‘=iÁºêõIìbgLWÍ(À½\SÉ à®­÷&àø|¤·Ë-UÙÁ÷ÈÎ6Òà¯'üg–}üÓÉË¾>²úÉüÓ¼_lãî»[_~ÓdÍ?Ä4Cûìçà¾1–j¹è$'™OBÑC{sÎ×4Ô³Ó5æ;)Ağò›_=ó‡NÁš£mº÷Å/‰8¸épLZ­ôæ¾Ò/~É“ YCäÃxŒZÏäà¬oº‰£¶M¾÷>îşEÌJÑıÔBstè¢ÛåušÕëx\wµx1È„*§CÌdÄ&ñhîå[üf½±ßÔ˜=W$‰VzZôµ•í:eq0á‡¥&TÑÇ.Â»ß3¹2Bo,Gg‡<,Ÿ±^‡a‚3¯J)ÇõHÛMïq—,¿ª'¾Kû·ƒÎ'ïÔÏÀP¼&½Öü½¢\]—æI“^Ño	Ûº¼˜;ÚbĞZ¾±‡+ÇGU5„˜0
-í'óPUáu©ë›ËM°}âÎâ2RÊÖÕ›:Šº
-·—Âx‹RcAğNÚûs#òT´cá)³‘ÖêİĞøV÷ÉŠš¶:%¤±~oüDïáSqş«"·­ˆ›”=',(h:	ÌŒ®…¸»³Ç“í€£4·…Ô·°m>Fızò¿+”†b"ß1ğÇQüïâ¢h¨Ë|œ#ñ"öıö“”Ï
-pN`|F°)A ¹ÏØú’ MÑ?KÖú–2”¦–5½ˆ˜¯K9 BF\î{QZXyøy‡å4®y+chİînpk½*ós%P÷c©[£ÀÆ/°(‘¨Ã–bó¦„`»Ãçh,úÚñ}’'Î2­68FE 	Ó.êœ6ŞV_İ]›nÚ¸Ó6ü~Ş`±eÍ- _	g2Á´,¢_ÒOâù xãE“’@Î®K‹E¡î‹
-„şÙèg³FaGG—8 à¢‘ZäŞn6±ÍÙmLL°»õõêéÕÒw+×Ë]UótGD“=Î6®¶F•¯ÈÔò@•6”‹¹ş.Ş¸ƒÖF\3y¤9øhÆ÷™ËkâÇ:¡ú79ÓÙ]‘ş'‹YımÉôÁ\¼ú•0ñIE†nšŒ×êAñ×†•[ÿsWföGW¦ë\}É¯Œ Ø")á¸K‡á
-Oğ¦Ğÿyšwl:	2ØûdcÃ·LeMò=Ó†Î)ÿ=µí¯‹)}ÓÄì©}kjûâÖ¬Ó/9Ô?>5ûCµõĞlm“Ìo“Œ~²‘è-!R¢M»¡ÿn?n§OPI­¶Â­F­¹ 1ßÏ¶•¡G«¶ıËbı;I)˜íŞ¯W¬‡7dQˆp:$…ö›{Cthß¸2ªóWÉS¢½‡1ãê …øk×]–ôég}Ji1sü’¾¤Z@Uú±cwŒŠšû¥DÂlôzÏRO•U-î-jËŒ%u¢|UK©€Ö9"ÂÏ.ŒB723ôXÛ‹ƒiÛ¥Ëø"øÜ\¬ú`ÃÁÑNeä-§)6áÃAnŒp”°Ş²Õ
-¼Œ7æ>åA3¬k‹(ç@PÙ^[[CE ÁİOaoÓ/¯MâÀ£VÊ¸i2sÓ××i´tAcO×ë #ãbu­öƒ›ßR9?’øH±vfŠÒ£ŒÆ½Óp;ç¼úÊŸÔX®¨„Mu8é0„<È |ó5FyNM…Åg­I#îã£Çòâ6¢ıÊ±ÒíşäN[j&BKÛ´—=N	wşÆ¿’4íËâú"œc¼Í5­bºö­î=9‘%q^H“ü|ß*³á²ï”ûœãwˆ&²˜i©Pµ{’øÈ5)9´>€ÖDNZ6^é7qş¥¬oÁîn”2c+Ê%İ¥·²+îeBbÚ=cïA™„Ù6‡5ÚÅ+ßû~Ö•,#5í…ëŒ9j„à£Ù•¸êCÖåê©W‹Ò=m¼Ï­ELÚÄƒSê‘sfÛ½ÛÕlÉ>* àš­<¶ºïô¹+©Ç~OJÑ_šPüŞ%LcyûÛ"ØògÑïâjŸ\ÌæUµ}K‰üÍŸl˜îƒx²û·ÆÜ6Õü”÷øÌ]wdŠ“úQ‰@ûÉ‹Ú(ê³phÒT`ÚğvmgŒ•¸ÀßégyÜŸø>ÓŒ‰Ö…úşôä%èem‰1`¡! ^¡ÎãÅßÃş¢t“mŠ–0¼Ş/ßÈhu°È6ŞÚëÑwq¿¯Úû>½şÎV]({G{¨)ìÏã(F…{0ŞR¾#¾²aZˆn2Œ(dã*ß(rf›»ü˜W´¼z‡¹7fh¶nQÖ¾yšÕ{ë–zÀ{œì9Ì¡fğK/Òˆ¿ÓÜ#P˜‘¹Ï%j” —m~Ù•kÀq
-µÜ'ÊJ2´¯¥°µsº–ÖwôÇuûd¹0
-©‰ËU_°™á†tQÁøñ	eYK‘q 
-×BÛ¬<R†¾Ñp™ä£uTûk@‚# è/­B´ŒÂ"‚#.Ò,dÒÖ²¾ı0	„&na!‘bÃóªÚ i™©6ÓJ
-7a¤MjqéÑPÉ}sÀ[­ÎâŒß„6—ç^fÛ‰^¡kàq­Áiö¾'®ğº ªìµŠíF·/µIäqıTÒ7òJŠ¤­7PhA¦7%$5|Rbê ˆ‚j-‡£xàV[÷ç9XDá	Wã€0ÄÓÎP¯17M±­µô!^z¦;a‹e ëŞ.E?O(ÆÖÊô…<¥‚O&èØH™QŒÜXsıxá‰ˆ¹bÆxÓŸì.hÕ;Á4ÃI!†îEÓ›şy&È–º	JÒµkhìïĞ‹)ZDŒ·¿$ŸR£¶$è¿X†áü§"›Æ‡T¿J0A¢ï)æçòkúƒM•ïšõµÜ ğ5¥´ü’áîB­èÔ?¬\kæ—uH¼.[V¸y÷~·*ê#ÅÌ÷—‚z¬_—Eışà_İı¯nüùİÿ4z59–ÇUd÷eÌé)ôrrav€lõäu£Ó€µ;Jai
-ÏÂCJ·ä[Ôš_ò^c‰çËeñ²‚ûJd¹(c~¢Ón›Ë/©GøUSF.M¼ø¨~UéŒ)<¼R	cƒ|Û•OÎ:ô›¡8á©•Øáø0M¢ÙK¼òZìò¶´†Áğ…óÉKJ§¤b`MÑYüÉœ&Åìa¢1ê
-ÖĞ;î øeæşÆˆ@RqÌıñHõKRê<Ëö.>Ø¥Olß°I­»´–æ…/·U$[ô¶¥nã¯èÃ[1ÎPÍ¥ª ‰¡ uš	¯kèù>îµ"vŠ(»öå¾¶c‚nß	£ÊäOäØ¯>à×”Ç$ø½Õ1­#§Öïï\Šı©QD†¤ÇAï›?|Œ¡r—ÕúqÅGŠ÷d[İ­İÑš	>dãFBaæfd]Ï§T$MÛ6èm
-Ér“!B(1ˆáö,	´Ş¼¶€İ{huÉ÷Õi°°ñä´NZÖó’!É3<WVÂuƒo=di<N R¼İV5ŞB+Ş ßDÅù
-["„€7Ârşíı¨G¾XÃ¤s£ŠåÉÛL#ÉPAq!?Ë»®×OáRŞµdv8‘f#Hx2ä ZoWjg`¥šÅ¢åMà› äCÑ%(cãĞÈì9×¤Ñ·êÒŸæ~s^=awpê4—ç¶=9CË»8„Ñg[—Ùãª€3^HYZÒ•¤â^z,Å¶:¹›ßà²Å[ÁRØ¿Â-=›Õ!i~¡Æ¨ßùß˜6š¦/Yòÿ×_øÿ÷ÿ}úÿóÿ5ıŸÿÏyı?ÿı?+àûâ‡ügÂ¯¿.bl—›ğ“tüqx0Û‰u’Ğÿ!¨&yÎWçÎ—½Z¢÷šàA·	jş¸$Hc9¼M¹÷ Sa#!t
-‰ÊÜï:bñ~Ù®Ïc#`H'£ŒûvŒ|¾Ù®ú(1åO*œ|ÄÆçÿ½Cù¸¦Xí»‹ir:r²vš>ë…2›Lä]&¨ö-U¾)¬É·Òîúõ¦¿ú“OõYƒên+½¿¦õÉÜûv°fèçñ{G˜Í»?8'’SÊp(ğ[øĞ¡×«²ÔÛ Â‡¥ÅÈùxÜÜ¥§Ô
-ş.ÕÖ*ãÉ ’Û‰­bÌ>GH[†šqDûçi~ï3âŠvÎ>B¾¬Û›·îPÇw‰úCç›ùó˜…ÂéSğ8-	—®±`>%.æ›Ç×›?Şõß	L¾+K®¸[;äNİâô|ü@b},!Ù6ıRòÛ°íÃ½–4±&ÙÑiù[”óó¼ô½dr¤“òªE!sröâ]LÌDXP³—·ñ_]ˆ%k{¤ãA…T}á°íõ¸–2rï¯¾yÔZÖ;È?ÙË	Í$LœRX¶Xæ{~eŞL5€ˆÒøHN¸GÁmš6ŞI5é¾Nä€¾/Ü\*&‚ác¼¼‚œìºBCo´°«"PK¹?†×ë–¿;KÔtòãÈl}ñİk‚§ aSâ—bôğwğ*X>
-O†]ÿÊ%èItÈ³¸ßb, =ñĞò<‚.R¬#ªÏúÌ—(â©ƒÔİ6û˜>I¥RÈİÌƒ²,$À°”ğ±'ç~Vx  ëßûîû³o.²èL»Ñ×Ã½ šK‚,ŒÿKa4õ×D=e¾\ËÍ^ávsM¦ØhN¢£,Ä»]ñç¸Y\P`eÌ	ÚdW½ÌpÎÜ‘šSàª¤/¾EÀ§‹üYÎÁl¸aâ”x‡0 skU*å‰ß]ÔTÍàMêëx'•´}fK å?5!ÌÛú+Æ¼Z“Ø±\±ˆÏÆúbúÇ2°{_Qør¬BZ\QÙê°â¹¶¥¥Š.àÓòê!µ½ò"dKnÈ·áµ×ÑÇ•¼ ı<;4Ù’súÒŞê«r*BÏÎ›5él"‰ÈUõNÎ˜ëÃ‚<jSÖ9#{1·˜({ŞÄæ¤¡O¹şSÕ”h^‚s×à˜¬:uÈĞºşu¦V%ã0eÉ/Ù·ªè‡ßêäBù?›?Â|–P­?,¡ÒdĞÜ,Ã:náŸØ æg6 øîáÿğ­ÊûàÂÏ •×OnÓw××© šØ|ıør‚àÎ.úü¸u×?ÔØİŒoÅÜhLYùxCt«>tâ³p"ŞñH¿1jãKÒõ'PÛ4§ü!o„úõØŸ=Ş÷§ş+ïûÓÿ—~cìÀ?¢ìFÕ½Ó—€(ya®ë½I‰N^«ğéëÛ.Ë^ëûˆ¿8Ã2®%‡#®Ù*Ñúğù”Ù¶Dœ¹¬Ğúüı¸ÌI÷Ñõ~òáÒ¨od‰¾ˆ¨Y‰;ë½sŸÂIœµ0O˜’+w/vGÑ²Öq´¥tZ*}`n.QvÇ³¢égØ Ñ¥§„“SšÒÄD"éÌÁw•R(àùîá~~{§	~d[*]ğşªcCóæ{Í¥éº~½ÂÈpÂãëòv¢ÌQƒ<x^-ÎïWr¾ïkÀâ;ç˜y7GK›bxõòÛfëøå>J²dx·«÷rMÑLÉøÉ½D\î×¢\ğIÎ¡´êŠË¶Ààè2À÷î‚¥Á?+FûópÄaSGeoq˜Í]»'l3F)ô¯N'(bÿXÿåëÉrnüÕFpÀ³”]Xô3îÂÕ<^òmÜ©]	ÿl’MdeÈÄ3u~hºûe#/4 m¨q»z‰G‡™8»=Õëz[ne§.ÌC¹àÌ•¥?ë†Ÿû*¬Õ:\Tİ—a1E,Ob“eÓÂ°ù.†Ö_±tÊ„&M—kMwŠ‡D‰Ì€,b(M;8xçØËR|Úæ´È÷;¨^š«íUÉÙòË§ëæ³³£½é9YÊ„Ã¦Å’“Æİˆ	Ò £W=7†|W.<_‚.9ê¢èa6×¹wˆ€Ès@°»ê®Í)d±è}Wz¹#ØçœG|TkÖÎ@@Qz¶vsÂ[ıÆgQÓaë…Át#*¯m¼íTêãé¾P–Ím¹-zæ/ó¿¦dY#ûèÿû/ÖÏ
-Ÿş3oÆãS$¦ùµHŒJS_şĞ’W:Œò/Rÿcğ7‡ı!û­=,ä½AÇOß¾şVK”
-·ÖŞÜAYß×¤0Í·Ê)ü—¥©?|¦ıúğíÃod»Ù´ƒÃ¾ù–£ıûc5­}ªË|+.£rïô[jõÛ¾,ıCU›¶Ï/;Ÿ@ß·Äåó¿>AıÛg'öÿî3 ®ÿJ[›>iœî‹Š_Tq¸½ª²‹é!\âÏ@%ª7«Ù÷UQzÓÊemZl/Š&.İ×¤nºÅ:Ü@Ù
-«Šv/jHSâ_·,i|9&§31x€ºg¥¾É|†Š5}ëT9}jÕ=™:ß„td%ÂŒâı®ğ¢B…UìM×)÷ği\bug*%ğEÓEE§0|Ww"Iæº^\’2ND+F!pçY~‚©ib…11'kŸSš'µ./W—SüGBİi¬äé´x\$®¿.åÙ:Ç|¹?Æêq%`tFì(É|³îk‡¨WÖ?
-Ohü—yâ¥c”G€w×ñE™üŞò3ÜüŒıÑğÒe³QpP·Ø;#ªÈk…ZËíÏ¡VM}¥\ewêXI<t-·»mAÉf´ŸÃ2*9öníRµ#¨“J?©Ñ!sñÍb¯K‚¤JqK¹­‹Á§xÓu­áVb¸Ú>be¼Ü3Ü[0ãŒ5-¡UƒäÛ‰„Ô¿vn¹İÚá2]£­5^‡|¾œN­a÷ĞÇ3PèaÓ«N±)]ƒ0Äiê(r
-Ş„ËÇ£zF'9Ä5™°4Õt5]"åYq­U³š™r›.Ç>z&voBÜô‡_Kµ‚o@ ­¬éq„£yÈcK	C—%“ö¾Æş°Ë†5Œ}2­-Õ·M\çÙ‹I»®ìÄĞ€ˆª!²yRÛh«¥İ1'OÑgÉü¯ O:²ş™}v§ş9Àñ·"»ßê°¨ê—¡ô¸^Êıâ«ğ»ïò‰ŞN<ÅRØ£·¼{p®FKß£·ªí=y§¥y‰×ÎÑş;0Ó˜¦%BßBûËB¨oX–|ğa”ûmÁÉñõ ÆŸR`¿şıÿîÆÀßİù¯Ê9ÿ¡šó	#è¨°obzbñÀwŞkJ¤S®Ëï6íA_µÌÚÌîUrWn­÷&ÑLqçH^ædéUÖ<'×x‰½,S
-À´‘ñN‹®5ÄĞ6¸ù>J2#ug=¢"RDRœ¹Ïd_A}bÛwóñ<â³¾¤	³:‚Õ.°äíà±§ÉÄÜÔõÂÌ$¤§‹FÀ—ŠT¢"3ƒ'^ˆaDÇ8Tğx_NËÃŒüc‰¥Óî“q8|ëòÏ¼0Àaù ~ZAl”·N¿ó–gGévfÌÀëd²;ãİ¶SV=³·•mÅ{ºOµÚ4§…1œ¤¾êf”lq°jlÉz/Q÷Y î <ºŞÈo%İ?¯Š Íœõ,¥ûQ¥<D¿z!c­2Şebà¯µœ©¯Ò-v;È'AUİ†t*kHCY…+4ãâœ·"Ãèv]°ÓùdVv¢]-ÃÍäR–¯\ á•¯Ü®ÓµÃ£mX¿ÚÍwV¶ÖFsJb=PuüÊSÄ‚k&Y7!İvÒúµËjqojYÕ  ı#_í¥OnaãÛ=+¾&zÂÀ"
-L1ÑŒ¥¥ %Uå(øè²·‘HS‰6ù—Å z@ëıU~¶ŞÈìÙ‘ÇEwòÕ¶X|ŠVL6Òƒ‹§wV×tÌ-ü!ƒ¢V¢x‰Øk¶ĞnÜŞ¢Â¿rYÃo|MÊMS¤mß¹m[ù4‹´KØ‘Tôx¶qÿÙ7C_ãÈ¦‡95/jœû}jÀ&õ‡/°¶¦s²CCµ:ØTOÖÃ‡\«møL?ù>7[ÿY ğÌ*Ú=‰	¬Û´ èµT¸Gñ6šş:?Íhx$¸"¼Iâà6Zè¼Ø§ğRï4ÿ¹`ĞµMèŸ<Ë1Ïœ,ç¼9 1´ÿ¥@wB«›–ŸÔÓè1ümàÇ¢ßíğ5ğ%¡I·Ê»Î²xÇUá°—
-ÿ'öï¼=‹Í·Ÿ¤V±#µoDğ=’/n™ÒMNĞ9¬v•Õ#Ÿ<9öâq¿jF&ùq™½ä¦Œİ¿%cõø\Õ´ºå±QvtŠÉ<." áö±)îâÕ•è£¸Sşªš…/â'¢­{½«~‰¸¶×¤“¹Öœox3x³¶õ7yÌ¥÷ÈÆ¯ø:Ş^@é\(SÑ?‡ö±²¾@üÃ_Ø "ÔşN­^%â'›'àë"ÖTÕ%
-%fKâ´vP‡—GcVLf]™	(àvSÙ‡?4kĞd•á
-êX•/ºeQ¯– I¿Kü ª¦z«·	%:5x^.÷=#š\}1·¯YiŞq rrµïË;¼ö¨ä«øêËLÀ³ãÈÖÇKÈ
-·Ú]fx#™ÅgĞ¨¥ëŞeP7†rnZ“ıC6"
-ü-"mŒ@ßö±Ñ©ğZ{¼Sê+¿#2É±[û'›zÍKí;‘ä¶ÁÖ³Ú9¡nÈœ°],BÀ™»GÃãñfÁàuu¥bòÛÅì5¾åî^]¿ÊÂ§E
-NŸ›Ì§¥J/çR¯œ1À„ªçC62+‡íf(°´›#ª'®Ú¬m˜|JiúIT¶Ş?ûÁ$lätõš·•Xûq¢!O½İáğG#Ü…v2÷€Ö}½ğ‚“mô`iÆĞ»_t`5å0ØÃf/É{wÄ&:ÇÄ_ç‘	Ã/l”¦û¿lRú[&Ù_Õ"úO¯?Ô‡û¤oü„ƒ0tqüë"ı:·?)é ñû‰kkÜq?°€ÄaZ½QJ«Œ÷-ÔTğë>3nºZß„bóuéàor›º}¯WŠ'qo5ÙÏs¸Úße›}/.ô5U¾(7ç×ºpŸZqè×Ò¡;lxÃVÚO*wşºÂJâ¶”>/N ñ'	ÙÒ6Îü¾ôêéœM‡RQoN™×şaù•CV
-_V»¬±ıëÎŸt™_wn,äV|ë‡âg	u¡ı5Õş[¦ıÇˆÚ ğ×Qpòõlˆ|¯² ÜÑ‚kÂVXˆy‰ÓhsŞøàÉı¿ r0cçÅ@ÊïC¢'Óièº÷ç]…›MZ²QğÂ(ñr×ü4 p÷±¶ ã#)G<ë@rp5¸¼LƒÀ—V¥÷ÊILİ®AÈS…ø`”Í«Õo;›kTX©Rí·³>l– æÎT¾‹™­	j8ˆ„šÄ”û2§@®•7ğJ.aÛ§u²dÓ+…Æ¦kfšxP£ÄFá`(‰›¼²6Ç(ëkJ1’ë»’Ø«£š¶ì|Ğh- S²/o‚5³ó¦Ôä2eURQ<Ù“ÀúÈÈE5Òàu-sk=Œ7=±wªm‡O"7:0î7ü“(øÏLàÈ¾¢ÒLÌp¯ë%"ÚåI\¤¸d.™aÎ»‡ï'ló ±ïÔFJIÂïaA$%Àª×O•dc¹ŞSé}ÌlÉ …w)^îH;¥ÙBÎyÆİ>QhB±fáÉ¢¼…±Q©¾¸÷COG ×ÉiÂÜGï ¡Ì‘xã<üÇæŒ…dŒ]!Í³ÅºŠiQ§®©”.¿ÊÄÑJèİ¢;WòS…¹‹x€~bœUê«Sˆàªˆ¹—ÓFô7ôB#ÅÙÓ``¢Ny÷æ÷õã¸+Y_™å®äğÇ³ó	&Ø»¨§u²Üpˆšë §KOŞ%O]‰¥äÒcó™2r6ı©Ñd–C‘'²@'³o÷ş%a‹Ì­íåÿeY‚9óê[ÿe0ı÷8~pzòÿ§ëÿ*œ–ªşÓâ—½9ä.ò½Oı67ôõ!îÈéDÃô>´_÷\ıÄ¾{Ñïw_ú[ÜşÜÿ·o?ÅmàÀı·¸m»›ôëÆEo'øılefx‚WG¾ÆÙŸs|·SgK6ún¦Úß}éÏpø; ÿkGçÍ¼ßÈár£F~|œ”Æ±—‚Rïš.Îs®Üw©Ü;:ø]ŒCt±´¢W-9=¤§·"øU:Ri}î(“–-xEüÁ9ßfÙá•}$%¿zé}7_~Z´]¹¡Gª%,áçíÅ¾”^Ò&ŒÄëG±*Äô´¶ŠOóİn¦»Ş :ÚÙ›ñı¥Œ=]^]Üæz9^)xyã”\–©vëŠ†®oWyÊFï’S©õM¿,j•ğáyÿËãªç@è°Øóšêi;di‹A›QùŞ³S¦}yj‰²Ò;?…Æß,PX^¶wX]èXÃ¢×şÖ"³V˜;Cb»€<›Í÷fGa>_o¸åÍû·²™¾ã8ğ/@.nšV‚=âĞ—·¢CBŒ4<õã”åçC8›¾¶rsíJ)ŞMß},ÜĞ põ0{fPjw]ìæX¯>³ój:7&(	æøéöS¢¯j¥„èô°.YjÙeå
-g{wx“³ê‚buz‘Æ6üê®ó¸+¡­åLˆI
-‰($ÅÍêz ¼o¤3>¸ÀãCó¦Ù‚¾çÅ­¿¸¯b¼˜%„^C§ùÆ–Äƒ	4$nû;Ià{¿aù;;ˆ^¼ŞóQ|Ó;rZÓ‹<Õ‹Ùn²C PŠ¹zÆØü"yRLRÚòR
-Å¨·7ºªŒoñÌ1SE’9«Âöêz]Ÿt$ˆƒë½•É‘‡…»äGã½ìñm‹Qú=ôÏ€ÜÎÆµJ²é¿Ñÿ9´_?±9û[hï~Rgëÿ{ĞnşÚµöw_ú!£çç0ü?ÿG0¿Â<ğWüüß…yàGÈşs˜Ÿ>©î_aşóŸ§îSZûùb˜ÂİùÀ¯˜¯»š1™/Ğ½VdŒ…-o¼Åã¢ø­àèiLÅ=w4B, $PªøÑnT¡J«ÿ¸ @yiZ‹ûÈšíîÉ–IvT6âK,Ùi‡ÜŞO¬$¥ñ¸Lö~b,Q=­ÔŠŞzkYß\ì¥hº’e´P(†S~	+ÎD²³öŞP‰6Û×~&ÇzìWVÄ­<f‚Siû¦4ÚY$ˆ£OºMõ¨²Ğ=—<+­RÎ…ĞçüŠ‹Îk˜F’"qåÇÚ~„İ !×´g¸•$Æ°MË–q8%×¹!:F­w=Õ[RMU¬õpëFòå¶VÃúæİ$ué‚Ç\Æs:5ßÜ¿„|àswùS:ø¢ÒdSJÆr¶ŸÇÎ…Â¯¥Ÿ…oôWÄ¥HŸï.wMŠ7¼Üs„CùK ¢Ğ3­†d&IqY1÷;p²nö %hÚìTÜ{o½”Ù®?è5#ìø¡ÛS`Ô+Â˜ıkVÆ¤È]ä–µ®½•×š§¯ÖÆ§T¾ÜEÕÙ·)ÔeJï÷|¼¶%NÍ÷lÅ™Ñ*»¯_ı’nµ]kBº§õ]M“G&{ƒ{ÜêDº¢â=İâl§›¨8ö»Azy_E,¹^$rÀöœWÃàPbYõºÄğU±£ëËç+ıÔ;ª="œ6ûƒ9AA•õÁîç¿B5ã½¨¯Ì\„W)ÛÕş‰(åJsÏºPç¡b$İÚn}²+â¯ ŸÊójì¾mº.“*jÿ“µYçÃÍê_Ë‹I)š'•yNí§!këg%éYÊş^*Qc ¾;¡e¿•Jü±š2K‡tØ…Ï¤ƒ-#ğüq G>?}Tî³	÷É‚46Øôö¢nßŠ6~?ö§-ùcC€ÿTKş$øY6&YÎ÷pKÆÁzÀt¥ªâ&ìªótcÉª:Ë²åøÇd ¯ı}7'Íæs‚{¥1À.Ê]|‚e¯ÙFğÇ†(ÛäõG³«ñ”u¾OŞ¬Ü“QO¼ËÓ	—Ğê´e)ÔâöuÆ8‚øÛ}ô æFxN›OiºZ„[ûè“ Yí²`Ø‚Z±¥ÁP% ^[şšéÿİôN©Z&r÷Š>[F†—Æ# :7Èi¼±‡I¸sú# èM•õ*Zàu¸=‚4y?ö–°á]|âˆ«œüL.Ö9„Ş¿ZêÓËí|›Ÿâõî<ZÚÈ>±&áª	ëŠCu¶ÈÌkô6­R(XN ªèOxÅ®5Já¸f~«I›É~Í­¾'Wöá]p±9Û_·KÿÆîxØy+ã ­tû÷¸ïŸfbòÕDR¦q$”~ÙFVÿ±wd†T¡ÏõöLC¨ó¸õ'X÷. e…ÉUêrt^qÌ)Ï×(…‰;¥„‹Ì§å(ëÎ›]ƒ'¸9,W« §P¯×øÀ‚€‰N)b˜=[¯$È¨r|½ïHÖOû»ÅNğÌ®!CÛ%àœ*?m|µÎáÍ6v×ØÂäU¦rÖ·qİã5Ê+ m¯Ê5îˆ‹¥©qXWO¥›Åé5K::{ƒºˆé=*#Õ{É“¶u—ç©g°Šª%PS“ÛŠ–›AWd€¸¤Õ»éÎdÀôíÓcßË5WbÊ¿Å7ª/‚Gl˜VİúÄG¥u–GnÜşÒƒü#¾éÙ¼cSõÅ¾åÜ3¬Ãílèç›ÿã›>,ôdNcäãıOğ­ØuşøöåØ9¾ı¾%ÿ¾Í’£iïd‰pkŠŞŒ¥>ĞÎuß-ä^õ|‹²O¨Ààµó`í0›Ä
-İÚœiçÊLš7‘]êhÔĞ¶ônËÔ—’`çÚ³şkxQ'bìÛÎ?‰—¨aô±3	H¥D[ï+”xÁÚˆª3rê'›©4ñ%Õ¢n½F[!:“[bÿ¡®•Õy¶¥šœıÈ¼Ü†…–Ôå!p2‡·ß“ñ1Ùã¦(èyŒx°F€õy%Ÿ3Õ±õ$·pcáb=Hš·Îô„ŒgÏUôÍ#Š(Ahûu©©±~ù‘,$3¦0§w§ïSaQ„”Z_ÑX¿ó{¾j?"ÿWøF¿/6ÑÖ•©Ú[ÖR¦+:Ü®BÿSøö[IX©}LeH¼4•„ç.î‡éUsç9¤ê—i}e ÈİãÆÉ™•ÀåİHwqÄD¹âŠë¨Sz›:äìfÁ3ª-°Lš§±âm÷xrP—ŞôÄ‡Ş³jÇbĞˆh›6y€Ù^ß3d½ºk+YÑ™…
-~­¿ğÖwË{Ñ¬R˜ó1óBµ.±^[dæÊ³ğ>)èXğ."¦>‚¾F¨Ú”ÂBTÛ‘5K¹”ñí{ğ†[†v!Çw7<«'|ÉÈI<oYAO²ßiL7D8z$p	ùµ‘ï1Ïåï¡ÎE+ÄNŸ­¡R9è%|˜\Üš“¬pDñ6/ÒÒï|EóJNÿßîcÖUK÷3pûÛ|ë#ÁvâWd‹ƒÍµF¡cìï\û ›éüÛÈ¶mBñOô?â‰™tŞ=¼ù;ª}@ø‚ju|emæo¨öõØŸ¶âg ş­Vü¤èÁ5€‹¼i5yğ³A‚
-v‰&Ìycİx7‘$V{¡Tø6Ç`æ N¸E]}¯ÛSixsĞ
-eÊ™*’J·pØLãÌ‹ 6.š—æÛä!“ù^_˜ª4W•dÚô²‚kê{ô2|ÁºÎ,>ñ <¯´]o%¬€|ùe»dğrœ¯Ö£J«ì±êR«ˆìŞ`QÀæ6ê£=İîe$ï2(”7_!/ô& ¼>›Si¨èö™”su0QÔ]—W0èÚL…„¦Ï„'ÌpQ3ß
-éå+¯Ù<¾‡ŞŞv)Â•š™,²Û¥€pW—Û>¿kÕ'3•ÓË±ªOÅ¤hVÑôz…Œ‹~‚4roç~ìŸ/
-‡u4#ªY—{ĞK³t5nO’«ŞÔ«7¸rš.ı%Á<,½>Y¢)/ä\e+É!1_&·ŒhÏŒHón§K\Ö*t›H]lP•@´_b(ôœÜŞ_f¶™	ë7Á¼Èù1“şîÙâºÌo’ó+/»½v½&”
-PQ…|G]»şjã„Ä²Ñbı–¼¦9ûC)™Ø‰>0Ÿìˆ‡,j,fâæÄîá“¡„ƒoE¼|KccRÄÀ=ç;2:]ßEä8p‰M!Û?dãpuë¹¤Iği+we,RRP˜7ÌŒÃfaEèrÆÆCm£”!-8ò×^™–ë$^¯ õ™úN™»ß'jş^½£ç{4in:ÒõÇçiö¸Ó[Ñ»ş1yøÛù?xwYê{¢
-sxdFàÊñZè}´ê.MP¹áQ$µ©À“Ø]#Ô2
-ÉRoA©Kj¡¡<·B”gze	‰ÉlÛÙ]s‚ı>o}Ebí €>ã7iœJñ`ıYHÏ)ÎGíZûz„Şg‚¸dêUUävß/Ş3?Âa¶2šÂcÓ7Ãß“õÉµÎ $iAæÈ$,ÿÕÎí¼~ÊË_§e¶}¡c˜ìíâ³¦¦œô™²ªWâÌzŠ-OØ€ŠëÛ3ê’˜HIîƒï¢”&ï	˜“ä¬ïd¶•PH º=>Ï:3‚|2éEd(¥ÂDn`˜òBWT Û`é0Æ]yz2ê¡áÆş@¼cÕ\°NhÀ*ŞÍñD_ØÓ˜µ7}¿´ÕàèãˆæÖ`Eçôì{ûÂ5í2ßÈ§Æ/ |6j¥NÿÀw'F8<710ƒh_ao³åö¡Åvrm^…›ˆPÂµœêËÀ€ô~ŠÁà·İ@… #=Öı…¾Ú
-êQiÛÏ¯voÀaÇÏ†é&yWÕõDö±e—×áŸ?º	J¿x
-ä=F.ëôäñŞv\2~frçıji„éŸdVf¥†Lçp2êSVmº[¾D†5)¯"š|;œ¬º1p¼MqjXlÀqº7g^”~G.×-ªQ¯æKë‘)ƒ,T;Ö˜“¨ò3ü)ùŸÍÿ§/sø¿9Rä¤­¦ä’µæÆô1ÇGsWÛ¬¿0‚ÀOMño)ù§LÿÔJœÇšÇ—uXŸ?ëh›·ÎJ›V[Ÿ…XĞÇFvÂø~ì_¶êúâ•67®ø¾~vşõfÀ—»ı°dÚ¶‡é‡]ôçïõÚ]Qnc¿…cûKÍÅ?-©|«©¨k<ó!ÄB
-ëqBÜe™ØK79|õè™0¡´õî¯6›XM÷V†M«ÚÔİH—l¦& ßrš 	oòJXÂza¡EEkÎ!Wˆ%¬Áá½=ÂİÔ)K¦}Ôš~ìöœ[eÿ×’Š MÛÑ¸·ÄFs°n‡–F±l´â]ı;û'›Kÿd=(]S
-ğ‡šŠ=ÅÒUS&7ÄŠ§£ñvvĞHŠ‹7EC\¼™ÂÙÒ7ï"Nı®Àc/šÛ)Ï ~-…[”XÏV@Kèîº)H@[³û!åmBö<ÉDWTãÇV<ï¸ïƒKxx0eb€s êñ¦h@öwET³q>çÄ—’¥ß¥ø_nêù÷[Æ|E/ãû$aiÎ¡~ZîCüc	­Ï²i“¾å%Ü»õâ®%NM»T¸r‰‘÷"í'†ã¨·hv²Éæ÷u,ø—˜FêCÿRø^ô[€ã}ÒÈâ{ Hø²3¦õÏ_g›ğÙoS1]“núa„â³óÜ|"êú¡¡¿ßáÛ±šÿn:,WöûšĞóñgÖyP¼Ó.ğ=–õ-”U¸;N«õo•¯™OåëÏãˆŸ¹ÿw•¯ë@öì¿_ûãëÔµÚğÁ·aş#£şeæËL¨Bl++óRGo`>NÑ×ç,Ãğ…„§y‚GÑõÀñÉ*]dH\€TSĞ^êGäe¥À¶iÔYø»àÃ‘İŞv]Ş Â±í½$şv¥	Us÷øFà÷7{ş+ó«|<^HíJXÊ·›È×}Š{…YzGA¦"RµLE7\íW–½=—¦×‡yt³g×<V¾®¤Æ6c]ÊÚí”á·R¥éWéüTÄ€Ü0çüâOpòû+7Cñ¨5®Œ:ÌCnØrE.¬bXÖÂû´îpu[œƒÂÖ§|¨‘Œ H¬>d·¡’û„–ÜÌÃP¾ğ¬õ(»>J1QÛkÅ•øvTO
-M+êqû÷>‚_Áøó­íM)P•¾Ürzè×x1WCát(„É?‰ıqQëo>%F[5(é†YA\•V0¾ObÉaä–Œ[OJPM¬öÈ-ËÍSµg&×qÍX6ÅMoª¦‘‰Loïƒu!1W%òƒ˜o_ı0Ñğ5ŞÊÂcCúåÜE!e±ñó¥4¶fÑ?RJZI¬º¬»É¤%Öñ [å=Şv#ª]£%v¢ˆ&«ßo‡`G-aÂĞ|w2Õ@8£å¸Ê´{Ş ‰aÂ,½ÍxX×
-rü>\¥4
-»ø›V´†maÙÓÄ¾Uó¥TˆÏƒî©o	€Ğ ïOJ¿bùÊöö‹\ò®˜zªvŸ“Ëxø¥zŞ—„“âÍ‡ç†wsƒİ<uö¿.®äøõ¿¸#›}°¸3~Úÿ¼òbşÀú^´?»b|Kó—ïT Äª{bÆom•¥Òß¶=¶‡Mù†=,Ã»¤Ó¿.%üë2ÿ±òôgÆ&»ÎjÇ×õ>Ô7xu¿Uş}kŸ5÷?ÛZàgÍıYkÿI©]àÛî3[Ş+Ø“2\üuÎ§²ì’§J"½ù¾éfW×ât\ÉµÀqUÚHHw?ÉDÆsT¢@¢¦½³ÅÒÑªt””x»´²GßË W¼X8!ÉÖ’ãËÂ7ß|oæbaNÌ (*èCÍep™S!•´~’o*Ä¦éÙÜv/WÙ+lU…•xŒZŸHÄËù3()òìaå[èÓƒ–HÊ-)Ñ7(guEC¨Èïw ƒ¶kOòÎ;K¦‰”ö÷dœêâr¯—c| vPÈ±’jğ€‘‰XÅ#V	m=Á^!uSñ7x_¥<;èŞ«£Ğ¯Åx»`ĞŸ¯õßv˜wjcf½êú²¬¿—ÚıBîş¤VÇÏ‰Üï‹k¿~êê”PıU¾g­Í
-V]3¬ß-?FàUlïº‡ŞÓ1¯â—ÈR¥U´ÙŒÄf:.w6ËT—ÁÔ˜‡Âd'åæB¾p" r¬e€n,Ü»êíØ‘âÁ]Ù|³/!O(/)ÙÀ%Xiı²L#¶Ó#‹Í+©¿Â'æ)’G’D4Ñ3~ëæ¬®UüºXœ@Ø1V,]›\Ç=|	„mË’dG×5ç­Í|*­«Ø?w0Ì¿¬óı0™— ç ã~®pR«,ìí¸æìÚGÓ) uã: &IN©·¦ÿ†ØÌÀª_Æ=ò«>^`^g†¤ß „ªâØï¼	ƒ*›B[}@Ç!à±»··|ŒÛvé'CÃÙë5•ÜÆº‰ãßhº/»m}>qñ¥ÿš e¨¿Ë|ú[ÀL?€Ù‚“åD§ LÅe¹Vc~İp8\Ècè;ñ:5Ú~xå|WÖÙ±Éá-î,ïÛ¾X_pL„œã‡·ü˜_°ë$£?$%¹»áPğ)Ãû¶ïáïm?îD`·Ôs«øO¥ı“bİ÷×ñUŒO.jB·åäÕ®õ»ò“#~ÛøÎOMÛØ‡áøRú%Çèƒ²ÿFÚ(@é”gxÊÛâíuÌ›‡í±~²a@«ï‹â¯ú„´dÔ…Ò><V¶fÊEñ„´‰+òÈ¶rv…ñˆ[0}‚  :¢+ÔuËƒ7w¢{sÀB{àUØ+x4¿`õ™!eniì›CÏ¬ãæQT_,¾@'7Lã„åP@{L{+ÇÇñÙí"FÃ§ûj‰%©ÇèùLİ™š™n‚ù¢1K~\V ØTÄEüá J V)#¿¶§ø?g—ÇİVZ1×8°F¢Ì=¥‰ÄŸ}c¨û¼UËMÜ‹KuySÎ`ï’öíxxÕë-~ÇñŸ"É˜¢ˆ‘I4÷"Ì°moÑ¦››İøæt&‰Ò|úsÇ"õâ_´¥Ãò˜’ˆ±x2wN¹²ÇıOïŸ¨ãß›Cà‡"ÍxéÜ¨¶ü”dN>*Ó¨yhÉµm'F}ÉdTì§ŸeÃM|§O>ä7[ö!€ı¬p5°\‚¦¿MË°wÇ¤ÚÈm×/¢x£öyè8m:‹¿K$»?’¡)rÁ\ß`™/‡{­iZöàåÑ h>ôã¨Dï*<¯ûÃA
-‚Ìš…id„Ó$èÊÛ|Aêj°‹QP@eëDıN¿¨x‰/8…»>İ\âÌ½%pİn]kÇ»Ê/‡l°aùv†,Ô–¤/c®w¾õ—«4â›_to`^…£Ví"&vg­‘eBİê=¤%+¹ØuoÑn£>¯ZD^Z+Ãñ¸!WRR'j ô/_ÉµÕô…Ofıü#Pş¥ÀÿG@ÉQùÄ¯ÌRò¶Áj!•Ãn?Ï)ŠşXÜÍ;^MiÀ÷ên´?c_şPE›ĞO:h{|˜&Ì)«Û¦|ŠŒıTuˆ~ü¢ µm™éëPà¿Ÿ'Ò~ál¡C?ğ¸ßà×Ö©è›ıK}ºZÚ´ïyHç1à‡ƒÚüÚzàŸ4ÿŸ¶ø¦Üÿ2öc(ìy‹¹§İ5ªqiÍß\E_]gÉ™v”­)0f’’./Mì‹‹K]PÄ­bás\V
-‹ÕptÃ†i”{7)–úí7ISŞ˜¤[U×ê”F@¼_(K$jv±­Ã«ô¾Šbsª!;ÃJÈŸ—’§†T¡ƒT´¨^P5óa[¡[ã:«¤nõU­19MrpN=R… R{+K^ğÏØO¾K—‚I#Ğªx§ô‘H;rØY“Tûàm[êz]ã”8«<k­­å^ßS
-c<¾É'D­²ÖóÆ·Aò"JEqsÆáèlú	†Ğõâiöt¶C’İ…ïâìµÀÄa|±ODæ@ZJ5»©Xƒ[¢¤® L]HíÓ·øâŠEw<±Oü°oE«ct»/g·àrå!4rIB¯!-oÊ‰0öÓÜÉã¸÷U¸y/ÕÏ$fâ0×[,Ş™ÂƒÁ’üq×¹\R×Qÿé­£lsıBÜ6îu·ŸwÌbÄJs½Òå0148ç¶pÖ1~%4¡¿Uğ‘™9üNöñòRŞÕ#úSWƒ«P†gLö‹7Eoƒ\|„xğZåøªØ÷ùiïİ›Oé<5øwÊvEî¡©c—	ÆT•¹Û—“Ær8PóÁìŒ‹ö»Ü/µ7 (—5×ú®¼7IŸÔ¬)d·wî¡_-V­ëw‹W bG©GËîz*„ì(·VkªÍ?-dò‡Íçİ¹’Œ©Ê3!*×¯†È¸»)1úügRşl7¥f¨"nÓÙî.¾¤Õ=qC®ê¾PØææèéSg¦kQ*ü§ĞU¨Õ¥a!ª®P=éµZéİ$d`|)îh‹×K‚ 9Ôaw&ú>‚ŒkíÄ?û˜nÒ“DŠïƒ$FHÎş”I@ë;Haİ^Á…Úœ Ä5O5cµ›òTf"e/V²ºDø©áîH´¶˜gkÅÇ=¥x;DH5z¯£eFTRìÔ,9å¤È•12î¡>û«ç‚À£Ísø$l$4PCÖÏ­eË¹QJÏ§µT'šB,şjO‚šX‡ØZnKhKèCê§Í!<§v‰ Û÷ÇÂN•à—j¯1ˆÙŒÁ–±é°õN¾R&"Dæn?F!…§ù†!â4ôy²ŠíC ä¥ßŞ‰Š¥²Ä	Ø©[Ù1Õhº4oä¸,®6Qp—xñÍøÅtòKÁTõj)Øƒ|"µ´Ü8ºFŒËh³|™oI{£hRep.U¼ß)WÆÚ%£$´»Ë‘µP<»!sÈòÕS›o/¤6cqk¬"Ø˜¶`š¬ëòê#‡„p¥³ı•öÄ%zGq=¹œ,»ê>Yòî¢÷¶¢‘=¾Lù;ÿ²éÇe+2d
- {İ¾MkÔH`İ„À¹Ê¡Ç% .7ó"Gíï¯°*±Ã‚Ü•`îêN`êpİyiÔˆØ»È²Ê£lÿf£zÙŸŸ’¹_ç"Çş–,øŸeğ›ªú»õEUPU†sp©FOßı:.`öüñ±îá«½O„8´:ù²™û÷¢.<$ÃÙƒşR£ö{­Zí¶ø’ÏâP»ş)!óÙàşÎò»c›SÿŞö;Íí-:_kÂ}y<'ÃÀ¯wó´ÙpŠCs‚C;$ôQ=&}´Û×R±ßJÆ²Ò¯‹ğ¾T¯ş´ş ôU-µtö¡‹5§iÒBAH+É»G™³h…Xã|£/K
-¬úâ]ònuÍ\©bCå(%&½h†ˆQD#ñŠøb#ÎÆ2jÇöØŞ·ëÊ+ªma~÷TÌ@òåŞdHŒÁ½wn!b§ÒØˆr4ùûœsó]ºuÑRpğAÃEs·½ñ†K À0¬ ‚,Ş›Âgÿ'ƒcàràõ”¬¾èäÑ™O²lå‹ªY7»¥ƒH§÷]CàD|k-e:ı*Ÿ÷©Ôcå–Ëƒâú@^z¹ ór^ÉeRİ¬pèwM°+7BéåÎQ’W34»´zôy1´iÛ'OºÄ9³=ù.}nx0LŒªœå9mcÌBˆã¼ªâxLË­mèhLôåbù0aÂQwL›…÷+	å³tœVà0ø)Êã1x(Hyëß…?ÀI;ºÊYÃ%™ó{à¡ZF„æÉ/Z×ÙÌß§ÈÚ«|²ï8=oc®T`¾¢|guQHÊn¤~
-Ãö İ</°¿ÃN¬˜ øúì¨Û¿aõÎàå)“«91 İĞõ«›Ë¤¡}iÙ÷‹Sw¹lH‘‘õ¸¯€”™2	ú¡{:vãïXàJb¨ÅŸ5ƒ‚ëS ­ú°TÉ6è¤ıI‡zêD/±vºŠ7\·œDCq4ğ
-Ç±µhBízĞM¢—eWS”äª<Åæøïûï]v^søÕØk•‚tÕ*l=cYSm#	l  üOÔé¿ ğ}¾•düÚŒVÂUYÙbŠ•¯7¬¸nñŞ>¯Ï§h]²2>µŸ€o7¾K·‰rÊ©üû:¾ïL …@KbëÛ0æá
-i\”Aèµgï“.éÃŒUj\ÍÉOC‘“êCò¸§¦=‹òE
-¯7:í²µ:Îa'Ã$Nb“Î5ö-’r™ÛØí£wMQœa‚}_#Í£íG´é“Åi0Ÿª$mÉé€…õjs#N%,v³èuY¯%NŒ…¬Te2¦+1yRÓ¨Üí2JïûĞ„ùUIÂëƒAğ‰™(c®øÙlÁ /·Ë«}jlßh—d|É½oxr¹õÙhî’ò„•lF•èÑi3–6"Á›öˆ³GÅB.
-ÄÖ„Asğe÷Y@Íeb%G²^‰v‡ÜI¼Ù’Kà(;wQ:ù†J#õ2?&íu¥^¯…ç#MkjTˆí)“¯c ö©c!`ØUS×ïŸOÔ/&ŸMÜšHd„˜k“Çå]óĞ§’fgWûKªÚ,	F ÄYtÇtåŠÏä-®Øüwb;ğ…°:¸—ù˜î„¼ÙïÌò .ÙÁÑf3¹£­çëşÂíò¼%zç#Çßv	º/£R/×f°Æy§I¢€Y>2%R¤Ìå³oã&@ò“ôäæµ;M$D')nîG Ã‘ÿÙ“÷6¯46™™ÉV2£™\”ß{ £\øŞ‹ú7ì4úÿ'vzÿ+;]°ÁÿÁN=ö¿ÚNkÿI;­<"æéú®ax·–HÓúı+¾Y4²PL4{Ò)[-˜ä[ª{D®£—¥•4[¥’vOãâe4‰ªÏ—uFÄs^2å‡vòå‡Ô‡A?è}ØÈåt4«² |¼xî
-¿Õâ§ú¯–û¦P+”>«²ÂRoªç¢& |d†´ƒ³k Nä|ô,[ğbçA¶CÎ,Øf%pÍ»t-yQn'§Sæ”^›ş~?z÷q©ä Y¯«B£óZ"÷ÄÊ/¸…'ö.qİWÑÁ-†Iõ¼a›±…@86!Ã;_ê;eOı}EÍÎ%]¤¤r"J9”±¼IG'l2ô@Ê×m¤ÛÈXôvsß<8ş¤ŞSw‚Ãä6dÈ
-÷mÙÜÛC)Oæ¬qÇ×NDı0qá¸n!8ªƒñzCA’£p¼^›â½fä dp‰ò®²Ïñ mPlHµJ6¶P	¸ò+ƒó¸`î³)jbÈT\ƒˆ«®E©á_?fß¥ûúj°kÖæz!"ƒ‚`tV}“ÙÖÜãMú¡¿bì€­J·êW“¡en²+'äN£,Š½yOõfáz§€Çó„‘›³nè{¬'_uù8Ğª
-ÁBã~	wW»{î/OË/î
-É¾‘òP£¸Vl_?%í‚.X¸z5!ÜèÈë†é§£Â…*¯J¢}«¹‰™Ôı÷í4—aG~icğŠMË¶:Å—cÆ¸+ûoÛiê”ò¦ãr&SAÇ®XíiğNXm›‹Â¯é:øüË’ôıx6šºßï…Ò“ÇsŒTît¿$¶¹“S¡ŞÆ÷”i*ræ_âC«”×ˆ¿b—9m{Ãs]nu0xã¯ŠL”§f=lI§#ÑŠ
-À"QÙ+Ù¬§sìü¨‹}~Ø#r;I‹	'”û …óo-ŒöÒàr¤‰ˆ²ºáf€¢JÜ5òÙxø=
-P$ &$ç÷‚]ØJÃŠV½Qv­‰{ËòLÎ”&Wâ¸Š>ÓÏáÑ+~ûğŸ‹“ıÈûeW‘µkís»¯øB8hâğŞ#„æêZ®Vùªïİïâ?§"*æ\)M” Ì1Æ“k”•_u?˜Jrxw ÔLºq6EÅc‰Z'±Ó”ªmoA"‹»³DßQ“ĞØš@‘ôE’…ŞûVïÜªYÕz	va@¶bköŞ»å`KÚ©rÖPmƒæ¨ğ¤•rñxèy×®œ2Záæ«Ò?ì¶pùº?›ô*Æ’ÅÀ”†mbÑT)ö‚ÍÃ›w¦¹‘Êb	÷jRñ"<|Ü=]“£¹0Ñ+’Nqa?au.PÑXÅ—pBû‘—ñÈZ—ºi|Ñ„ğ­t¡Ó¦übô·íºGµò~!<Ö>ŞÌ‚m¦Ê|–’¶½Fg2 ÓñŞ@
-?c´œ×”73¾½¿”'!‰•Ïh× 8¿Ğk/Ä¦B°½;1Ş½^s„ÙÂBÛñŞÔ
- ‡«°„É_‡zü;k3+Kşóµ"õWşJÚyÿ·şÊõK°İòß
-£ı†MÖù©öSÄÖ˜òQrqo¶IOí‘¯¶?·‡ÙtNĞ¾õ°ıôWá~ı·ß‚H?¼Û§û÷OîFE8cşÒ»ÓUÛ`§¾WşNùßÉöGÀğ‰qıP½f;ğ×ˆåKÜëÏ½Èÿîö¾ßğß¸½ïwüOnï·$ÀŸwk¦‰4Ô× ’Ş’ŒYMyŒ„’ê¡óõPïì£ÀJt[,îZ#µ]ˆY×İ´æ´²)MåË£¬ê½ÊÕæ’D(®ò¦iÈî3ëÕ|ì¶îñ£=êûMTh¦pgùgÖB·ÀÔ1¬so¤ùEˆ¶]l ­cwŸáX-_>\íÓ~)‡«öXRˆX:I%qcÇí
-¿È‰¶9 ÒÁ0G<AØ.¿‡Ä-·0#'W)|ı"(.£!bCOàiİUÂ-‚5ƒvI…»Íš[ôá`ÆŒ~;+lO*1k¯Mª‡Áa³ÔKÍ“¸iàèpR7oÛùî£ğòÎ˜W¯Ø°ãgšşïûXyMaæé¨”_<§ ¹óÎûŠkû)èo$n¼Oó„€{m÷ØÒÈp İòó«SĞ¨±xÚ“@>1‹ß5/)"¨D"°ï¥û-P1Â™+B¼ÅY·î-F¶;ÑĞ=•óÚßxDØñ'n°X’A ¦q'–l^œâú¦"dõ+º7®kĞmõ²¡Äd¼”TÒá%}u’á‚™;\£­=0/s%!(÷m2.…}2÷Š¦ËİĞ³xŒ	A›üq(wJ	!¯)Õ»h2¾¾EÓbgb¹£j‹Øµ@Fd•Fü¡‹JC¯f€#~&W´…4êAåÕN]Ò;K´ÁÃ4‡'®c‚ÁxV•Qè`:3p†ãıM	ólÓ±ìÿüŒÂ_zÀüWºÀ(DŞ~ 2Cúñ‡İ_Xğ7ÍæMîç®VÀ	qìã[nÀwXúu”i8Éu _ÊxÅ_l.òøÒO€¿u@!3àkÓ–³óÓoKÔ_š¶üjìïfõ™ğß™Õ¿éµ¢j»5˜y! n×1­ºzëIª=öôû¯Ôó¥‘Àš âUn;Ã³e¼Ã!x'À’Â}]3Ç¯'¹F‹-½s³õŒ0,ª+1°˜¾ƒÂ³%ÈşÑ’ Åq>íõV-ƒAá¡ú´=K×,¡6y‘¶©ã5«ßC¾Ù^ÍDÈ€0wK&/|s”o‡ğàß€’òîú
-Ch ¿@‚ê2nEÆkwÈ½
-§Ÿ”–{¹­:İ[¸ÖÜ)‘-i2“æ¥-ü †KÙ;¯Å.¯ÏU³Ş‡h³yc«¨¿™ÃµìSXPïEòò'>O‡È…Ş–˜p7ò‘èúÀO,K~éµB“æóC:Ş?éÀéHÄ)V®¨hù6o´–ïc°«€êüöÍ¢N’¿úàrJŠ(ˆŠÈ“O+r1ÄbŞ,æù~Àætnı©êdÖ­yø_×Ú£»µ)M0v}v…åºª#Ùâúu9»ò[?cÊşåßÔ—ß«Ÿ]ü¤ã7“}@?¶ÔçE†*‹Şİ19şu5¨sps¼wÛ Æj`õdN{@÷J0Hì±HŠ$KHCàWYp[Bßxˆ4=`cN¿†İçÉg–QÙ	ĞığÏû‡”v Y·:éş0lâk€¶pñáƒÌJr‹Ã
-Ñ8J*ÊrÖ ÆÇcPØKì(RÀ¦*wU²ÓöNò#Q§‚bƒÉéËHrĞi¯^z¾Î0‰÷º.™”EjU÷aŞ<c©•pÊ<‘«ƒàt@¾¶wO“d™ûÓóÉÛ[ıèïóe´òñhø¦†W;¼A[på}§ÅqåJ£òA;/Õ°Ñ@b] µ!êº+9Ÿ”†J6%ÇMKjìØÑÎÎ›Ã#fÏùx”(ğŠîw]ôºh}vLFÛO/ù4-:”€ãµp¥òˆÕêSÏïšÇ8'Åõ¡ÈÂl—HÏr…./ó°±Û>ÑFÜ¼j?è´'Ÿñÿ’'X÷ŸPÅ?aãÃû¯ØüC¶àÈÏrM>¿ã²èü=.›nP|]‘?Ú|}ggU™ğ7Œñuìÿé™ı‹2”R¿•Œ¹.ÕQdZ{û+{à·ê-õD1äCßÖ…D””ÖZÒÑ'ªYHOåk˜ì2RùfVb”¹éB„7ÉYæ»²5ğ³¸Èq¡Ó©"¶³P‡ÙxYê6W-h‰{7¹Ş\`‹b!…×
-.C•ŸjÌã¶üd·ğİz^±ğeØ
-—mEÄÄ3-,_l ÷‚­@>±-Á.ó×ˆ.fmn¡•
-¡È½DBĞÕÜš~ë†ç“GDàG¡ätú¢•ğí€–-zc 09Añ|O™†0ïæVµ y÷É—>=Ÿÿ](Œ‹ 3sŸ­–îøs¶Û\ìñ
-?¸8+]‡eÌ Aaßk’¬aÖ(şk¨šS5[ÅîÏğ1ío y„:g‘ nıŸ±bü`÷dëdá)òìù?UöÄôéªU÷7òíz*#ÒíÑ}Ç^c‰;|€ª¦ÿ²ÎZ¥şzÆü!oçÎçù…=m?½I÷/áŸN
-!oöN˜ô÷„ÌÅ|YÌ“q²Šiõ¯êéùR›vÄ—xØO5î)údx²QaÊ]6Ô3=uógÚéÉ¿›-¬î1Müà>ùd%˜ypÎH5W óÊî}÷aö¿ô¯n–åüEéN÷çH—-§Òîë;Â×/€®?3ÇŠÇòÈÂl4tÖSäÄ3Ã„G9^¨–ï¸È˜q\z¼wò)9'KÖ!¢jeƒ@òÆ&é‘Màè'y®¶¼·Ã8÷»İzïéi¶œØİÒûôRb\Âˆƒ•£4áû†ğÊSXŞN„{¡r´µğ©ä>Üú ©Î,‡»ØÌÆi‰î|Ax`ˆ^²ÆÄïBkB B„FWF²ñ>Ú†ŒÅsc¥ù:2UÈ¢š´¤$ ÒD‹½Oój­Ñ)$Ôú+~Õikõ”…©* Høòew}¿ŸµÇë¡‚p:ûñRÜ·\wÒâ¾•ØQr^ıoÎúËÌ'[0ÕT_9Äü}xúßºd¢àAü/M%%ù„€e­&®şc¢“U©>>¥&ŸjMÒIÇç‚<SøsJù|=Ç‡p§ÊG¯,ŠÙ¬Ü÷÷Åõåu üî£áÄoÁèìşi×£}‚ÒmçøZ!ÓøíØêüæœÆ§øUĞFÚ?{&9—zú«¡ŸfhŸñ¶?7ÿ’ìèÆÛ¤ÿ=…“ı{îµ/oø–ÅãÔâ¿hçCWÏ»AÒiÄù4szL+¢ej"m®Qlæ¡r¶Eo¯ùæ1GtEÖ¤'*Ÿì‹K²,æğÄ»P¦s«¾CÕıHtÏŠ1¯Š€mZc]¦ç’¸f¯ùËË'åh@FŒô ¬-Ûâ‡M®$Wo9?!âïİ˜*Û€Ï[ÆuĞüÀ7©0iŒ±@¹à‘Q×¬×ô±4Ú]•ˆKŞú:ˆZ~SqfØˆ=ßw0+XggÃÇ¦Iµâœ„Y OM¬×ÕüØØ¼iE÷HLÏ=÷¾İû27÷İ¿”Ú<Ú@ÉX8#M¹“±„
-½Û=(a¶T¯¯õ4jëåÅ]µYc;cÙÍ1zÔsÇüÊ·2´´¨¥åŞ%«¤jyĞö‹%Lú±æúø(Ü7l¾u	ØıaFÀÊú€` Ãt)&*Ö½±ƒvŞÊòÆr7Ö•»-FÙB2¶«2.u…1š÷Ë¢†3D$yÀÍó9È4jåÑ§>H'~¬ZFì[Ÿö½¯]XÌ#ËâSß•c…ı¼mÂ\8S]ÃŞËjŠ*yI.$@6DkebBŒØ]‚Ót|7¦\Æe8VH;ºÛµÁL>|ÜÉÉ5sêŠ¦›Y5Õ†õØşb;ôŸOãU W^ó“ä¬¯ã9´&ª¹^ğ¤ëyLª‹nCãË¥]d…Ù`ÃıÉ`ú`»õ8
-üÃ´õ_u1ÃqÚ!2¥€Š×|47o8mÀX~WBí›]rÂœZšéC[‹{*Áxdè¦B€3füêúº‚øMV´@î8˜iÃªzh>qé¾|÷LBo
-ŸTÃÛIè´8p÷šùg‡À—^­s|[2£Húà•óÏÁæ
-‡m×&Sà^†ö	2¾•’Rù=N¥dU—çâÇEmN¤\Í	ì,Pfhâö–ófOËF_Ä¥HÍKØFÕDÌc¹Ù~!8~"ä{ˆ›•ûxJ¬­&G—¬µÏ¹`_ï;áQ¾QIu7NvÜ6´÷î Ô\©œÙ–ÚTOÒzŠÊ$vtå 8jmnŞö¬ØŞKRMUòËãÎç–p‹èŠ’ZÑûİ|o„˜Äß×£Ş€NØ¹k\J¶ÑÉœ½õ©<äMì˜Wq´ËcÂ‡0n(UÚ Ãpæİ‹'n<vo4>å-w§KÙ@Xf)ÒÖ˜ ?àc¸x“ê‹±Á•‰ç¯Ñ2xs× a•=$X+úgï]â'{îÌÈß
-=9`zÊ*:ß°éšFO#»¾ÙºÃdÕ^çüwl÷1Y÷1Ğ¾`^«€hÓ¡h-æİåz˜Ûµ¥¹9Ò
-ÀÙŠ¤åå–Ë·c”‹"©B\$ÆÇ2Ñº¬öå¾=Ğ}bGämĞõ]ö²|*U=¬lÖÙúA¨À/á<	÷9¼"GLÍùÒ[«Ì‡AM™1AÓ®IŠ!üc~ÀÓ€£âœèO24êuĞÈ?¬=hÔ¿¤ª’ë*Ê¸­D–ûÜ~“«jX`K ê)¸Ò?NàÌoc¿mz÷­$ˆMBÀíS¡úH?FÛñ­$È1…7öKÕoMğîTV¡e8mt’©ñ3Xz]Àaç¯Ó¬YU!Dy°ßÆ~íxq•¿¤\à7œ¿¢å8/Ü/~8 O0aûFôÓàéğí›‡N›²w3šÏ®rş6¨&÷^î…Ôİ3æJ‡ÍèÎ²ìëT=İ¨È§Âto_ÛmÉY*yZkÎj¡ w¾Jõ3Ï‡eŞ“‡«§Õ `ò;ñLÇ½TÈR%dKaj±Ÿ˜õ<»o´Öngí´ñKªjwu [Aâæë¤Fi(?İ”¢hóc¿32Íû”ò>måd™ïŸX†‘Ú‚ÖkÁ#”ÇrÉû*s–›_˜å(†®O9òá¡Õx£ÕpB ì®ä}¸¢®ĞÆ{6^&87ë½~İcŠ¹=® ,º„«H‰y\MScoU˜]4ZÈñÎÑ3Y#ôÎk,ùbxÀ[NöS‰u|iŒ”ŞvË„Ëùêù<Z˜DXóõ¸4*‚”œÇØ«ÙšÇhDºut›<åx=N8pßx»¢8*³-Vã´àu­ôâq%ÛÎ?ğe{D8­e›@fÃ”+¬=–ä¦rWHsƒ90HW´ñLàö¬GÙ^ÀÜW½²¿/E_ ùiİÉëÛ,ÎÆ¼UUN’şbŒ‰.³sÚ°C”øCÍ'KğŠ
-ßo@`ŞˆÍÎ]ËÃÀkË4>Hã25ÆWæ…pÅ¶-TQ6èíâL¾A^¶yì!¤¹&èC›´í¿¢)Œ…¢B‰1’áwÎ=Wóş9½™’57Q^ƒOYáÜèlbSo…]yš>w‹ápÔAş0ú€_¬>®`	}åvíz\{íò ¹=€Ëá4ÇÏ‡’ùNvb¼<µNkvN«T¨ûÏŸD•¥úÃ¼ŒaõHè[À*üèÜã7²­·käHúòaÀ]^ÔÍOã½¾í?ËşjçŸ‚#P¨ˆäTY˜5=W÷ÌvóĞÃB«N»õ…øI¾úÔù{ôÉõ‚ ¸Š*LW°È/F<æË©Î/w±Šôgœ£0š4I0
-"ƒŒWj'ù†Ï»$yƒIª!yçó“ùüL
+	/**
+	 * Translation strings for fr-FR
+	 *
+	 * @var  array
+	 */
+	private $translation_fr_fr = array (
+  'AUTOMODEON' => 'Mode automatique activÃ©',
+  'ERR_NOT_A_JPA_FILE' => 'Le fichier n\'est pas une archive JPA',
+  'ERR_CORRUPT_ARCHIVE' => 'Le fichier archive est corrompu, tronquÃ© ou des parties de l\'archive sont manquantes',
+  'ERR_INVALID_ARCHIVE_LONG' => 'Le fichier archive semble corrompu, ou des parties de l\'archive sont manquantes. Si vos sauvegardes se composent de plusieurs fichiers, veuillez vous assurer d\'avoir tÃ©lÃ©chargÃ© tous les fichiers parties de l\'archive (fichiers portant le mÃªme nom et les extensions .%s, .%s01, .%2$s02â€¦). Veuillez vous assurer de tÃ©lÃ©charger <em>et</em> tÃ©lÃ©verser les fichiers en utilisant SFTP, ou FTP en mode de transfert binaire et vÃ©rifier que la taille de leurs fichiers correspond aux tailles indiquÃ©es dans la page GÃ©rer les sauvegardes de Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'Identifiant de connexion invalide',
+  'COULDNT_CREATE_DIR' => 'Impossible de crÃ©er le dossier %s',
+  'COULDNT_WRITE_FILE' => 'Impossible d\'ouvrir %s en Ã©criture.',
+  'WRONG_FTP_HOST' => 'HÃ´te ou port FTP incorrect',
+  'WRONG_FTP_USER' => 'Nom d\'utilisateur ou mot de passe FTP incorrect',
+  'WRONG_FTP_PATH1' => 'RÃ©pertoire initial FTP incorrect - le rÃ©pertoire n\'existe pas',
+  'FTP_CANT_CREATE_DIR' => 'Impossible de crÃ©er le rÃ©pertoire %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'Impossible de trouver ou de crÃ©er un rÃ©pertoire temporaire accessible en Ã©criture',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'Impossible de trouver ou de crÃ©er un rÃ©pertoire temporaire accessible en Ã©criture',
+  'FTP_COULDNT_UPLOAD' => 'Impossible de tÃ©lÃ©verser %s',
+  'THINGS_HEADER' => 'Points Ã  connaÃ®tre au sujet de Akeeba Kickstart',
+  'THINGS_01' => 'Kickstart n\'est pas un programme d\'installation. C\'est un outil d\'extraction d\'archives. Le programme d\'installation proprement dit a Ã©tÃ© placÃ© dans le fichier archive lors de la sauvegarde.',
+  'THINGS_03' => 'Kickstart est limitÃ© par la configuration de votre serveur. Ã€ ce titre, il se peut qu\'il ne fonctionne pas du tout.',
+  'THINGS_04' => 'Vous devriez tÃ©lÃ©charger et tÃ©lÃ©verser vos fichiers archive en utilisant FTP en mode de transfert binaire. Toute autre mÃ©thode pourrait entraÃ®ner une corruption de l\'archive de sauvegarde et un Ã©chec de la restauration.',
+  'THINGS_05' => 'Les erreurs de chargement du site aprÃ¨s la restauration sont gÃ©nÃ©ralement causÃ©es par des directives .htaccess ou php.ini. Vous devriez comprendre que les pages blanches, les erreurs 404 et 500 peuvent gÃ©nÃ©ralement Ãªtre contournÃ©es en modifiant les fichiers susmentionnÃ©s. Nous ne sommes pas en mesure de modifier les fichiers de configuration de votre serveur pour vous. Ces modifications peuvent Ãªtre spÃ©cifiques Ã  votre serveur ou hÃ©bergeur et donc dangereuses si elles sont effectuÃ©es de maniÃ¨re non supervisÃ©e et non sollicitÃ©e.',
+  'THINGS_06' => 'Kickstart remplace les fichiers sans avertissement. Si vous n\'Ãªtes pas certain que cela est acceptable pour votre cas d\'utilisation, vous devriez fermer cette fenÃªtre.',
+  'THINGS_07' => 'Tenter de restaurer sur l\'URL temporaire d\'un hÃ©bergeur cPanel (par exemple http://1.2.3.4/~utilisateur) entraÃ®nera un Ã©chec de la restauration et votre site semblera ne pas fonctionner. C\'est normal et c\'est simplement ainsi que fonctionnent votre serveur et le logiciel CMS.',
+  'THINGS_08' => 'Nous vous demandons gentiment de lire la documentation. Cela vous Ã©vitera probablement du temps et de la frustration.',
+  'THINGS_09' => 'Ce texte n\'implique pas qu\'un problÃ¨me ait Ã©tÃ© dÃ©tectÃ©. Il s\'agit d\'un texte standard affichÃ© Ã  chaque lancement de Kickstart.',
+  'CLOSE_LIGHTBOX' => 'Cliquez ici ou appuyez sur Ã‰CHAP pour fermer ce message',
+  'SELECT_ARCHIVE' => 'SÃ©lectionner une archive de sauvegarde',
+  'ARCHIVE_FILE' => 'Fichier archive :',
+  'SELECT_EXTRACTION' => 'SÃ©lectionner une mÃ©thode d\'extraction',
+  'WRITE_TO_FILES' => 'Ã‰crire dans les fichiers :',
+  'WRITE_HYBRID' => 'Hybride (utiliser FTP uniquement si nÃ©cessaire)',
+  'WRITE_DIRECTLY' => 'Directement',
+  'WRITE_FTP' => 'Utiliser FTP pour tous les fichiers',
+  'WRITE_SFTP' => 'Utiliser SFTP pour tous les fichiers',
+  'FTP_HOST' => 'Nom d\'hÃ´te (S)FTP :',
+  'FTP_PORT' => 'Port (S)FTP :',
+  'FTP_FTPS' => 'Utiliser FTP sur SSL (FTPS)',
+  'FTP_PASSIVE' => 'Utiliser le mode passif FTP',
+  'FTP_USER' => 'Nom d\'utilisateur (S)FTP :',
+  'FTP_PASS' => 'Mot de passe (S)FTP :',
+  'FTP_DIR' => 'RÃ©pertoire (S)FTP :',
+  'FTP_TEMPDIR' => 'RÃ©pertoire temporaire :',
+  'FTP_CONNECTION_OK' => 'Connexion FTP Ã©tablie',
+  'SFTP_CONNECTION_OK' => 'Connexion SFTP Ã©tablie',
+  'FTP_CONNECTION_FAILURE' => 'La connexion FTP a Ã©chouÃ©',
+  'SFTP_CONNECTION_FAILURE' => 'La connexion SFTP a Ã©chouÃ©',
+  'FTP_TEMPDIR_WRITABLE' => 'Le rÃ©pertoire temporaire est accessible en Ã©criture.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'Le rÃ©pertoire temporaire n\'est pas accessible en Ã©criture. Veuillez vÃ©rifier les permissions.',
+  'FTP_BROWSE' => 'Parcourir',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Cliquez sur un rÃ©pertoire pour y naviguer. Cliquez sur OK pour sÃ©lectionner ce rÃ©pertoire, Annuler pour interrompre la procÃ©dure.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'HÃ´te ou port FTP invalide',
+  'FTPBROWSER_ERROR_USERPASS' => 'Nom d\'utilisateur ou mot de passe FTP invalide',
+  'FTPBROWSER_ERROR_NOACCESS' => 'Le rÃ©pertoire n\'existe pas ou vous n\'avez pas les permissions suffisantes pour y accÃ©der',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'DÃ©solÃ©, votre serveur FTP ne prend pas en charge notre navigateur de rÃ©pertoires FTP.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;monter d\'un niveau&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Une erreur s\'est produite',
+  'SFTP_NO_SSH2' => 'Votre serveur web ne dispose pas du module PHP SSH2, il ne peut donc pas se connecter aux serveurs SFTP.',
+  'SFTP_NO_FTP_SUPPORT' => 'Votre serveur SSH n\'autorise pas les connexions SFTP',
+  'SFTP_WRONG_USER' => 'Nom d\'utilisateur ou mot de passe SFTP incorrect',
+  'SFTP_WRONG_STARTING_DIR' => 'Vous devez fournir un chemin absolu valide',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'Le rÃ©pertoire n\'existe pas ou vous n\'avez pas les permissions suffisantes pour y accÃ©der',
+  'SFTP_COULDNT_UPLOAD' => 'Impossible de tÃ©lÃ©verser %s',
+  'SFTP_CANT_CREATE_DIR' => 'Impossible de crÃ©er le rÃ©pertoire %s',
+  'UI-ROOT' => '&lt;racine&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'Navigateur de rÃ©pertoires FTP',
+  'BTN_CHECK' => 'VÃ©rifier',
+  'BTN_RESET' => 'RÃ©initialiser',
+  'BTN_TESTFTPCON' => 'Tester la connexion FTP',
+  'BTN_TESTSFTPCON' => 'Tester la connexion SFTP',
+  'BTN_GOTOSTART' => 'Recommencer',
+  'BTN_RETRY' => 'RÃ©essayer',
+  'FINE_TUNE' => 'Affiner',
+  'MIN_EXEC_TIME' => 'Temps d\'exÃ©cution minimum :',
+  'MAX_EXEC_TIME' => 'Temps d\'exÃ©cution maximum :',
+  'SECONDS_PER_STEP' => 'secondes par Ã©tape',
+  'EXTRACT_FILES' => 'Extraire les fichiers',
+  'BTN_START' => 'DÃ©marrer',
+  'EXTRACTING' => 'Extraction en cours',
+  'DO_NOT_CLOSE_EXTRACT' => 'Ne fermez pas cette fenÃªtre pendant que l\'extraction est en cours',
+  'RESTACLEANUP' => 'Restauration et nettoyage',
+  'BTN_RUNINSTALLER' => 'ExÃ©cuter le programme d\'installation',
+  'BTN_CLEANUP' => 'Nettoyer',
+  'BTN_SITEFE' => 'Visiter la partie publique de votre site',
+  'BTN_SITEBE' => 'Visiter la partie administrative de votre site',
+  'WARNINGS' => 'Avertissements d\'extraction',
+  'ERROR_OCCURED' => 'Une erreur s\'est produite',
+  'STEALTH_MODE' => 'Mode furtif',
+  'STEALTH_URL' => 'Fichier HTML Ã  afficher aux visiteurs du web',
+  'ERR_NOT_A_JPS_FILE' => 'Le fichier n\'est pas une archive JPS',
+  'ERR_INVALID_JPS_PASSWORD' => 'Le mot de passe que vous avez fourni est incorrect ou l\'archive est corrompue',
+  'JPS_PASSWORD' => 'Mot de passe de l\'archive (pour les fichiers JPS)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'Impossible d\'ouvrir le fichier %s en lecture. Il s\'agit de la partie nÂ°%d de votre archive de sauvegarde qui se compose de plusieurs fichiers (fichiers portant le mÃªme nom et les extensions .%s, .%s01, .%4$s02â€¦). Veuillez vous assurer que tous ces fichiers se trouvent dans le mÃªme dossier que Kickstart.',
+  'INVALID_FILE_HEADER' => 'En-tÃªte invalide dans le fichier archive, partie %s, dÃ©calage %s. Veuillez vous assurer de tÃ©lÃ©charger <em>et</em> tÃ©lÃ©verser les fichiers archive de sauvegarde en utilisant SFTP, ou FTP en mode de transfert binaire et vÃ©rifier que la taille de leurs fichiers correspond aux tailles indiquÃ©es dans la page GÃ©rer les sauvegardes de Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'En-tÃªte invalide dans le fichier archive, partie %s, dÃ©calage %s. Votre archive de sauvegarde se compose de plusieurs fichiers (fichiers portant le mÃªme nom et les extensions .%s, .%s01, .%4$s02â€¦). Soit certains fichiers sont manquants, soit ils sont corrompus ou tronquÃ©s. Tous ces fichiers doivent Ãªtre prÃ©sents dans le mÃªme rÃ©pertoire. Veuillez vous assurer de tÃ©lÃ©charger <em>et</em> tÃ©lÃ©verser les fichiers archive de sauvegarde en utilisant SFTP, ou FTP en mode de transfert binaire et vÃ©rifier que la taille de leurs fichiers correspond aux tailles indiquÃ©es dans la page GÃ©rer les sauvegardes de Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'Une version mise Ã  jour de Akeeba Kickstart (<span id=update-version>unknown</span>) est disponible !',
+  'UPDATE_NOTICE' => 'Il vous est conseillÃ© d\'utiliser toujours la derniÃ¨re version de Akeeba Kickstart disponible. Les anciennes versions peuvent Ãªtre sujettes Ã  des bugs et ne seront pas prises en charge.',
+  'UPDATE_DLNOW' => 'TÃ©lÃ©charger maintenant',
+  'UPDATE_MOREINFO' => 'Plus d\'informations',
+  'NEEDSOMEHELPKS' => 'Vous avez besoin d\'aide pour utiliser cet outil ? Lisez ceci en premier :',
+  'QUICKSTART' => 'Guide de dÃ©marrage rapide',
+  'CANTGETITTOWORK' => 'Vous n\'arrivez pas Ã  le faire fonctionner ? Cliquez ici !',
+  'NOARCHIVESCLICKHERE' => 'Aucune archive dÃ©tectÃ©e. Cliquez ici pour les instructions de dÃ©pannage.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Quelque chose ne fonctionne pas aprÃ¨s la restauration ? Cliquez ici pour les instructions de dÃ©pannage.',
+  'IGNORE_MOST_ERRORS' => 'Ignorer la plupart des erreurs',
+  'TIME_SETTINGS_HELP' => 'Augmentez le minimum Ã  3 si vous obtenez des erreurs AJAX. Augmentez le maximum Ã  10 pour une extraction plus rapide, diminuez Ã  5 si vous obtenez des erreurs AJAX. Essayez minimum 5, maximum 1 (ce n\'est pas une coquille !) si vous continuez Ã  obtenir des erreurs AJAX.',
+  'STEALTH_MODE_HELP' => 'Lorsqu\'il est activÃ©, seuls les visiteurs provenant de votre adresse IP pourront voir le site jusqu\'Ã  ce que la restauration soit terminÃ©e. Tous les autres seront redirigÃ©s vers l\'URL ci-dessus et n\'en verront que celle-ci. Votre serveur doit voir l\'IP rÃ©elle du visiteur (cela est contrÃ´lÃ© par votre hÃ©bergeur, pas par vous ou nous).',
+  'RENAME_FILES_HELP' => 'Renomme les fichiers .htaccess, web.config, php.ini et .user.ini contenus dans l\'archive lors de l\'extraction. Les fichiers sont renommÃ©s avec l\'extension .bak. Les noms de fichiers sont restaurÃ©s lorsque vous cliquez sur Nettoyage.',
+  'RESTORE_PERMISSIONS_HELP' => 'Applique les permissions de fichiers (mais PAS la propriÃ©tÃ© des fichiers) qui ont Ã©tÃ© stockÃ©es au moment de la sauvegarde. Ne fonctionne qu\'avec les archives JPA et JPS. Ne fonctionne pas sous Windows (PHP n\'offre pas cette fonctionnalitÃ©).',
+  'EXTRACT_LIST' => 'Fichiers Ã  extraire',
+  'EXTRACT_LIST_HELP' => 'Saisissez un chemin de fichier tel que <code>images/cat.png</code> ou un motif shell tel que <code>images/*.png</code> sur chaque ligne. Seuls les fichiers correspondant Ã  cette liste seront Ã©crits sur le disque. Laisser vide pour extraire tout le contenu (par dÃ©faut).',
+  'AKS3_IMPORT' => 'Importer depuis Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Se connecter Ã  Amazon S3',
+  'AKS3_ACCESS' => 'ClÃ© d\'accÃ¨s',
+  'AKS3_SECRET' => 'ClÃ© secrÃ¨te',
+  'AKS3_CONNECT' => 'Se connecter Ã  Amazon S3',
+  'AKS3_CANCEL' => 'Annuler l\'importation',
+  'AKS3_TITLE_STEP2' => 'SÃ©lectionner votre bucket Amazon S3',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'Lister le contenu',
+  'AKS3_TITLE_STEP3' => 'SÃ©lectionner l\'archive Ã  importer',
+  'AKS3_FOLDERS' => 'Dossiers',
+  'AKS3_FILES' => 'Fichiers archive',
+  'AKS3_TITLE_STEP4' => 'Importation en coursâ€¦',
+  'AKS3_DO_NOT_CLOSE' => 'Veuillez ne pas fermer cette fenÃªtre pendant l\'importation de vos archives de sauvegarde',
+  'AKS3_TITLE_STEP5' => 'L\'importation est terminÃ©e',
+  'AKS3_BTN_RELOAD' => 'Recharger Kickstart',
+  'WRONG_FTP_PATH2' => 'RÃ©pertoire initial FTP incorrect - le rÃ©pertoire ne correspond pas Ã  la racine web de votre site',
+  'ARCHIVE_DIRECTORY' => 'RÃ©pertoire des archives :',
+  'RELOAD_ARCHIVES' => 'Recharger',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'Navigateur de rÃ©pertoires SFTP',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'Impossible d\'ouvrir le fichier partie d\'archive %s en lecture. VÃ©rifiez que le fichier existe, est lisible par le serveur web et ne se trouve pas dans un rÃ©pertoire rendu inaccessible par chroot, les restrictions open_basedir ou toute autre restriction mise en place par votre hÃ©bergeur.',
+  'RENAME_FILES' => 'Renommer les fichiers de configuration du serveur avant l\'extraction',
+  'BTN_SHOW_FINE_TUNE' => 'Afficher les options avancÃ©es (pour experts)',
+  'RESTORE_PERMISSIONS' => 'Restaurer les permissions de fichiers',
+  'ZAPBEFORE' => 'Supprimer tout avant l\'extraction',
+  'ZAPBEFORE_HELP' => 'Tente de supprimer tous les fichiers et dossiers existants dans le rÃ©pertoire oÃ¹ Kickstart est stockÃ© avant d\'extraire l\'archive de sauvegarde. Il NE tient PAS compte des fichiers et dossiers prÃ©sents dans l\'archive de sauvegarde. Les fichiers et dossiers supprimÃ©s par cette fonctionnalitÃ© NE PEUVENT PAS Ãªtre rÃ©cupÃ©rÃ©s. <strong>ATTENTION ! CELA PEUT SUPPRIMER DES FICHIERS ET DES DOSSIERS QUI NE APPARTIENNENT PAS Ã€ VOTRE SITE. UTILISER AVEC LA PLUS GRANDE PRUDENCE. EN ACTIVANT CETTE FONCTIONNALITÃ‰, VOUS ASSUMEZ L\'ENTIÃˆRE RESPONSABILITÃ‰ ET LE RISQUE QUI EN RÃ‰SULTE.</strong>',
+);
 
-üòúiº‘¼BÆ©tÎßWj!i’t
-ªH$³‚,>ÏÏõ|ãù“eIc=/ÄçÉççßáJµ$’Áú¹ ûó:ŸŸ@ğ¹2'c’z“|BâÆ9³ó“²/TÎ8g|Î<2¨î3“óıågf‘ÁŸŸâ>8ßWŸ7&Å×¢/SgÉùõB–Añ_ná´åI& ’ÜH†%Uƒ„IÖ!eƒür‹ç$§ÀyåöÛ'<?NIj%™'ùXÉ7)$dºRI£ß‘B¦ÅyÏ3<>İqŠ‘*>Œ•œ_@Ğ ‘`‚_ÎçÏ…›î¿¬§¼µ!Ü1ÏÕ‘G,>¬,ç{g…û’Ò–
-«©;aµ^”ød#ŞäKøùäüËJ®ní¹²»ÈÛÚs•Ï‘‡¾O‘n¾…cDy?UcùsW RùÃ—I ŠK4¡/~;ÿøC©ëïpùéCQÛ—?4øÛïwİÉ¸WJ6r¸öWGí­“ğnt'àÎúgZWÓAâTnA‚oLAY¨¶õ½qÒÁA0‰îãÎ ïp|u!”*wEÒ¡ó¾W2RMİ–¹Á½+ÄVUX\è< -0Æï…#íô²öõ1‡Ğ«ÛT 8×¢å¨N@ŒÕñº›C°Yû£';ê§Ì%{Ú0‡ˆ;•™3—T®¬ì+§ÅxŞÆR¼ìdğV<@	 §G’I"\”;#nËúJ ~5H¢&¢:˜·{‘„¨§¦S¢HÒó(IĞ»goTrÓãÙº3¢‘`[—Mj§>5Hiã%D6Ê¼o»iî±¹‡ŒU,tJè¹æúnPzÄ‘ÖT¹fƒ «LŠöFVÍpé!ÀDë©ŒÕ6\y•®ÉÂâ©.¥4 £hnÓhP­´ĞÓ4Œn-Ø|A1v¿÷45Tñ.<¨»¡¬ù¸•€ˆÃ`Y
-Ğ÷’«Åé­5=Ìán¬µg|/¨ë—«6êL`7U¹ìg®åğøt%´‘ğ´»:ä€šdhùÀ@?°båvü™wş/sàóÒ|íÖp„Búıõ	ñ‰ËÆ¥È%nÏİ·ÆºÔp®ãƒw[‘)€¤5#ÙzÉñ0O£Gï+Í~¿<Ö£˜‘¥Ò¡',ºë[>t«qG\xÙ)(¨¥h1áîÈ °yl2àìªlğªĞ ÿÛ¢3_ƒş*Zøo¥¾„Àî?EÓÌãwi¿¤ı:¿­‚Ç%?	Ï§œŠ›²Ü”²+ˆ1~V›"üoË&
-õüŞcŞv¹ôsõ-¶fıá5 û›®IX©“U­ET9ÔŸ%ğ¦ÚÎMµO™Ë±¿9(3Ïí"®ìòckëœzØ7t6@ö§&6“MAßêÄœãCF?¡ Ó?Ç
-ŞŞAÇMßO¢€O	±qµRé[ÄĞƒŸÏGoj/°² I+îÁ4ĞK9›f:ıÃ`eˆ­Í‰O$p`¸¼4dÿ!´ºÕ‹»6ãåŞßnô–µp²ye…f¶|äºÀÚ~¡„€¾Jİ@Nı|×ç¦ Xø‡gîy¼Émà9¸ú¶¸¹œÓ¥B­¯§Tu\Œ,W³ïšlzÅö90$°Up¡î»v÷ñõâæÊÃ|Œèƒ
-zÃ‰:Â!–0Îõ¾ÄÑú8Ï¿ÿà…èXÙiÆÍöá==bó„‹7„`cü\9-Ç¤dWq‚bò³ñù:p\Åm÷(·ÁtÂİß 6ÙÖ”½Ïİ›¦y€,3—_»>$4T'[3Ã»<U°¯èCnFä³¹Ú7´*¬J9å¥»J™ĞT×â’dÀ,l¿T~>˜vxŠCºj£‡v/ú¶& ÆÃBó/ÙÇ:íi²ó,Ã¾É§»Ñ^A³!˜oå/A¥ÂÌ£ˆıI^`—ÜëòLÊuİôÉ˜@¥“¸è0âƒ¥Ûû£ŠCÂ{éK¡r¥—Ñz1¦S…2G¾P–†©—¡ö¶hj%]¹…Kñ]t×İpñ*ır¹¿÷×İ»SFrkd»'ì+°jåuYğnò+\Ş®İQ6â.¾¤TÓ²Ş¯
-@ç=6ò&”7äbÅm5ê½râ,v¨Í™¹ıH˜õ›,Ş•U´ÿ¬Lù×4ÿã©‚%ıÃ¢Òåâ	©ßÎiC¨á­V 	Ç÷¸	jR< ½ *__µJa¥ÇôÉûüFó>–GîTó¥ç‘Í¥ôQÇÌó\åËà5lg¼¬á5õÀ£Ô"¾°@f£“_®Î+U.Ì¾$&GÓ¬wí ¢ú®íK+.óº¡„É~qĞó8{ëª¶^eU€»›ñöÔºÄv8°ìT?¼¡ôn (§‰·Íëg¡ËQÓ-?Ô¯<õiŠ°MğæúdàT&}Fói4è§¸fvŒU¹H(A'©~Ù´AB
-iêæVoh÷ô†_úªÍˆ;gÔ5ƒ‹eøb€•}»†·íi¦×@«oh'Şï$Ì†D
-lÖ’2k‰á•ĞÍˆ*æ±‰½Q/¯ƒ)i°yº&tÄU³nŠ9{Wa,»D!ßO›ĞÁ[°xv˜5{.¥6çgürM
-®1gA±Î›°|'çØÍ¼›Öğ.ÙPU"ÎŞ…a_HT¨íõÓc,¶*Æ)–xòH”c:•Şá«í-Ï.§‰†Kâ]iğÒ³&6í=âß^xH”şä[½FQ’Ê`…Šç‘¾Şt}§$§+Ş
-FòòõVêfØ¶aFšº¹~sKùÎâGæ/f¢+lZ¶ËŒ Ç+ÀfC9l$6oĞæ.òÈt[bW}¢şÃRŸ­–×W·ËklP
-ø×ÀY[EÖ³ÏÆè;ışçı_ö½à´Ù´ÓßIØ$%ïÂ½äÑÄ[vttò~=ğ»¬êÁ:
-%~-›Aëã´yœÃ§ïØŸ"`…kÍ6æÛÒ‰S/Kå2i'Õfè·Xİd;9ıRósşô5VWü2øc¬&‘ß”uBoW}Ç»6›3Q?§cğ›Yı’‚cQ°ò-çeá(òÀö|#ıˆ¬ĞÍ„sÍÈôuä-Æ„]Ïx%8„§íuÅ|+éW#Îd¾ø].ô¯úáÑvç×JïB8=¨ş‹je”š&‰7gåêŠq‰`iI8â,Â¯Áë:ã·Q€™„—¹ø!~{ÔO¨((A]¯Õ´-ĞÑYí„—­ócš©µîÌdDğ¤@¤¨i¬Õòñír­ıw)üeÓ*Ÿ*Rİ•=àÇ÷{»•ö²·Õ–Y2	B;Ûñ#¢An\+Gg]§§;¤Ìwê€po½i¾FrSi\E<AìM 	ª9ˆÄår‹‰ŸØï/7]:¯Ok#AU¯\ŸÌ¸w!	°;$÷½Z€”âê‹ä=ßÀ¹cë‚UùÍÅ¶áàÅ™VâÖ…CT$A<ìÚAìÖõãã¾M§“³ÔÍv.vŠ2IÎ€%ÉôğôêÊ•e:!ı~DÅH_›hÇhnús¶—xîáy³?ÕbnSœ[·(-ÉœïÉ± ûÀLt(R(œ ¦Ä8Íl_h­ŸdÅW3÷p3ñ²k„•T›!£‘ß.ÇL?¡´Üd<Ÿ¦–µZH¼Ù^Ù’I {•qvßÁl\#G½3i|÷‡ª$(àšw¶œbÈ\y‰êFØÇe#z(dñ«B^!”ÏŒqÕOx2ğ‰OÖ’ø³ ú+§êšl¯5Ô äã´:o/`T¼ôË‹»6û»Ğdçñ¾39¡²!Nh¹^›áë¦›J>Æçyªİ	µÂäÔq›n–‰İ *»Ôüë•(?gÊ4êJ»+‘ˆgöµF6&³óòZ„îT· ?÷ıDÏ»R.¹íxéX¿0›¾CGU{ëÇ+Ó†ÒãI`Pqtd×¶1I÷P#÷€!¾Š÷7ªï^àçÂ}+™´XIqMŸdGîÁ€21LT”néªRYÀE]Æ"”=È·ïêùX]€Ç†Û¤6Bqô-Á¿çwå´ZØËC,C)TE
-7ĞÓT†`ë9ãò}«L›Â"Pır“¹Ô A¡9;õ¾Ü¸±äÉ-“Ûpıµ½eÌóeÈÖø¢ZKæ]Fbcù‘ëàó©Râ~
-™Â9Ï^³iªGFºêq*bå‚¿İ÷˜úÈ@‹¯ìÛ-]Ûaúû„ĞF‰D:¸Ë¸1aD²N…TFw@«P™Ó¤0ğ23o¾ßÕæ½h¼ÜVÊg×b“Š¿ñB¶°iN%6´	¹T4oL³Ñò¥^Ãj(I/<®¬ÛêÀ¾qßV{»cÙ–*¯Ú`mï.&"sZòûÎ·‚–Ø€³"¬6w³dÁæ2¬TËxoÑgİxçìÔí“ £qSØâkĞ®}*û¼†Ğ x^ìÿ·8]3ğÿo3pÄßeà|
-Ëƒÿ¿’#ş«œ—O<cÿRMæG¾nU·&oïpé¤“’/ëè ş¯·*#w&y„€EõK\%Q_ËW‘„xL%#ïş¤sa¾?Ì··Œ¹–Í=m,IqkºÈluqš+Ñ‹
-O¼rÀ{IŸ‰ŞZ±¶[e:òÈš¥ÎíVÀ\©‚JÙöÇdk‘» Q/¼th}C6¹ÓËçtlšÑ7O¿78Y.y­µñ`1wÆÆÄèıª{¹Ğ1;S¸÷»l WëÎŒ)g-éæ\§UUæ«b¸R:ÇÑvzã]ÀÓ’Aâp=a¼ÈÕ=‘nïkùÒ`÷m£ôV…ıb±×Ê«{– ´.¼^¨Ììsö…ÿVÎÕ³H˜ºSîIc­ú;¤2úPÚú‹ÅĞªÀ˜òT+wu
-ç‹g—J~¢çwï/¯±1±áÎ9È1¿4uÈO…ÖXÃp)Ê6/$/z•NÒË{+ÅKpt…EGXeÈŠ¨„Ù#–Ñ±—\	Z5Şê“
-ª®ªt»ÕÏ*Ÿ¸·º«È>?*êuİ<ò~6—qê¯\VµBŞĞOÅT‘Ã!ñ™ã„¬BMLL  ß®ËÇXù¯\‡Ê|1®khá±»u¿d¢[ÅS›¯~Y§\ıéA¡tv?ÊÍ~Õ¦—À”¡DÿÜ{R«3ëÒÔJ5LXËäJ-¾`Kg^Úµ§–TQßH5Ë«>¶Ë¡‘éb«£Ùê”•i,Æ-ëßÔ"ççô½éÀ$†AèO¬ [±UôıT[>¿³¾œHê›)ÔúİÄpÿãVû™¼Û|51>!Ÿìö[Ç{ÊÇoïçœ~8Ş‘¤2ÎiÔÏ§çÿßN™uj2ùaY9#Ê/õù¿YVJıÜ¯şvà‡Ãı3Õãw8ûªQ28í?ŞŸø£~ëÃ[Ôs¥ğòzyÍ=jGä…o²Û[óûWô&fCLK"
-r£\Å'ÜTuï¸¡£â2˜á(’|;-$ˆ²¹ùDÉÍãÉeà‰§Ï†cÕx…/{}{§ÂãõªÉWË+äÊ¦/ S(/~)ºŒ‹ºÑû¨‹‰‡¶jho¯½°¤{·Õ\¦7WQƒÆ@%|r#_²@‘Îd"0¶’½à¹yÙ\½¦%µpñinÎB{BÆUí³ƒ¿Ì>’>‘&ZûşdŞ—:„õV4ÓÆR²	HÌuÛÍM¥ca}äì£¿?Ü¶,ò;gTÙsıd¹Má¿§~0¢í!R á&Ğ^ÚuWœ÷Xü§^V9k©‘†¢-ğ™÷1ÿ„f
-XJ…*¾¾™4ÌB?«şñÅMòëÃPØsåÿ„ò¿+i÷SÅV²K;nÙê4ñøôÁ |Ã3l-¯÷Qä‹ÿ¶©£o.õŸjHÃÃ{ıó#‚7ş†Èa¾”@ƒ±rù:Ş¢JİÈB‰­¤S@œ³ê–Ò‹Ö=O`ö®TY_oÍ'uoLÍ¸ó#¦T˜±X÷iËÇ±ìĞ´{÷#\³]"FC×~ªk{`qŒİ†¤‹Vqâ6.Ô£XÈ::æuEİ9÷!ø ½ú;T/{k]%p_˜ï'˜i»K^Bw‰•l‘µ…øÔ7|f2b—-²@÷,]ÌhPñ– <€tÔuÉUİ”oyLı•„°1“RÆHc…ì×¢1'2,Kÿ
-åéFi5ı8‚şÃÿI~øßŸÃ°ú‹NÆ•ùãN¼ó®Õ5TJyÎaì„¡ò‡0i}ëL
-|£Š¸}Ú,ÇA1–á§6+»±×‚áiı„n6çşôÙ€ï‡FÊ§½üñÃYói²ªQ™o-Œ~3¦°Åo’L$ø):Yf7ÊL=Â<óS:U‰<hø€¹b¢çÖüÁìşüEfD†- óøëÀ¥ß8hŠwKõÒï1Kƒ”´s‹-È4lÔ°€NÍîzš”'4³¢¿ËSš@éé…¾5—ÙDÓ	çfiuFwA¯S‰m×bxñ82+R`íe£:®Î½í ]µ&²"IUğ)ñ#f$èµ<<!Bˆ3˜Ø_û]’P¹%Ú¹­_*‡ v÷óeÅ’U„-ĞÒË1@Ÿ²¥´„2«à¸éĞÊà•ÖíƒğY	ì‹¾ŞcZ>·–õ,Q}½½Z=Êı“!ŠÖ~s G)—Òz^éSTg^[Ûf"Ş„)”õ"ÆœöVoQ@^_şà”³5‡â-))á’Âe˜Áv-ÔÉt˜Ê~.<Á_[ ÀÈ¾äPvÍ=ãm“Ä¦]Q¼¢f5íÌUp×“d-ûİ4Uí©¼Ş÷²n;İj&_=¸4¯L„Lİ~º ş’ÂúÕ&Èäßú¤Öİcá•ë6ä¿Ëğùä°…Şõ»W\^bÌ{ÄBfÛ&­•tÚ¨KìDø:<
-}+b#òUÍaQãd‰’›'“Uá–?›—Ù-÷òÕ4-WD`Ûî[s™Çáó0s¥r ÚILg›\AİIßÚw™Ó¢À#„#îê•µ„î¸Øúı#ÁdÍnÀæáõ¸í<ô§:ô}²)€¹8‹sİsË*VŒÙ8ï›tÉbİ|!èÊw¤6tıœüpÖ?n2óv€+ü¼åŞÂ*VãG3¼ß9Ø¸ã·öÊú»@Š_b…©óÿ®÷£à#¹°ÏWİ¿+ÖÆR)ÄÈ¯…}Èt\s(ê!‹o«B[Ófã¥Ñ€bGâ‘õøFZ%NÔ†‚ÔM5œ_io¤ö¡æ±OP÷}¦´åúár,İNÅ¾.œ>T*ğú3ªµŠ“^×¯¶ÄÇ¸áIÑèlVÄNJ\_ñIŸu¹}0]9êËŸhAîº?N™é]¾±dìR7µ¶J@Å›’B¦uì‰=OYßBJó:“šÖ- ‹Ùƒë‚{µ]Q©&‘Í6ÌğqvéŞyëÀÅÑªiÖú‚lØÖƒéöÜxê]~}Ç°ƒd³-#të±wTëªÜêömxi”rG’ÓMÆÚ(%€Ô¦Tge8JÈ¶Oø^êàx!¥f_±}„áeó|Æ;¾ÌB¯6ŒÎLHŒ95õo\Ì †m?À<ÖíÚ¨eß[ûW<3J²ÏËÛâì÷šá´½)(a]„)IÆÁ
-'ñÚÌ;%ï¥Öa!“oÃÁ Ìœ$;[÷D'¾<EäP8ùÀƒ©{z¶8ãèK×lÂˆÄ•ñ 4òÊá¡.l§fMğÒÁ2.î@€s®Lëto'ÌÛo÷½­ıÑ˜î4HàîĞ¢rŠ$v7÷å—ëÕšÅIï0±¹Ë‘
-õcaáaÓvÚ)I>Ìu‘Ää4ŸùW\ÿ÷¸ÚäPâª
-'è>a¨|Ìñ°Çkjÿßàêê÷\­1ÎM9¤_qõ÷±ÿe®ÿ5W—cåí¤Y'.Z\Íå}/QD„ª›¹+.½î½“¹¿ÅÎÃ‡Œ‰S‘·_`&5§š½—ÃÛãŸØ|İînNx®P>·Òb)EÈÕQñzt¬÷t	€“¢eKæ{ï÷œ±fÕUi_’.¹, XåGD¸ˆIQ;;5]·åBì]rã 
-föšÕ•ÏÀS<®C1µNå÷\!¸;^@…±×Ú•)Ñ|‹ü#A­hºhø…P’º`şèá:çwäK‰è·z)
-m¸<¥ZÏ/±IÁ¦ùñ¦tÎñ]‰ãœÖa¦=‰«ZH'"ëSBèüÕk
-¶Íš’üÓ}µ5ÆÏeÖ].-à‚º&G°ò‚¼ë¦Ï1™‚µ}Â&OÃ?mÜÔk¶ZH„Ï»6~¨B%-ò»¤ ı!sd¦V­cm]-bøšMªü>¸ÕLB¾ĞÁØÄG¥;4Ò
-_æö”$&›“¸}f‚±Ù$³¯$7Â¾ŒÖè÷Ì0€Éò(”qöÎ*(ÓGó‰s4Š_,5Tn‡g·,Œ(æ&¸7¦+Ÿ¤ª£HV¾UÇä‘S¤¬uaoÀ¶óne#„#y/bï´ÁH>ŸGÛ·7(Òï=·çµˆë’pv¤ÅÃêh=õ™_ˆP/âæ‘P3Q÷ÈÜJ 5c#ĞÇx ,Ëº­Ç‘èÖ»Ş½^Õ†|ğ	R£½ºĞ‹«ñ,}§íëh›äİ£6ÅçëùxcÀ¿àjIÈ†`hÿ¶­ï|œĞJG]~3t±Êtìa‡Ìék9½1"Øãa÷Ô+>†d4
-§ÆÕı‡TD³îçW¼»Ï‹<¯¼m¯ƒ6^Õ–ŠE^Ÿ%/¼tAîÒ‹IÏª6 ò–¿p\E}ÙĞú¶È0ˆÌIÓ7FYÊ¼^Q\gM±–½^yÀÜyÙN*ÈGŞ5ù ÎÜ @cF}ò™=Ál7XdîÌ‘bãJÚ»
-2qw^¤F\ßÊGáªöíêTf.O}°qí&P­)‘Â°#)ã¨OLqq ©÷²êqÒÊí-øWIØõGÉó¹ğ”Ø‹{™ƒÖiºVpWèŸ§¹®-Á[Ø„ÈAÉ©±Q5™Xl‰×æb>à\Å,šõ	Õç·"¸Ém9ßâëÕÍd+ãö¦´Š›K¡ùÏåJÜ‘Nıuè‹KÕÇßùÓ‹º:§i,ª‘qœ¥Ü ·¿¬@‡šZ˜° "låÓ @è‘ã)÷}%'U	,†^L']õÔSÄ<ê)ôà¼±îúN­xœŞ¥@V¯÷›“o‹=%Áõ>¯ªD¶oQÊâÊej(2EpµıÔá8U×ÂC¯ÑIU@Ê\ÄyŒÀVÃ]D‘¡–ûSb^ì—Ú©âv²×{Õ=#Ô³FØ<À°¢‘g™ñ.:b4r“ª4)Î# !õN––yƒôå_q5òßãêÇÛ‹Éªêad¼B‘6à#È<•»•˜8÷¿ÍÕûï¸úSışWÿû_æjå_sõ±¯¨¢ø‹“²^©²[‡×ˆ=„	¾c€¸Yæuk¯CòšğQ…{ªm£Cˆ/ÅlÛò•Ìá¦‹ƒrÅ\Joˆ;ÚÙ>/Ê(«÷Tğ¡3€òìq®Ğ|™tVAk’*ºWdÄé—Wúé¥‰}dÏû›TŞ
-¥YÃ¾éàÚ†Oâ…§ù2 {6îh(åDrùv?~ê8^Ù’}ôÄ+Ÿ{IŞèäi«Ó%#ˆL…f$ë;x½>‹ÈGl¼ eÔ{E%@DÃ=pœÁâÚgŒdİãÉ_(zwœ5MÍä’¯·K~Óa2ğ÷Š6!vy&A¾a±8&P¡<ú*ÂØq —éFé¥XïQp…¨xmHBxsaG7†#Ú±œœ“oƒ\<Z·Æ½êqg<Î£|²ú™4YÌqàÖV7b=Öl_¶óûVªö,FéZël=fk{{yHôbèà@©D«Î£%éÛ;M*eajîíd½*@Io¥çdª•òÉ§LvO*åGº>ÿšÇÔ˜YİdŸº0—óEÖCğÚâÌ¦"5¸G‘‘î¢ºY- wFÒ]-ß½Cab;’á»p¤Cçæ"jtÛøIœn¾â’Âƒ‰úê=¿(ÜèSS‰1O]›º‰k0£ÁŞ¨ÕÆÒ€"Ş`kàÙUÚ„5ÁPêã±˜úeOµÂeÿõ'Í[ÿ5Woen¼åúE6úÎ¯Qè[‹!>ú}õ\Í˜%ìFûL];…kÕæø3„dÜòÀ{<‡|z¨§šG“CèJ¾½f*{F†ùNO.œÕ¨£û®ÇvFÂ—û$KB:Ì~e7‡Ÿ]/ÈÅkåÙ<Šp^ÊÅój™z‘s¨rï^"0_Éä&Ã]Áß¯³EËœÇGù3
-f¥§Ó÷[YjÒ;dµÜzÃ¾yï÷só_äµ+ØnÀ»`a¢[)k ¶ßv6„nBO:czdá¦*…é–ïG6~ºñW,W*82¡¯™.¶N¿²ÛKÈ¤FÚÁjÿ ˜`’¡{K¦>¼ùªİê‘K®¡åëÓ3ÒA²¾.BàÄ3ŞJ—}Ì®½ÄÁ£™øª.ç+r‰îìıÚoO¾Š±Ä(éÜu”Äm+äˆÌØ‹õè­˜sTKt{FÖ”Á^I{­ä`Ö
-g:¦4á}÷Š>×Ã.õ”zÜŞÎd'ò!FÍpVkÓ„´9£9w·‚ñŞ÷]8‰·ÊÀFÉIc]!.VŒ˜1òğ;½0e"‚`å À[wò~Óë‘$¸Wò²À=¨àVgq¾É|ÎÒ´¦w¸/m_½º½Ø‚ª·ÏA}4D©`[˜šarZ•Şğ[¶pEŸjó¹ZÁ\›³%l«‡ËÉÁzó#7_÷s±zx¼çÖmq‘‚ŸD;èÃ¶¹RÃZW(¸„5ø—E—ª¢úôÃı9MË˜¥ÿ™¯´ÍÿeœÆßº	ÛOêY}çmƒ¾)‰6·ğrÊüÊŒ·´ş(™¡Úßö›uƒuêG·GÅäÛ>úÒDÜ(,ïVÿÄ “A¿–û¼Çûò%€‰Y±Œ‹ï:³‘—_úÎÒ• *”tŸ.ä-û=ØÒ<¾…dØÊª}‰ÈøÄT’ßâ,‹ø¤ü¬=í;kà¯¦ıogüs%Ş>Šê;œ4ØöqáŸ™âZçw9Fì
- r‹|!q#ˆOT‘KHúX‹Å:¾%Ç§íÊ;E$ù66•ÕQaÎ’$®$Wñ<ÿ*>XŞª;ñ~1G+:j(ítAöU/ö.9v«™ÉeåòÅŒ,ÊÂÀ5I>ÈD>u|Šp‡áZäIÑ3í›+àzİû	Wù›€á,Ö÷Ş'7·ÆëÍ-ï÷–Œ7Ä|¢Åk¹Á×¤¼Ä®®›ô}â˜¾Àa÷&	M‚G¾7/ş“G"	£®X°µvîG	1¹±/Œç} %‹‹+õØ’§˜—<F˜õ„L}D¯²jı~b˜Ù­Í«ÿ¤¦÷º	P¨+øºu®¿/ê\¼±öò>ù§=¢ú‹H‹ıåºµ¦‹†w$,…Øì~/ëğ€ÂgL‘FaT5]³hüç†íT‘w®ğLŞ-AyÁ‡Zm{ŸFäR·fø}¿cøı47$O³ƒ$æÓ*ƒ	Ysõ©baöá·>Neú¨­j¢7ˆz |_µİª™|`˜âe¦²7šE{Ç_
-D• {÷ø×³•ßVOz@9‰Øş`í„‰ƒã‚ƒtm»xÔm¯–¹¡’ö8ìDH™‘M˜Ä¬ß/äôEÂe‰bšCÙ¹ô\ò(óš@¨Ÿ]ØyÇª3ô[S‰÷[Ö.ò¹¨_ˆ}ew	E†ÔrMŒ™]£ /Ø²²„‡Ô¹²"—Eg8ˆdh0O~.­Ï“ƒÔ#Vî<‡Ûß;ıS<ıËÊÓ‡§´ùÁÓşO1.º”Hş|¸’)_UI¦&œ!eª(Îq~õ'^ÇïA	øoaé”€JÊ_béJÿ–~füw°TYÓš4 ªH¾=ÔSFÎX)jE’FxÃ÷Éäıù8qÁÓur³Á¤AËoúz7Ré­”‡=šßÒ5L¿yJhÓ¬úÆã”€}F¶#ÜZO­¶K¹jzş­ŒF¦¹›ÚÃ«ÂÓ"uÏèT¬wÉÔ·4²İıOæ>àp"NU1™ÉL¬±)»Vµ?ù¹!k²D#»É²´ïE"Ìú,ûõ¸q;„·Œ•¤Ğ;fÛ˜^ÓÚ@ªCÊ°¬ZVØ¹’ëÍ“jmè«ù¥àİacÂü4šËSë‘È\šiİèí”á”¼±!¬£ÎåšÁ¡fòîÄŸÓ/ÿ\Õü­¢©¿(šèÇ$q»½óÑ¸Ì[›`ôØíƒQ©òIÑ+ üXÏéÏëù·¹š‚R;¥8HôK¤UM›íkĞÔ×élÀ÷A…ÿm®¦kÿ\c’]·Ÿ?LŠ;å§3•Éf…ôÜû­ù¼éK69}«cü¹ÍæÂ-ó)ã'²éÃRÓß3’ıSà{ÃUàwW/W©/WO¾[\UÕîİIôlõşÕŸ%]T*a¶Î/"|Õ–{ı’€ÆŞ°Ûkâùî­4òô‹¦1CÕõ¸÷ÄÊÊ™Hz“óÈ’`&E="aë6h;Ó4/ö›Å¨>	 ªˆ?Mà.ƒum^q5k³ ÅÂy$Oè„.:M@À™ñ‚Y¾¯û²t Š{„û‡{)Sş+B´¸ %¹ÒıpævQ¥8…ô:KnM®‘õÍ;fZÃmâîz4Lƒ³Î:¤¸ÁÚ[mâä¢œ¾f[xîÚ]•×…¢»p˜Ğ‰ÉHÇx‹ZKOfZ÷G„ÙÇL¹Y’h›ê¸#‡Ò3~á½rÊTÊoÖ6ğgæöŸYÛåo¬m»’‘ªÜÛ¢.À­¸b—±±p#ğë£ùóJ¼<ÕË’ùfš²Æ!Åº$8Á”Ğïaõ×á=O#À—ÕGTD®E[¸Şxõ½q{5ÛÅ÷µÒ'UTÙZDv?AÿªÃé¥3Æ·`’Ÿ!(qc“ x¶GÜ›>Ë«4­ ×pøÀçdÁ}GÔøĞ‡TKçgweEu.Jvš×^Wóµ5
-±˜›ßõvuJ “óy'kå7É±¹ıK'ŞG^ë"îÍâ•ä˜(O¥ÎÒ”]ÇÌüÂÔíWysöfÅ/c	¹Õ.ß,¢‘ÌÈÎ†Ç)×T0Î]9¯Û–©D¾é«Ø1$e’ É3ğ|dï6…¯wuã ÏÃaØa‡jç- Œ¾ÿÇØù§
-æoÕ‹ş	M¼ØI¹®÷Ö¥l`hÅŠf.©§^Êÿ%õòµõğpóø{ÜüR)÷¿…›Øş¸y(BğIª>ê¨Á/™ÀœŒ²,I‹LP,åá‚¾Pú:6`İØ%¹*‡o¾îª6fÛ°ÜAÉ‡ïÊaĞøPzÇç:÷L‚uõq2]‰äÂ>úäõâjx >¦ZÃqœI c\Pƒ…·yaâ€qãìèZH¬õuU’çE¼|ÇàÿL&b½+·´ZÔFPXO€ êîÖ=Xé"¿İ;ûù®"’\CCÜH¾ß»õÊ6£ù°{†.:?¹Z¢úÜE	w•e”Ö—İ¤‹læ*(“Ñéˆ·—n¾>IqÕ¼0^;K]¤›q"kEy#Óòï>×bù$´O«—ôªÉ7É‚®&G7w¾O{âÿ£]÷-TûÛ¶CÿÔpø[ïIóñ Õ/û.œb÷†i¢ı¨4##$…|æ·šeıh–êI³°§fùQâ´üy;8ß#ÂÑßÆ¿²ªÿ%«]ÿÍŒ¿{_€à~¹ŞêˆN-qã YgÈJá›Wäşdı““‘½šËp]Ø(x!QtD7œGucÎM³-FÅ£;E~lÂãÔ÷û^
-Ö»z”½Y$æÛ€ºƒ]z¬õ¹¶u“ñ„¡§q€:o8”Á6Yö| ó…¾¯{ë<ö…êa¬1^1în‘i°7ó±l™=Uö…æÊS§Tf87EÀ[{KÇT–Ê'èğ>-¹ì\(Ë]®ÒzAl,Ya7^ö~NQ‘loÕ,Ùvâeûó®Õ(Í †DİV¤æQ`gïh¤bÔií¨˜±P>,xa%n}AmØ^ÍCî0“ô×ÒV­ûXNLêBh87 8V¤€ô•VÓÈŠlúöêŠ€	ßKûè Ö-|b7óI4Ä*!
-Ò
-}G‚K´ó#ï]±åÜ]oËH3e·õVKìà7ÙÒ”@H¦1?Mß†å­ù²JvÜŒz¸¥Äƒ"%7wwE¯ˆË;g8_n-“áÑ¯ÉSSr¢´“.Ä“^/—²jİ¬Œ¼|Çyg`F°È!Bf¬Ş’k)Ä’óé2kæ´œ ¤´!•¦7lä.ª~ïî ÈšlûnY•Ä—“2¨è”¸Û‚s.kéßÂñæ÷-|^i¨qóŞbîÀÓÄ¹U¼œØ…ÊÒĞC7¾yw8i7L%Òò*ñ3„…á¸š×Å,m¾g*È~ëõK†u2š0àı·zPùèAà‹ûå1—°ñõ7‰WŒ¯¾4çİdì™Û5ä.î¥“¶†»6·ÒÜb‚-bƒ=÷R a9ÕŒİ0¡ÖFÁú ^—œ÷nhøt^;nw¾ñU#{z±²E½Ñ¥ªV‚›ÊíØ9ÙÈÈz¨¹jF$p×ç[ıˆÕHl{IÎ½dè%¢]®¢ÕÕTÁê¤‡Â^ji
-_TWÊØü ÂÇ/’\ònüËo’‡‘	¯hª'+â]z4ë2>ıàÑÊ±"ÌÑræÕG$Fš›=o‡X•@µÙ¾Mu»Ãr›njBk<ÃI‘>e°XÆ(¤vÛôU»¢`¬àBŞTŠæDÓ¡h­t•ù¶Yióä JnãM}o•7â’¢Ñ^W—µ÷î.m<T„Ô‰êˆŞõ	~vÖk\•QfÅÖ —UKˆº@r…¯1puR™I‰>ì±İC»Ø v5Îo¨¯­A:-ËS¯eÊábÏ„åº6‚8^5«‹£ãÖ±:øtÈD~Ê/novåî[‡³¤°\$èXiä·vc.õ°I©J/ºmúİJ°Ö“<ü5}c¬rgt–½Ss•¹Î¥‚+Šß|íœâáD’wÉé®Oµ;³vju/¬T‘›Š)…ÅÏÔF	lº‘›i|èÀ/Y°\S4Fûi‘ÿù0•WI4WÏş?ä2—Ï±š÷¿ozñ÷2 şÈ€ûÂ†-·}ëøBæˆŸzWãûß]¬_òhËŸ*J_2 @qã2üªG›mÒ=ô>%øÅÂö¸“3Ëö“Z•Ô¿T—¢>Õ¥`n
-;b6ú¤Ğ ßXÙ4@BµASÿÃğSÆ/é¬'Ç7ªn;Ä¹Ö(ËÙÂø©Dİ§cW•úæ3F¤!šoºüh„ÛGüF7 ?çÒ–¿)šü·nñk±ÿÒ-~îøùÿE˜‡‰q–ƒ7E«*©w€f¤R3ª˜JˆI&ñf#w“KY·»áp2øWÉZïşp õDš%ş¾›í=Ë•/õ-¹„z§
-cpü»ï÷%,}[£æÓÕ@°?0§i‚2/—g‡ŠĞó[{ó­?%4ÁŒWeóøPõ¹¾	'Ïà–©ËU­7IlàFƒ±t¯ÙH½ù®®ŠV‡cÓÁÛĞå%j1EHÉØèëŞ¶lÿæsf¯08º<°İ“âù`ó0½‰ôãÕØ¯~/À )µ÷ó8÷Š§ZR½bÿ)ü^É>-á³|~É^8ÎĞN¨Å6^Çà~=\½×®0Óx˜ŒûVó3áïÌå¹Ûa×eríU¸¼ZOOˆ÷ëMHŞ__ú\ddP¯¶èÆĞŞıÓ Å¬J+vßôßeåÑhM—ŞHiO}’½uf‰W•Ö¼Øb,IY)Â¹ 'f­BÛ¦Â¨œÁ#¸ÖÍÖŞC–yøH.¯G¸9CäŠôBä¹Ã®9^Šç^–ù¹hVL~=hşeŞÑgO†\:^h€§3Š0p‡˜.ºšJÙ³+Å9÷ŒX'H$Æ³¼>{´kf˜<ÜÑ ñ¦—#y>¸DëUÔà¥AÁ¿®{4T¯dÜ|k–}<×¥™?6”ÉœËá¤¯Ş¼xìoÒ'~Hà£Œ¸5‚oö^ŠØŒ×U€«Í®ÌÆ'/ÿÉéøo›¡)?Â<Èqƒœˆ±›¹Àûn;¬CJªÒ+ïvålıI{ùî‰IUÂ¢Rf`ä¢jRÃ>†ÇøÊÃ°O1šüVª‘ÍT`EîKAÓä2Pãó±êàØ±)KM¯Aœ±-G¹aHhª/@ÿÂt]^ÉÚf‡u½nû¡¹p1IyØÉ…®Ì[ÃhâZ~CÊæ!àÒTdÒDnŠNu×VÌáv¯ãûÒÀb?}ÄmÕò¶W)Ò/lw.TL
-e§ç&^ÅwÔ3JÒqşc›b)·¥|¾ØÕ&óÒKi?¤s~F¤ÆÖ¾„÷CÄ“h­*nİŞW+3q:äƒ]2T7Ô¢ï0'jÉñSàË\>Íé	ÙiX6cö	k¿&#ŠoÛó‡ İL7Ty31&7”şv½.i²ºiˆåâHKFéV(ÜS"CÙÂm	0Ü—ÈŞ¦6ˆW	á9]„İÍ÷gQÊÁıaa}-HĞjÅ»‰Â-¬O¸¡„J†Z"ó:/¯·Ö†wá¼Ö¿˜[y±¡•§9”¥ÖØ“éÎ«W4ß‘qWğ-Ïg°y€¹´(ä1ÍpS¸YëM=|İ`PnĞ½b³«‚àÛDße9×ŸÅın7·T_Êb6#w/³âN`şHpxD¡™ï¥ºG5CÚc0ÎCÄ_†y8Ö9ô9UøJ¢6£äş“£$‡fEßë½åŸ<¾5Lí0?QóµáºÊOMI
-›nnmºSrèKGè7Ç|Òë¿53‡ÓjWÛÌ¢˜È7o?MÊ »¹NÄ;…ëªœÓ~mh'²çÅ„ôtÓö¨Éé;K®k›®ô½îÅïèøÎÇ¨8>1Ÿ£8ş_|›ÿBulçøj3ğZ (o>ãÇóaå¶-CFÕ«¢TÚ‚:=´*¼*zÔOÄt¥]°§4ÄÕ½0e0´$ºkeúXDä!\(Ãé[´}1/šôµÕû4ëÑ—Ç3Uš`–'èì8ÇşA4•ş8.ì•8áß¨‹i¦¹•\˜Eiîhà¸'‡+×Û%–+7€ÁÛå55Šúp*÷˜Êpœ)˜s©b˜r¬ÈcÏl{Sa 	PÍ×«\ly<bØUñ¶‰˜İ”jL“n´‘Aä|Á±Gñˆ(SK(»	íîPâf]œ#3P?”Iµqby×ŞÔ¢$k¶‘ÉõZ*/\iÙÌ$·¯.(á¾Qä_¯‡d…£#HÜäØy¡6/°6Ù!gd OÚH„j cåMm.sªu+ä«3mèå4„¨Èªèìà‰Aáto+f—{˜F‡9Ã6IZÿ8¢Õü2bGÙ£Ka÷É³ªL(¾x›`k­í ù>\7%[	fÛ€ï/–º„fSà‡Ôƒ‰mfw`Ï6Fšé«áäË1YBê{Í2‡"|W..Wß¬8g„Fßy¬¸Û Ì:ÙšPQfC'ÏX-MM3v²G~7¿ÜİŒ
-¢†–¶Zæ0w-üå+Áó\™­šŒõ»-%	uÜUçíÏø~¡™ß¨àçé®Şë9Záštw:½"NÓ?RÀ§üŸ©îprÑ‰•#Œ°mAçœáú¸(—êï1Ü(nCO°È<€Ó9K§3¡¥ëY8”ŠIğ•SU´â­›µå¹–§œ×\O6ïpãÂ]DïÖ‹¾"ï—Ö>\ëÉ‹<äftx{_}vjX÷”ûÒ°øÕsÄÏ¯²G®iW'¹'Möx ÷‹ OV-Ó‘ÿÊ‚¨mçê¸‹—{mšÑ=à<Ë Ø‚8dçĞÊÔ®\=İu“»Vòíœ[.0|ª…/Ï´—õ
-]á¿«TrÛê,êâ˜†«¶´6
-DT€»—˜•±',¸íªz¹C¾¿z!Eãvª™Õò=?z»‰5ŸVÂõâg¶˜Îi•ŒËêÏ§ji‚#³r<U}¾8+s…(Ñ=ÂcLí%‹Ko3˜ÒûíÉ=^v&D}§ã8pŠ»°ûk¡/´r@c–!ßuN{’VÀNŞRâã}9—¶Áƒˆùz!!u‚I l% ı…ë÷ƒ:âú²|1ÎfÑlûÑ
-gk	¾YBëúM$€¿Ë‰½Ô%³–÷Ù2BÿE°¹w&åú»ê²‹xrºıâU%XÊ^<ß!óœ8e¬ğ+0‘ï¢gFPã;
-w	FÔ“é¡Ö¦À°u~Ÿü5×È%bµèe¯t\•ÊX 8ß®ukkN@‹0.˜(¤9_×•pÏ«7B7ã-x÷r#×Ä?S,Mÿïªºş¸Ë_\Œ¾¸„›ûr¶TÚÜW«€Q¤ß¹MÅ_Œÿÿ˜ø¿¤bÎ •qÆñ/ÇÿËn3ıR¿üO#°¢‘3£WŞ>ÅKŠA–ùvîat2Ö¸Í€Yx$öj 9?Å†YHÇÁ¹\Ã[ğŠVüq¼s§êûâ‰ª—G˜Abo]º¶§ùñÁW¦Ú0ö z]»>ÚÍÜË‘ÛÒµªí:ó¿E`ı*ªÊÀP£ã!å®C§l#	mZwõ×bÍÀÏÕšÿ¢Xóo#°Ÿi²&ác=Z=šv¥(@p°ê)Ôq,/£äš§;š!š™»áB>4K†zÆ¨]«I”6íh&¤ƒäjN’-ğ´İõØ3Õpˆ@Ãb·"$µõ,m|o²ÄAùÒšø´ıfu÷„t!?*‹¿Œ"ø<`UEÿeÿÏû?ÿ1oÿ£XHác`DÖ:¼×J(,äßè>““¼•a~ı­'xu¶Qhñ{½ûø^6ŞÛş\u_–ã/oÉùüdè7ı¿—·³#/]~z~÷â÷>Ÿ¾Ç×İùµO£ò%’@³ÉC±U…ÿOÏì7¿0AGkß3áÇ×AKÙò"İóìâÂ b€Å5É·GBa²F´ó´û7Ğw<}4Sb-„¶!È˜bÇz</µ#óm„šß›¬ÔŞfßtPŞ,a^œÕEyïv¶¦%õåoúëwUÍÿbŸüZ«éY0XÒûEİŸ¥É>;¤Ã3ğ©=Ôüy€€æìÔ.ğ=Ø€¥h)4ÌÑËĞ´öº‡ªş ,ïáÎ]qƒn©],LÏÍ°‘’Tq¯ ×$•¡:^Ú…;—¤÷LCvî ,í®¦´ü¤5iÙœ^ÛÖı>ÀÜpÏµÆÇÅzá@"µ¡Ä4ë¿ò)ıìºlLª_ÚJüçÏÊZÿc»ı7©–]ptAÿ9N½³ôù•ü£˜s†’ÿ(XàGß5ºT$Ë3Û¸ıÚ_W±’U2¾{ÔoRÈ»Ë×‚lÆÉÄ{îÀí—¨à§ªAßÏø¬ØÅ¦Ôâñ•ğ~3VÿzFß'ü7fô}BÀgFÿÂîªÏô[C@ŒÊß=Ây9=DÛ(ÕÖFŒõ	§ùzÅ0×@äğ»i.”±°›#Øfa@÷ã4F_ ^2”•~ĞÁ3÷j™x.‹sÉÊ„^+Ğ©ò;‰5Ğ¹Zy9WÖã4q­ØÉ÷Ûœuî˜2öÄñ½yğDò/lQ]R‹Š~Ü»ô	ïŠ\½9$Ÿ@q¯]É¶^i'Yì²i,Ô—roŸ˜/—E(vŸì5AÁ½²“”Vbß>¿–aIË‡¤?¼“³6ÅÏx–¬´Ê½õqT‹Ñ4šYÙà•ÑIK©ì	ú²õOÊJvĞì{Ã…¨£PÁËHÜ@BÊ;ŞË8xtºIÈÍéÇ;Èoõ>Õt¥ÂÚ59Ğ¤!ïp³°GaÛ¥9º.R6ğí&¯; f®dµìNqYïALøjê´\%{EÌ¼”L7æA…?T#43ë%»/ÍÒWî€‹¢jA(§Âá^Ó:ˆ*>÷ õ<µŠ·ğzb'ØF$ëê©Æ6¾ÔÙõÖ¤>>>0
-ß—*VF°“‹ÿ~¿˜YYgğ]‘°ñét'&k=2C­}å Pã%1j«ë¾Òbù%¡p)ß-¾Ûİ»KØB³'-piºDp*T'®-Ü’fc4)*~=„59@¢¥_²ÚS¿©ï™­¿)‹ğ¯zLüÚ×ïáªê+õ|/ƒ°\Œ%é\¥ÒÔ>ø‹TK^æÍ|7… L´—(sµ{ûÖ±Ñ›Ân' òÉÕïGu»8¬Ìí* Ø³Âº`6Z5£•(iƒ¶GãÜNİëÌÉTŞ?´*Á+
-ôÀËô¨ñU¹l÷eæ[ÁåW4aCå4kwÕİLnK,IãÚV¨ EÍ Ñ›sw nå éº—µ$ŒŸk”¾+»xÒ§Rx›/¯~Ç¹‡È¸ŞÏ&Ç¶!ĞíÓ€Î´©«mrË—ŞÃÓ“ÓîÊc(^ø»[“@‹ºë:ê£u† ƒ¾^ù›Ÿà_30eöß•q¤œœûVµRl¨CXŸó$•¬_ìËo-¼é,Z9>gË¥„&_äL³‡Ó°xO~ò<pïA˜Iòöˆ-xŠäíöık©8Ãr.v SÕfR¨=€àß­ƒâ×ñ	4öãÕB+Î(ºŞ÷{œ4‡Ö=åÈ¾»6ì5ºÕe¥±½{ıà–³¿cóâo+\øõ¼^J­ÂĞœ€}ï´@£” 2Pæô&•`ÁmQ¯D»àã„ÈÖ“ıâ}8Ê—ö"ayØ9­v‘=Ş]àÕªššáéÎŠŸRÿØó0#­ÎIAEøüşzßÜ§ªËJª(İŒÄ¯¯Íg
-~0gMWôaÉk»üìÊı§¸dÂ
-ş6ıUa%	ÿŒ½õ%n«ä?V–ÌÏñø?áğğ#Aì9ü Ãû_p¸ú/9ü¹ÊßìÜ¯ÓÜ*æÛúSf:@Ì7T¿ªş÷O åPö_óø·±ú×³úü_™ÕgR¿Rÿ‚Ëaq°ï[½16é÷Ô§‹½:úÄ³æ9)ÖK©czXn|	)\Ò<ŠÍõèº½«{è#û“‡/6‚>ÈØ='Æï&ƒØÌ`€P|Ÿ#Âîäƒ’eŞGÅ­»8÷™Uv—5ÒJ|¥ºq£ˆº]’Yi­8„ıy¼+ÍÜÁ«ğˆ|“Åec“¹4ğKåo¯±/@å^<ízH–;¤"‹cr×À~¨MyÅ0$Z¼ Û*aƒa½Y+^;1ÈãLDÕ'É'uœâøˆ¶NI©1eâr‰L‡)cšŞòĞÆ…Š]F•RnRVÜÂÅ
-²×Ó:iÃgps~=Ag÷Ê:òdÍ9»/ÏZ@èc—NÇÊ%Áˆ´¬?…©â0ğÖºíòÁYLò½r=ğloøĞ;±?¶†„mXÇ‹•Ü~=åº[$P#t(/ñã}L$ô;•í¥Ë[l”ûã´{]~ÛKà1ú·Äè«Ş­ma2á¡r€%fĞ–³ŸØ¼gºåİ=¡hº½&—´9kœF;„óÚOæ)yó0º×7P1Î+¬®1ªíÑÔ\*©È	tcÛ†Ë°@ Ï½dxÀÎn˜ç•¼ˆ\ºYŠ½Ì…S…½Ñ'ÉH3³ı µBäÄ34OÁ”Lz.NñîÎvêßÜ÷ œ Æ»"œübàd×X–š¨ÛŸp9ğOL«Ÿ¹E„¢Ÿ«Ş˜û8	¹±•ôqÅt““•ßùÓár6Çãµ²!‹”—ÓÂ„Œ°h*Á÷W(õ÷ÆD2qƒ!ì62j`†Ÿ©Èå-éIG(Œø¸µŒ4G£eåuF|bíİ…JQ÷n¥{]ÁeLfÎY_pèŠÚ5Ò0a*nˆŸTÉ”>¹(WÎ2%ëx Ø¡‹Fú™šƒyŒWd$„1²ÁûV‚PE4rk_}Wg€ŸÙ—Dõa+>”ËË­M‘Ğöí’O¤“¯® pçÛµcå€*…|È®ˆ6=µÓø£¶KâLñï¢q3Ğa×“(c÷Ñ¬—èïÏA*g¯^W¶%½ö®#Ú
-’r+X™öÉ°c·üÜÁiÜD/Qğ’2;6CÙ ÕäĞL~˜M+9Êäz¿/Uæ¡OŒ3- a£O‹^Òd«ÜRÊ+á}lcÄ÷ÜM/áxÛSF¥ìo—¸½!ÔUÅÎÍËÌ`ƒ~“-	nzåûÕ9­¢Öwo4tsou‘´r*7\L|ó–C¼4ŸæÊÂ0"Õ5x©nñ‹ò$ÅÛ$2p‚Joû#ß¤'msÛGP»Éqèé/›[’|d¤Ãµ}GDÜ —7„‚Í”œéğÕ=9ñÍ•h¶èÔÙçë½VXMß&ßÊıu¢´íÙÇ¦dR˜4SjùıÖ-€x-å é¾<d|Dó|^Èì’ü—³ıüÕ›ş…»ÿø`û?ÿçoŠ(ü;ngõ·ï?üê¬ÕjŠü»àı¯İ/Ş¿iñ9íåjÒùròø){Ä8î’~eÆIdÛ%ØÑí¼X÷=E€Ô6´¾ñ{7ğë‰ím	}ãóî¹]×9åİˆ}ås”…|ÿC….kÙú”s'o"û»)ÕÅˆXœÊŒxbü¡i
-J`§8éø6eŸ33†üŞ}r0|úñKfßb-Œ3o"~­‚ğµŸF³ª‰œŠbWmç[;O+/cĞ—±ú¯Ÿ×—¾™ÿ­çõy\Àëy}ğßz^Ÿ¢À?,k•p‡o¨]ä³Ij@â—2V®aÜqš'<tàúè,&ÀäÁ:jèj›š$s¨)oi¯Š+Rl½=i’dlRò¾ïÖiM'O¸xÓÏŒˆºIó;ÿ !w!ÑSš§ãÑWØÃıäOqm™w¼ÙÕ°<»@&áâøŠñøùá"FC~åH…§”jò@JoMd˜®Rt£³¨ßm[£Û=½ôÆú\-¥ÕM/6¼tw5øCïL§ğ+ä@—DşC‡‘EwÀæ%óç-À7Õ=Æa3oxz™]mSöG'ÄªS#†s??u°¼wĞl*ÊUSø9Í½Vpšµ$›ğëªXÅèO*Øÿì~0_Ib Háï<KğÈœX„ó†’º×Ÿõ<¯Ÿ…÷´"8³ïUäv¹*lÀcWİB òsdu“0õkm7ãªË„ĞÊËº¾¸»ñp%ÜáoQ ûsôäŠ¢ÑóÚ…*¡ËöhÙ:¬Şìl–ğú³ÉìšÖëiº²oÍWêêèú
-J¸"M—¢—¤Dî‘zl—GäD°jIşô"Fš`~C¹
-Ÿò¯˜¢zo·»É Ş¨‡ö¥c øuÕ¼K^Ğ˜Dw=¥YL{òÉH©š-¡ï5{riúğYŞ¯tL
-ß…¤õğæµhŸ|ZPz¡Îï8Ûâm\xNö{aÚ	Ut¾\Ak’»l_!Ö)×!ÓúNÅ¼ôôOùu$ˆØ4 C1Fgø›ÿNXúØˆÿ˜PèË§¡ßóGX¸JÊÑ#³š/6¢£ÒæÅş½»ô}ü(Ÿ‘ò
-”ÀÏHùÇ@Éîÿ(Ÿ‘òÊOï@ùú·@	|AJGÙ~ñì|ªğ²R;‡Ú~ñì ßÇNbùŒ­E|ÿƒ”Ğ`¸ïşÓúôfúb¾>¾æ„.ŠU¬Rñ=/°CÏ)Òó‰=º·½Ä~íÏMÀÃ7Û¤ƒÅ>éî{BÛA>ƒ½ùÚÚ¤¢~÷!Ÿ»ù«‹§ØLùS±w-zF¤ŸQ<±ÄBóq\mß·róãÓø¢>I¨‘÷é$ÅŸ~ô"ûãb`f‘3p~SŒbSğÇb§ö“X”øÇPÖB@W‘°HR¢aï)Å‡£İa`›‡…IºW^+ xMç¹°ääåO=Œ¡`âù Ôš©İèŸƒBNÎFìƒÒc½¡àğÅ£ó[Tª¾ >Åp©÷7×d^U ±9@djÉ­@¸"Ê*­œøúo‚‡ãË{5Š
-X€{¤õmÓ:kÄ¡õ˜A£^Ëµ¬#I
-ùäiúë­ŸÏ‘!á„TxƒVxîk.m÷dlµÃÃ·  %ğŞx441Í,µŠ,9=¥{ì	oòíãszU®~½¾únXÅÕ»õ~i'üìOâ5›ú
-|9—LÀíh­¼MWÎ	Q¾¥×Z’cÎ{Hy»[Œ3%òÊÿev
-G“ÿaİÿ˜šfÿZ¸ú-Èh–gGåë1”÷›Æ®ÙU¡Ñ­R{.‡¸c³;wºw;ù“›şn³ş”vÍ0äÆ˜ÍÇcÃºÈIº}O,?‰¥¨Â(•¸}Q‡uói´¶ı«ÿx†À÷)ş7f|ŸâÏ3üççQŒï{o•eî9åö§¾w@d2ğ©£3¬'¿¨¸å¾ã™+7InäÀçÁù{]ãu¡ë”Q¹Wã‹@\zxØâ`;ıÈ x…gÂ¶kÖ¦zv
-?LGäúÄz½¶ó¾¯ÂËçNPîîˆoÁÓ|Lêo×Pk\‘RœÙ´^ûMBnŒ
-,Üå¢X¹7`Ñş³¤[{ÆyQ¸^1x súÕÌ†}ÙîfqšŠaø`L‰<„U"X¨{V?*¬+Õ¸Ú= ôß²—;:#‹BøÁFÓÆëcŒÜaù0v0¯È}íú7·û.Õz1Lhš)İ•áÅÔ—5«óÌkØ¸ÄáÜÔRÍ÷µâb.·•¿ Vp2Ìq'}‹Çùâ‰'q¢jb·T×`0¯m…T×‹V^îZ‡ÈáÔÆ"ÿÖ#˜Ü¢Ou³‡jÈzä{ıâqÏ;Å[Ğ÷÷›G†M±òLqWÕf÷í™5ê¥ñ×sä»ƒ%
-4»ÊóõpÇ5òÖSãÍ™šSW¯’i®•)¶ñ”;K*¢N-ì>à;#
-L=ñÙeúBë)Îç).sôÉŠ¦3¤:yé%:eh|«ê[ô:	H˜rW—õ¹½+™ª?Ñ‹QhèJeT7İn”€ùU:Î~Z]B=‚ú»œ·X|&®‹÷…N"ğÎ%[Ò·Õa%óğàĞë-àêïe<ae=Y1ÿê½·–gH¯ ìúZ!„¬’9~ÁÏÉºR¯ç)Íuüqü}àÏj~¢Wôü.jƒÆ=l~=Ø÷½¨`·/ûï¢2œ]$íóK÷Ëû;+êÎÓsŠà…MV=ë­Y_*êúªı¸e+;iÂ©`ğ=ù•ÛY}M7ĞŠxY2‘â^wB}ÒlĞ±kê*Íá]×#·<_`ê…BÅ|uô‹ı:¿±Z;f§£÷Œ_öò£­'°«(í¼ºù;FvÁàJ¦sµ4xh˜Ñ_Šu(¥Nªe­âI^¯oÈÁy‚\Ş¯F×ŒÃ­ç;‚¢á‰ØÛ'åfú¢V^pÈ~èt¥€J××®ß„â(Àø~Ñß+ß|ÛïİáìŒ·øşöÇÆ6÷Ñ1Øv*ÄÜ(fd”V„˜6F‡ôÔÂâ¤²&aï¶Ÿ<÷L¡±€”·Ha8¤U˜¦â¹A:3#û™¢…™^´#êdô¤êˆ"¥+‚‰¦GAMµ¡WÑ‰¹à¢KUY˜ryå¨-šı[°l”y~kj:B{°åC½u{úËĞš¢¶ÂÚn†Ëf'Y=õ£€òÑ=ÙÕ\ôÌº`kèÉ¬Ú¢Å²©ñ²ëûæi‘ –ñÉ³êÓš8á
-yt¡DÜ°G@­,]R1óhy%Û×ËİP	y¿_B’|’Ÿpr$ZÈ=œßm/"c¡¬a°;D4æíñpğ÷’›~MI×Y… ¹¼Ã[¿AZÃ5¬½M„CË	,=onÕ~o72M@á¸†LË_±º&Z6ûO´29Û]á…úMş…ñ·…²æ÷¿”ªK?-t{{-ƒ”Ÿ®EÍ¿czıÃs+jş­Š±˜_R,éR\°µCgnO1_)4ù=b*´Ïq—uN& ¸3¿gLrçïïOè"2ìS¡ƒïê?ÿş?.hı¾ø‹QQŒñ­İ úé,È°›jŠ½|­ï}hö÷ÁS²\¤ğàoê{«¢b~Ó•_Ä~ê[®ÚZ°{S,qÉ¯ehN•ßêçiQ|Œ¸KÈ×ÓŸß‰=İæ'«àüHâûû\ğSøu5˜”ş8·~®¤õw…´`*CöÙÈsäS2VÂ{&4í±xëX´_(.Í±mÅŠæ¬ğÅ<şâ¦R´Şb¹÷æ7o1oP-Öò…³OJä|aÖ1Ş¯%ø|X·4zé¡ˆÎ$`IÍ—ŒË!ªj*DÔ­2+gâ ãŠ=Lk¡p/®(_chF&o^¥m â"È†h²/‹¥ß÷€ËíwúFğ;új³à)]w=	Ašp¿p™ìxéÖs‘\Ç†XF»¢OÀè“ko)ñtšùe6}Ó	Â‘¹&ÂFAòJe²“Ê·«ÈéKë^ :–PQ‡^Z
-ßbµªu¦½€w†eÙ‰QÍ Á áŞc=åÒwÄ®öA>¾9`¾ú^‚?ö½ ¿u¾¨ÆUT;5C_út±çKn¦³hfWƒŸˆ>é[BZİê«S‡ü³ ‹óƒYJ¹ ÙŞ¼‘7=ÈîJ\>d5‹2q+?P„“ï—Û5‹Ğ“°
-)y`€T¨jlK½×;´‹‹/°shRäĞK«x+¬“6/mæ"K$Y«B¹_‡l×”eüÙ—tc¦à¹ÆÌáS5œùşzEÂõá=Ÿè¨…oG7îp/C)€áëUİ,X·gÔƒg9¤Pë1–"öª«l‡^·˜œÙ¥„0Ë²·´‚G:×ÚÉí-§uíıÁû”@ºf¡*_İ‡UxdÅÄàIİÃÕER¼{r§4‹	 &™®Ãt€,Sæßd»/šî¨C/H8²ÍdÛ£Ğ‚İóXE)yØc…$'š_Œªnç!ø[|M>~€öõ£%‚şRê²¹`ıpç‹û«0>Ò£ã["8öoZ"8ìúÓÍSÀy¼áÂlaùCX' Ãy*z·!FÒRä”Å°Ğí#×¾9…ÔÈpBÉ©(Ë	çø|+<ø"?Ç‡q|ïÖúÛ1…ûZ?øå´„R~‚=™¡ˆGÒq¯/3`[ìP°Æ>~ı¬s—2‘s¶ö£aÅ,Vî{™/†$l¯áxË§!t÷Gkÿ¾)õ_œy#oæf /ö­_²ÌÛG«„‹µšô”!™¢ëã@àg9­“…8
-ÔÖõíj¼x	‰Àíğe¶İ2 R•F"ïëÕÀ'ª6õ˜L±p=¥³TP^<úí¼R~½€ëıA…«"Ô’è±¶"™½SXnãx-&çmG, `ñ¾ñ5(ƒ·@Cßi÷íí¸éoèb{„ú¸\DÆ1$g‰¸¢Û'%ƒ¶Oß9İ5´³”f:•€¤é ë±¸ı$(;)L‰Éô÷	·4¾QÖ¤¶ µê×”º¯rà”,FËºÍ{sï"©®PeLª§4c¸[`ïøŞªÏ?ÉYÑº­Şÿ¦R2ğçM©…{µ2ÿğ‡îÈ¡ÔşµLoØ±î¤6Nò>Œ7û:J[èmŒEÊ+»‘Ï©AH¼¼ºQ8áÕè¯Xç}šF¡<t·eÈp½ë&ÅfëÕDÁkòÌo€v…›xŸmRc®ZÜ¾¨ó€Ÿ½lì¨H°ü Ç%—_÷òÖi|ï7!~Íp†ñŒg{½BõÃ§¾­KèRu7ETÕR#Ñß··9SÈÀ’§ÁÒÑú³ÙÑ1¹–yUÇb|AõáùèréÛïÑÔtµ¥ĞË[*#²™¯'TQE»ÔE~OÁ3e^vY©gèó<¬ÏïË¼×Ü³È–9åÚzZø-Ÿ×šnvkÀ€ËUUÅm	•Ã*oo «ãg‚^J×ŠO¤¼šƒBXÔcş›JÉŸcî¥ûQëLÍæõ96_Z»ıO²8ğøx4Ä46N"j™{³«×ıå—²Šı.ıüâ6-~›—ûÆS:ßO·y÷hSş^¸¼[Güí}ªÆ>òÜã;$JÇ	[ßO»›/‡@[sXjÿ’pÊÓøKVŒàÎ"÷õÔös2kw.˜ÂÄDû—,€ıüƒ€9ÄõKŠCÂ
-Sœ’Ô½²8W?	ªŸ“4&X5F¹©'*çõs–e 6ó“’.•Ğ=şÄR0Ş)'ôÔgÜS§Cè+ÅiíSšíÏó]yg?fÊ*û/¼~]~ùËãH=ğ—^Ü4¥…¾‰Äˆ4~°ÿMPqñkô6{$Ã[iY.^È'W±~f©Á ~“=¤ƒÛÆW(t‹óhEv‰áaÆ—°Máp!-"czêÁK…)éB›¯Şú3d³¹0\°XÊ.O€.h¿t_¯>]‡=!ê2¯¶3zk¬z‹ÌQšô6/w­/TÆì•AQÏòŸz‚Á%zv¬<½@‚1CŒs¼	Šê,É,p1öÒ²y3×’ØñÚ¸ÊÎfUû«_5Ù”Åî¶rï›ö½„!×®ı5	f˜èÇ€Å6Cz¼°Öûš_G-Çˆ.C¥¢ÆåpL·àß÷YÛö¦$6>Ğ0èJÎ½XFÑÈ¸1Çk1Ôó€º'„€ ¯aâ€¾iu¡Ò;´’¡ƒ4•#¹DPĞ¸Wus#®$ˆÁ3»ÊÖ;K*oôw®¦7¨vL‰A×]Ä"ñ|—¢~ñ®µ¼³Ôrï¸ù.¼I¥[ešË8Úí*jºx,R‘½©û6§„ììÒÊ§eâR€Y4Åµ’‹¹Ö:Ş%FõıD¯çD8¶™";ì7nĞé°â·;­¨Æ]ß"öA;î.¡KÆâ(|~}@Y²{U¢[RYÕö¢Û~dŞiEi¡yMôĞ–©»Tº44õnDrĞëóÈe#$X<-Í‘ıxôF	½•5¨bAh†n=ÒäSçÔÛ ³îõ+Á½¹ÎıÆİÜëüúÎıº¹9üt9i…bò[µw ıÔ®öŸäËüFÿ«?‚²¾e&¼Áâû©:<É›:Ège3ÿÌºOwİÚRI+d2øtZtç&ô ²EoO=Ó_·L5)Lsfü‰È‹lO¡>¤P%4vN»=è!ÉC½tQ‰QºA:F…`ô²c$ø½ÀãvSÑDu‹k ÷L	[¡ßî-”œV¬¯¢`yÜ¨‰Äá%®´©y}ÍºŠ7ÖTûµú¥ú‹2Ü-å	$m¿î²VA’îk—ÖŞC–Óá©78aéiiRà’Œ;ıˆDÉ>k=êgÓ9±–›oÁ‘)è¬ Cc_½úàÏæÍ‡zÃ^\ò€/PÉOïíèU$À,!7SSãÆ¿gùüd_7Ñ3·Ì´k“O©_í>VÄ|èv]¬Î®ø2~±F(æth÷Ğ*[dš^+¿‡XW9y7¼È¾™^úu©»÷íPzî§pGƒá	HW¡ap›µe·l®•Ï’ÉK¡½aIÊmÑˆçAC"£.*?c<ÂbQeÒ;,7§İ·3ÊÕ‡Öêd\ìCoï‰Ó]èI±Ñ2Ï]\?Ğğ=
-ü½ìkŸ|Èµ|[Eî¶‚¿orÆ·ÍJ%t¼Gğ8æsãù@5ánÇm^[èŞ'¼š_õ›†^YXX`â9—9£¼ódË­7¹LÊünâQAïÇ¶©7&"Ë—¼×´Óqà ƒi˜âŠ½Û»²ô¿RBÖ¶Y_%ÿ!“(Íºó—¨OÿcfSIù±Ÿæj^>^õ¯­é>R„ş2ñrÆÓŸ”ä«ö]‰PäŸk¿	>2!qc¾„i|M¿¨æ¼»$Ç*¬øªq‹w§˜ÿ˜=Ê	jòîüù=ğnŸ’¤m»eÒ©Ï‹üdØá¤iø(dÿªF¿NµİNº|w÷ª`ÙÆüÖÆ'ŸJ¥>qÖŞù;Ï-'UŸ¼xò}àKuôq(÷*xr<ôåØ­ÿ–«øµì©NœoŞ6ç[,Ö×¶o›úIi­•õ3|¬ÿşyü“ÇüÓçñOğOŸÇ?yÀç9üß}‘›+öwYYß†u<1°oîa;¾Øn(Ë|ó¸Ú–jÏ·ó›ò’å`»‡,‰îõ4Vu”×èêƒ–·òƒw«ëË{)3òú|™ÆKV?mã•~€Tq,êÌEµ’O²9§Bs¡›¥ÿêşkéUlÙFïyŠyOì#BÀ%Şƒğæ#á=óô?®ªFùµfì{FŒYU||tÔ3³µì™-‹NkìÎñ.±²_uœ… ª`dÎô›V‚rĞ=¿Cu@àş ğy…nØ¾d¼Õ”©…|¬­ˆ¦ª|ó:ôÔÄW¯ädÎÜYªÍ1H¼w^„Ñt§»ÒOîa¼.˜„\ƒä=4(!Ñ¯v›¦]|0\Óf±û0´ëàÙËaRÂIÎİE1.]‚>pØ§,)no{õ"~˜‘Šgœ€ª>wiĞ¿jjDbÒJÚ¼gM>:Í'™‘É^™¿£"ì§|	N|¦öŞö¢ñºr oD³„ÖúêS{¯ÌU-4æU‹ƒ6c{•¥Ş4Td›Òs-x÷†ıÓè}œº£HŠ‹„X^ğex-—w9óeAÍÎ×ağ¤§hÌ-gÙgMjg
-±í×4I¹êU™p=.–·E NúCÍ }EPÍšÏUö¾òU§¼D-âøávw‘m°f`‘â`Kg%ZŸ)âëMÁsš-³Ù*Ú@Èu¹¡)ÃhO j½±¾”,Ü11:‘³1ÃWœS@{%	µQÁ'¹NWº3ˆşoÓML·İÕRzûnšÌç_à‡GØÊ%§¿è<,vMeÈ©À,í=˜O«!ÑŸİiŸÄL£<^
-·—ŞÓs¨znºç%gpÃ sÍƒ6÷Ì¹rŞ{¼.[Û¨“«Šê_İ\ÑšK`i’mhIÜZ¥ïÎf<f°É½k,Z‚ÍŸH/ò­zpİv©£Ë»›	å"efÈåS~F:t[ë)"ûrk<	)¨~•fk:å\iÑS’	ö
-‘pRvCôUM‰7¾á®¼k–s«Œ.˜Låöf‚[Q|KÏÛOgÔÂÑLËëÑä£‘OÈ•8?ñ“Û8ŒCĞ»?‚ÛñæFºëÙ` õÉÂÂ.Ùøê6kÖ}TïÇ¢¹ƒ¶5SÚæ>Q%WA^d6¼cÂVÆ@½ƒU´šÉs&KxšyöÁºïæ|f–å‡2˜Ù·PmÔ‚0u˜®’;œÀááR"¬11Ñœ&Œ¤gy'±6Íp©û*Ğ¥x¡cõºí†;¤¯øèØ·z½Æ¢3;XXğ›HpYN2·µçğ\KŠ~»3 7ºÄGf¶ŞòıùEW½õÉŠÁB‚¨²ô€½‹‰Wôlø¿¥¡¬b¤î‰x×4¹?)ïÊïêÁG€$baÙ
-ò+xx”}KÙ²Ø'æ¦çü€Fuæ5äÓƒy.dé¾’mt–—ÃÂ	püĞ“¡wC@q&cö1òv¼ãÿ-Xó]gá	mş	¼¡×¼©†_Ã›ß–¡|ø¡øoA›O(ş,–›E‡6ú?åÀÅrÓÑ˜¯zïæ×$Ì§ğkEàUe’â|Î“MıRh|0Ÿ²ÃÏ¡á—‹ku?¦–j|)@øäFv©”?Ÿ°UõÔİoø·ä«bıO	ÇXƒ0Y½mú$øƒ¢˜«Bïúù÷<n>îzÜÀÙG;ÿ8o¥_²<èñ)ò3¾M"¾ÌE.ÉMû»ª?IÎŒg®dgÈ¸½³>do’d©aáòXº •¼İñÌ±ôŞÍ¡]œtYóî:GÁµ!EåpëÚw5Û}ûVØümÓN×NòAàéê;È¬½îO¤§[¾“·îñÈXÎ[U±€Qæğ­êïÛşM¯ú>eœbôM%’Õ[å]1oø¢IV¡ÕğSÕıKÕßKçñÖ[aFÏ¾¶là‹g¢–ï{÷áùºQ¬fçOÔÓ{JXóèÑÀÚ/~¸©ºhˆ+õä®dŠv˜Õ½N4)Ñ$2Y÷kÅíe¤	Ê…¾˜søTÆ]eÑìÖÔæÜàcñÒ;Ú£eó/ûT-“ÿZà_ÿ]Õ_ôñ×„Ç$EÑ80Æ2t-4ùG¶À:]¬äJÙÇH"Ê6Ù~ßşKÿRÜ¸Ğ×N÷kÿÂo¼AºÇˆ»ş¦¶]7É¹JÂ÷!ŞÔ“”$¤Úìª1êíkoÈO×JêñG}±½J'ß}ÕÇ Óå|J˜3vËÔÿâr~c2&"½SŸÜ8›´¿»!€akÛ©’ïõú©œ(ÄŸßõÚ<ÈBGÖÑ_`Œt’ğ€8æu4èmÜ=KrKf¿Uâ¶<ôĞï„I¹¸¼İ!~¤½—1Ò|ÌZö<råÅ4¬Ã_ĞÒmÍÎ­âKU^Äo_V^Ø7›7Õ›*ºp‹œ¾	›ıñ*·õ}‡z1‹TešLÆ
-ë"wHôb›hŠ7NV:`v+\â›º@Ní—"Ís÷†˜B{®Ú*šó/IìÀIûò„ Ë:ëÌà±¾»æ"ÊÛÚŸĞ˜Ù”X3­äŞd7W­0êbysaM.P:Á†‰»@¡6 Â¤,ÒÛCêÔ‰&ÔSºàXÅK(:/USàÍ–’p3°'lÒ:÷^â^"èĞZ<´¬pQPDê‚ÓÃ˜VŞ„pÁÉK-QiA!†ÉsHİ£•J{Gfˆò\cÈç-Séõ%5u•Â¨ a£>rõ3’®—d¤Í)ÙFÃÇ5„eKl”F´‘åMìµzÍ-@^.Ï—/·læŞ¼':~æÒ«ş(SòMÅ"ø„ºÄBT}ü}¡Ù˜
-±½µÛ2Ç)Z#×+7oÚhÀ2!‰ÛÄù&b8İŞĞ‡2ÙjÄ]§2F$xÔ‹×1^açu(ê,z!ŠÒEƒCğÁeô‡V!S62F×].¯ø–»ô•VéŠä§ë
-P„Gkà`ºo3Ô:vyóöU…´ÇÏİ-Àÿ°½¹¶ybq’Ü‘&³S} KÇ65cI×$‚!Ş÷cF¾©2i¯Ä‘ç®¾Ø/ ¨Ô‘uq‰:T€%Î–km1LAÚ6S¬@†Ğ|ÜÎyù‹3˜º…
-ïñ(qOoÍquy¡'¶›9œ\ j·÷ºt¶];-Ò…ï'µX.şlŞ]Aéïì_†ÊšŠÉLôò"Ë7ğc¥v×B—]vÎ:9³Óx÷ÜÕ»+ÊÙ”—`—ı.Qlµ£š:“T7ÉC¼IêCù©ö!¾õy·ŠÑ1ûz'­€}BñíÖ*t–j±§åÔ¾á-,˜3Ú•ïY3Ùº»ïY>ô¡_r‘€ô:")Xƒp’IqyÏ)¶€Ú<QÒƒÖôiÖ®­)]j¶î·‰á&9QÆ‹ÍTÂ1mBÏÉ®Œ7ğXêU#PóªÅ©—OIJÇ`HÒá&İ^ ÔiK[7Ğ]W:yzwBÃåu¾ÅúÄ N]®õ;×’Î·ju	¶áffÃå¸o[ V¬ôã]yZšâ¾
-¯„s™±â^b/ ½İÂè6r°¢éõj?ÈÆä—Ö¨¤õØw&QFM´€Ä/*K.ç6yd¾iŞüÁB¨¼Xvµ2–=ÖD±¯ï-K‚­½<ÍÛí"K7–šÀÚeLäıÜ% +ß ˆ¾^À2Gınº’­â<>y:ùË#Tòû¤ş‡;cÙÿ1iõwpÿo#vö‰Øğò=b?üP×T>wòS¬—:9_	?ç©èÕ!Ufú†ÈêÓ×Â~ÅRŸJ2çíêê(®ÄØ6ªÔ·x¹®†á¨™Sq’WP¿úÌ—2‘Uÿ‚”Ëê„Î—3ËOˆúşÄ°_%Ô>sÖ~úíõËöÛÿYàı6„¦ß2¡Wó½ì”6¯jH$í—ûªŠØd4İóãS(Eì6#†¶‹^ ²Şïnê™B¬wÄ1“0Ù‹¢’Ê“;ÄÊËj·{AüÕÚM2Î-`0+Wâ)ôšÊ…l˜4ñªéBØ–##Æyx—ÌwâÙ %³_Í&wPkŠT»¼U²çy¯EŞØ1C|&QˆJŸ”ıË>hü‘oÜL1~Ä¨—eî(’øÏ%P€vã‡ÖDÎ¼\ß!Ê2V†C¯R´§çwÃJV½‡äµ‚!‚İJÍqd}€sTÄåGş[-Ö£½¢t· ¼6~6sHÃ•BáÖ(ƒ¤úÚô©H‹¯*˜×øj÷õ{gÕy–‡*¹ÏPÚÚ¤ª”ÃA™|iVÀ›ü¦ÃÍ0t’kv½÷wÆQšø]Ã7PÇë±Û]hùÕ*CØ€cByQ¢°™]l¹ğƒ‚ĞôÛëÕÚÀ¬7upØZ¡B=øpÚy¥,^úŒ¿SÎİ},ÁDAµ!X¬x«'Y¥0=.Î/å¾M	R\×[ÿ´T™—€¶¹ıò,6Æà}v7T¢ìŠ$ƒ¯bG}$Ïzo?CåŠšà£°íÌÖÃ¡µOî òé\o,Ô5\RPë~ºÜAóİşæ:ŒjLs—e(%4âšg¨ÏÙD	åAŞ¼u¯ûµ~ fãjK1E@Å×ï‘7Ô5şgœçk§Ó#%¶ÂŞ¥.Na«%L8;P¤~V™¯9=‘4•qVuØó/fgUº:ùĞÄ“†ÃQ§·áòk¤‚¹êşşÚÜöuæZØ sJ£u²UÂk‡òg«gD§PJF.ji¿h9®nĞµèN8“¿´Cöfí’	Å`l%ãlx÷Ò†»¤ù¸cR_ÜƒœÅŠ«İqêjú[Í<Š]ÃÁ	`pP‹/UHÜ.“ğ–ÖöÍÈ‹"$@ÒúÇ]yŒ°¸‹½ªéÍ s| *®¹°ó¼ÆJ*ŞX¬÷‚R‚	(Aª‡º¬ˆ¹\pY‚Z‹Ë†‹ûÖë÷JÇÍ†‰G³ÁŒ×g0+óîn'`^¢¶ÚÍQß5e´ãõ¾«]7ÌûÂÓpÃè
-¦ÅMIdX“zeŞ%¯cxíŸq¼Ğo®w1˜T¡¢g|¥a‹]‹ÔH°ğ 0¸+ÓfI¥W´l^!Ú&¸ÉïçXÜÙ;§ãĞ›õ","Š¥YÁG¹(Ôücyë Gáö¶-«Ç``€¸•ı½ÃLÛ‰4Ü~WÑ4ÜÁ]GšË’Vy\7ß.­·fL¸ESÖ$Wl¼>&$Û•ş:o»z¹¦ ^ĞDZ®%\”Èi£çÙ.Âû«`ğ#h®ŸjAÛ]ìJOW>ßFÇÍETÅ¹–äáøÍÄÊo#µ@›a]JŞ2*jx—£,Ü ]=|¤`w†ë¯t3ÕOŸ´v•9°âHÄ‘i6Ş•SSïf¢¸Ê &*%îğÀØ_Õ G.ffß ¼YÚ%Ó×Í¦ZÄà½,øš‚¦s¶qrÈuÅ±û‡õˆ”yüëÚP²‰®ıI¨¿­5¾„²æ{DÿLÿzhs)É½½©[Q=šºãı»ñHô;Û~%œøø@€ol—7¼kşlˆåWÃv£¨ØãîŸ’Ÿ_É”~ï”½§7Øµò÷"¨Ú/Â¨«nÿ¾µø—\a÷ÉÎß¿¸ü%¢Ÿ¿ÃøşDß	ş—Ôç5XÑÙ¯İøÑO?§H·Lä§æ—IDGA/®·&¤º#®Y<j('Ù÷HŠs>ë™qÂài°mì¨w‡Ä–š	 w„*¡ßEOÀûñºÎf{³¼bEæ'š–Y„÷êÒ‰pÿtew1¹Û«%f*¾§Ú4‡ƒ*—a9’…Ñ 2EnÀè2™[óp˜L@dYĞİò¶Ì^:y«JñRù3¾5¥“kŞD¹éEwW_ÊPK;.Ğ3[šOOK^¯·¬"PŒõ¼;–Ü/%^Vr“t˜ïñŠ)®
-p‰ß´—{ïĞûQÈcMŞbâ)oIò\CnüKdĞ]‰àbĞÔåÜzlÆ® ¾M™YK,âAôXH2úóDğ‡Q'ømÔáD#8DÂ”U­%c¡¹&Ù0Ñ°³Nü5<¾ãÓOı.iĞ^¦‘Ò9?ÙÊ2­Põq	ºå>Şj{†ºğ—µ*ÚeŞ'Æx{¶Œè  é²lhÿ!Şm)û%:ÒèÜ£Ôi¤§²æ–×±x¥Êr¾4Óš£Ô¸®Î¤cİ‘>ˆH:~û;€«Ş¹‚<ÇOöî^œvñwaëÄ]ñ¹·ìÕRÈ¸C@ïwwY^†äÎªkãÆüÌ/Ç´zX°ïŞ’”ÛÃ¼Æu®™”HÙ»rİ]4î¾ƒª“îªi€9#ûRÑEuêg¥SÉ÷¬ŞN&I¹xÃÀ&iL
-‡ùª´‘>ı'O2qÕïãà›¯¸3Ú.œøÛ€zöãvÇ-ãıæÑáÃ~_Íù·¬ä‹ÛëÃ >¸æ=.3 Ç?ù¹½Yû4Xÿë>lÿöIîÿæÚÙ‡•ÿ†•È°×îpbU›œùµÙ<wy‡çÌ1uÜö ş¢b™B!Ë‚”­WX¥Ş¢xbn…sãÁxÄ,ßÕòTBzĞå¤Ü¯Uˆz†N‚‘È±š“KĞ“™hğôèvÈDÔ6
-U§…Jã¢ö³k*7Ö¹N@[ù5 Ií\Å¦Ïåõs!ù¡¦ä_éÆ¤7ğSynÜ”doBÆÛÔ¯gK»Äa
-Š• H¶äÇm7OƒxNK¶,W#"£Fìœ[±ø“ïô-$FØñíåB½rÂ¦ááòòÄÉ½#ÍiFïx)ô]P1©ğk:áPÈ^Qšf‘æØ<]¸ş—‚ş­`6wÜŒE¾@šcôıŠÇoj·è†5$»ÕWÜ‹Mcíß£÷›ñc×1èè¢öÆcıÌ79·°Š‡½Ò'v;xÂÄ%ÆI×$Ó±×%² ğ0ø‡eLn`ì{X6Î^ƒWì-zæ]äˆ)w?^}pºt9Òºíp‰*Dx»yJÖ:ø¬Œ‚G´¸îÀÔÔGc¾¶´)éãËæ’×õ¢ a‚ïÖr.İ%1«¥ÛÃÍ…÷¹Kº~;*¼\“;è;{¡/L‡º`®5 ¹(jf¦– #¢-íIZ@rDv—ÌKlÌ´µú.;kç—ˆĞr]^~
-˜ò¬ºÙQ­Mö™Ò/@Ë¿ªüÿ¥ğŸÿ©ğßZæA©êÃà<R/ö£vBÉu­q~‡rÖäa
-ò”·¤‹«Š4D˜ßu°#£}¦×qo(aEÜöüŞl8.¶=eOğ|½1åZÊ5Z"²½“—•	¿…há‹ŸìÉâ ˜µP'©“ŸÊj¸p+EDµ´rô†Â.WÇ˜àMÓK(Š_•í™æ'EUğ{eU¨6ö`ö>ÁÜI«IÉä¹…+=)°hµ{î1BÒ/Òw$•ZÉ.¥g¡ìm_klÙTµ}Bí6öÖÊ¶t$1ñ€­ztWejšÊ]ı¡R´ë£0Û©½<)ïä`exß³&›z·GÑ0µŒ¸Ò*İ÷Øì\¾Noh/°ç`¥$&r ¶ìÚºØë¯÷ÍE¨—ÑÄ9…Ò÷˜}¥~#jah.İÔå‚3XPËWŞ6b’é±±DF¬8ør\š™:|9ëã%Hè³n5¿êôQZúFĞĞ—bC‡ÒÜ¨ußÏhxÛ`PìBº%ä}ÃÉ :ò;Òb7b²šwxg-¼ÎŞU•Zn|×Â­ûäí^Ò/5-va;Ic%hü+4Dş^‹é,v—k_Ü@Ònå—ÅĞänÖG¯Š.­a“O«R¥_ä4`Á“2V’š#„]Lô&¥[÷š*»ïË•ƒÍ	»g 9=Ï8É}ğª‘e3—J¹—h2øÒï§oo)Üß®ÓË¾=&)à×Cx©ùqÜå7÷ê[¾Ö}]"øY<Óì±[?R)	º¿>&ûŸİã—ugş[A÷s¿º~fÆÿúØúû9î‰WIŠnü)à…ŸìÌ(şóx-×KïìRZÊüºï‰ôJnçBóQ÷×£O\ıdõ$ç…é¦„Éeét¼êp-G œïÿ[G8ÎóÛ§úŒÍS(·nèÁò1w[.ÎÈ4‰d(,Ø+{V·=‘òUÔàÙçÿÏíàÂçĞcJ€'O7Úr‹jĞ¢A'ärÙji?êw;nÅx›‹Ô{Òáæ§ì¦(høúJİNÿ› Ÿ6ìíßoXü³aıâ·ç1–]{tÏEMÓNó»É?ÿİıÿoÃjÌßÔYhòX”ééëU¸L¼ü„–î	…J€QQ@1¼æ›˜Šä×‰¦xa8S/ş³#ú¤¡†A‹E)ç|3/ÏÌˆŸzrÓuÂ¿™€#T¥ŞE¢‰uéŠ\¨+(òKÅì¹¯Ñ¸hVáİ-¾ü÷uÀ_Ò?í1mG_ÇÓ‘Ãm¹ï%Áoáì‚õ{u¥ŒTŞ¡UfPÄO¼r~†t"¨‹‹wG¯`%Bã‡îº¥,×+]%:Î¤!ûÆç&4:»èš^ö	Ò_OØyÃ6fpØ^<6JESÛû[‘‹©Zóâ]å]‰àYbkõÓWu:|6zø*{8KşµØ%Ú¤ü9j–ÿXê,KùÜUÿ±¾jÀUÑTüçÿüÇZÆ¥ù'úàÿÆvØàsö-¿Ôoı®)îky:ô³6&'şhûıRÎ@i´}ıQ³`¢<wŠlîó·%ÔÜ=‚k4´(:ò¶>öµ:¦)øüo'ôæ%†·wÔÔã§°iüOñ’4¥¤¾t}ç#ïæ¸$¹,§¨´ÊßeÎN:x×ë§$ä[÷Ùxş}ôc €í}~«{>#sØ9ÿÜÈ íSâñ½
-CqM×¨jÇp¦óé¹9µ(Û>ÿ8ĞúYÍøıÆÀ·;÷Ÿe:ˆ»z×ÔoêêÁnjé¬:#^5ÛıœZAê§ìW×TQ°~f¦S²JßGˆ?LØ-Í—å*1¬åáù®TG\ïrqGíœ¯dŒüºY©?±ı$°;‰BX‹œYGğ—Ä!ò¦Ìğ¥üS—4×ü\ş5iİsyŸéA?–¼)69~ïV”ÎW|yG?frÍç¾(iháù[C¿ï¿~ËßŞÓG¬1¾û§Ùå\ÚrMÊÚ©/_
-p¾<íücÛôg9ÓooWŸeÚ_¾áO²ğod*€_ëTŒˆ³ª÷‹=T(É?²è“„`¬½ ³QÛw£vCúºÕ¸ÔYZõî(Áî·Æ¸Í·îb‰»5*Ããª&YæYı´«p¼/±\r[ßf–MYcöÀ…”I0¸ Ğ7åwºŠÚ¨!k¬ïû•7ÿwhNü™$	ûtÁâjvYøƒ%{²´KÓ;ç·Âø"á§¤H°D‰±pñZo³tä€€/®nÖ‚\1SÄ›ÎàÌ–¯xí8êŠ1xwú&ÛpÜ˜)ëğRXâ¡€Gp=PŒÌDá!lÛtğ,uB¯"ˆLÁƒa°VWÇ‹}MiRSBşIŞ^¤¤ñ·'ÖƒÏíÁıÉÜíO96Ú¡èbş¡A¸Ë­Wg'ÛÏş•tŞ'¡ü^kéôıtw¹½Ø½°¼á6ÅŸˆQh:	*äÒ§‹\·±È\l”lPV…_rñÊRx‚–š]‘¡J6í>®OštrdXRGñK‹ µ_A¨áÂ¤9]öDÄ°öòµÆ—øx 7P½#ø µ–ë6®öB’¥˜ÃR¿J®>Ş¹:„gğ}Ûp˜Âul–[}¬?öÌÖG¨é‹·éşÌë6'‚‘¢«©9ˆìôÕrğáŠƒ£oŞfJÔaF&Ø,ÁKvw—¾ŸÃµ5ÃÆh•ãEè›ê<ğ^¼ù¸•À€š(#³æ‹T\/ÜšHÓÉô•~Õò˜ßÙºÓŒ8m>|jíñÂÄG÷üëc9á×—NlÒ±…ÿ˜èï%ÿşEú®øä¥º¢âËhüË›îm÷‡¥ÁOÆ€næø.H!;©k8¨ ²æÃ®’ö¸–ËÖ¼åhÔGÃÇp]Çb	ët=¡Èj¥ØT—5NàöM¦ñ‹Ä
-æ§ç[Gõ—¿DS–f}«ø†à>¥°vUmuÓÜo ÎóúéÆ««îv+ğgü?ybàÏùoŸXéŸ&ğÃcf_„}è/3cI8R=\Í¡TxÆØ¡jú‚îk¿"ç¹D¿Ü°ytùRÉôw±	 kÎ\·–ğ\‹İ_Ü8AûznlŞ·K¾’…uŸ÷,÷ŠV$æIªeú­Œ…O•vÛáf!ºŞğŠ¥å;Üúğ˜Æ8^²¼<Aò!CP³cA‡˜;Èt_F-h˜×\dçFÌ6“°Jè²Ü.öÉ™Ñqˆ¤G Í¡=¼Æ:XİosÅ(‡²›+ œÊ–C¢ÏMå²¦øŠŠœ¨W2XMö›¬s[¿ÂWSHÃjÛ†ôzM0LÔ3nsn¾Qáõ¸¼9jÁã¹½Ef#!¯b·£
-D0mSÓvS÷iiFùÔ8–²È 6Ÿ¤Bş
-‡oÂğMXyTFqQnÛÚ,öPtåïğÆÌ+ŞìV½¶š‰@ÁúĞ±6»xÅı&Ìu÷8²IÌû«~ŒñJ±Qy}ôTj¾T¹sanÜ´ ÚHÅµwzñ„µšEQ„¯²2%µU6|ZW+ø%õI¹‹*Ocd"¸Hƒ[‡AO(k¢%Ñ`¬±@Zfãù']òÂsQSAŒ!È3gxy¨û*o@gÂ·¡#I[TÚ©Å¥EY×Æ5Â•ŸåûiMkG
-åÔkœMÆ+ÜV"	}İÚGu¸.Ÿ5é ¸kİ© ò.¿ıJ\À‰O.Eš!k«ßı†èŠdH„v,EÔùÇƒ)‰z³1ÊkøWüùj›>=xçMË}e@o§t³OáÀkàxû¼–ßŞ¹îB´ÏIJIHg©•t˜x1ê^ï£@aÃ˜)ÁQN|Õß  #ì÷i?o]İ“ÃQÙÄKvãİcyREûzàBçw'ÜİÉöo”Ö+‘«IÈ£NÄØ“u­EPà*=¥a„å=ğø59I¨µ
-”Êó	€„¢?6Xß×qW¦¾Ğ)›=8ª{\Â÷‰·Öû]Ë‡"¤ øX÷÷ñäQeÑ:—÷n>iâÙã%yâ.íA vÖë²’w"ûe>Ê\ÅQe”Ñå„[	L_Ù „9Œ,å/zÄƒÓ;;¡é}b…ğg0x[bÏ¬‰d»ìVá ÉıµK¶=¯½¹S$±|M#ÎŠ8\ìà„°Šë[“~äñ¬‚…X»Ì¬M0ªğ8Ğh[è«-6…ø"b~o~#óIIQ.DÌ
-ÆÒ€O×Å%¤‚i7¿Âø6Nà4Ã¦=XG¸`|!¦oQõDmÎ»Ø¦Q_ãq0|óÆÇë%y3G#òã¸°¹J9=îõ[iFD3,ÙâòÕDÃ*ĞÛ¶¬uïÁ¤‚”DÜKYšÎ´?-älcZË-6Ed/9C½ïï´hk3×EØ{¸BşĞŸªŞ¯>^O¿¼5î#ˆá­CxŞ'oèoTÆOrùÿKºæ¯UÆMëo ÿ9@>yø`ñ¹ï1´E¤ÚWˆ^Ì$FJRı†2•rÍúÉsÇ¯Dõ„¥Öë)Oü}úZH|!qLì	Oìß4I>}ÆäûûSå/ä-cú‡¢Ö”å@ß‚O­âG<9t[E¿v4Xß¯®•ş³(u•\¿’crå\Ş½ŸÁì·É<'­V)(¢şç‘¡ÛİGdëC§˜‘ÖóÏW¥Ãò¤Ÿ4ş•‡~Ø¹j* 4Ú;¶şáN²¿(‚~×~ğ¨H¤¯ämÈïÓèn^ƒî·xi_ùíâ½{ı¸[5ln\*D[DH¼_Âó/àú›NšWK7?»ùº»\vî„®ÁÛ)h×îB3Õ¸Íl(ò‡ü-.<ZøM³ùÄ4-†Çêxi9Cz‰˜±˜d8
-2˜ê|eÖ11¬/G|øMBÓ(Ì»@<?Gô‹’Júî\ªH}ï£(…2·]±]²'Ğ=õ	ÙmØ§”z€µ•È=ğ*u·9t5a{¶ï6Lî ìu¾&]¼ã¼ÿTH«"§Mh["ª¨ğc\¸w~©ñz(Í`?q‰+AqC	Œ.mà#§Ş È¼]i‚[i{/•±å_Ì1ŠêåfJ¶?\”‘$^TéNC{²åŒI
-EÖ'õ…íG­íıä”°ãÄÄ¸>¼{Cu÷Îñ´fáî&FNÂJÚNÊGÅ¡î:#Ù¹MÚú~yáØÈb °9]ê·N§Šİ1Ğ#à„›˜ã÷üĞgßMë–È%EÙ’Šo¦jì£8Sg$œÃ¹^˜Wµ^Â”oyBÜ-ú]d<àu/Ï¸3×‹‘÷Éz¬€½ĞNÔn¿ãÒ¼·Gá¹ ?êï·28pİæğA¿U<oÅ
-Ú`k½j@µß´/¥Ùæì=¼_öãIVG¢ôMßÆ3<Fş¤U-Ú¢dztu›€˜½o—Lèx(T¾7Çé\~“9·SŠ¬„îíŞ_®d³½ìbeAJÜxö×à÷-	_aÆÉ“•ŠHNƒÎó,¿'œZµªŞ_t‘¬™(nv>1ÿ‹V‘:ƒİbR%B®Á‹w“^Û$ùÚU×BW<’9ßå¤¢g<ü| ”FéÃ›ÍÂ\¶{:T\½j·‰ğ'›R‰¥Íãj]w=Š£P˜‚“„µËbFX0t^@QæÌcå¹Şy¶'ÚßºSDkµlzd]¾ÓĞ1*.«-U¹k’xàô"Kóe¥Ñe.ß¤}‚Ş©–«.1˜N:Êa•y9ùë-”J›(Ê4'ò5ômŒ+û~OATíõt<ğZÚTƒtœ¹ˆb¾¥f9 ÏÑ€’…,%$MæòÂ%?|yeã½ox¶ dnòˆç59œñÌy¥gè£ŞD9F÷D–­ÔÍCÄµxl¨î˜–“‡– Ë=2^f16Lèrùb©ïFùYuúQÁr7¬1½Ûm6bè IÀû—%E¦ºÖ˜3gAæ‡ƒÀ=I¶xmŒ"kşq=_ ¯«ÔUZ·ô«gvûÓ¯”¹Ë/ÌUGLL°,±ÊÌé3"Ğ­²ëÊ—Ò/¶yi•uê¸·eôÛ?^ùõÕ4Z$ù’4%­—İu!oĞ}V™*ƒ¾»^†¤ü Wóòê‚ ˜§e–n!)Cù=§=Eã¶]Àlü~t¯Êzû&™>—¢™àÄï±«&Ş²¸•b¯TícÒAØ•@÷…úVıï±KÓÿ5ìAAÿ˜/¦Ïøµã\çİ³ŸF€‹Š;¾‰üwpÇv ÿÜñÿw| ğ™w­1äñ[ÜñíÚ¿ÀØü·pÇv ÿw|:‡¿>À(Ö]—aûB…ÛïN_£Ô…T=ˆí^æˆJùZÖ½¬”¢f¡®‹Q	}o¢–díıv²ùk9İ87=¢ƒ³ˆÅŠ™0%ÒøT…(bÇ¶,¼¬•çbê|èGF?
-|kt×Jõ|ƒ¿-ITL ÷Õ=ºİèêı®{M`Åg©ıéÌ¯'`''9·KG:ÙÌsÉÁ´šaÛ@™Éz”ù]…ş„¯şYWñ¥½_+³ç™GÓğ!´p»J}mF´q¼9ª‰hPÅ‚a
-–…¶(cÌiRbì‰«€íwWé1ãq@¹t_	 êEåt×±>õ”r­¦¾¾‚·7)Ğ|>CíÖÇõå…z}ıOÀgœÈßğÿ˜ÿblŞ?#"÷ÏYñ£3YtÇ ?l>‚?$"§øıØã¶Ì×s‘!]'ôó<9~Ñ'?ãª`ñÄGÌğc?Îuèl}|,ã4†wÒR§=µïÓ~“Uûì£Ñ×X˜˜¿MùzÄûãÄDû.jşk]ƒÌ©?	Bñt_ó—ŸÆ‹O®ò¦ÚÆ¡]¿ä/÷/×˜×ştyßWü7–÷}uÀcyßsÀı”ë,°6tÁ³ÆŸõš‡›÷ B/Í~ÔÄ+¾Š¬0Ræ@>øá’Õ~¤_ıÇÀ4Ë3èSu)“Ü7HsÄü–,§iyéÏÇcs0¾j fkl"º¶5ş°õÂV ñ…iİ>¸‹>'!o~Ù¹ëĞäJ{²E·ødê‡üÚS+X¾kDˆy~®Õ««¶½Òº‘~gë@¸‚İq…=Şx³7DÇ”#ëõ®–Éx_ß£~¿<2¡ >`=¤{¹Âu!ª‚îé.6¤8‘’\ó‹¨»\RV`FákÈãäQg³²³Lî(İRLo„A»EÀHÛ^Av´æª®>p<q:•VísÍHÈ˜s€¦„aKøkêÀ(&áN8Õ¾§½µnoEX$ô¼„¹BJh´Åe8âınğ=+ÂÉ¤`ëëEBq¸ÉÂB¥Â>å{YÂBzd¹=>wñBùU“!Íé`£Úe¸ONò2ãI>°P®†½úA’}Q°ôÜ¦°èÏävXm4x7Öã1O†5’|^Ñb&[/oT½Ï<×Š»®¸öT	,›n<&	¤İC÷¼BĞJZuHËš9Â+¶²åñ^:(ÊŸ­Åaª‚£ce*ç#å\BJ²•…ìš‡¥ÎÕÚÈ@ÔÁ­ø¢"• İp ŞUu¯ğfs¤Êi)¼äúá_|qö?ùëühş¤Râõ•ˆü2%”·s#ˆË+Õ‘u<b³iºö'%%Ğ£±«şpµGt#Œˆ”¢ô€¡°éö/£”7İ0…î¯R9‚Õ&ñX˜'œæW İ7OÜ´ï¡Ë7hÊQ~ÊL×8±ÃİÎ‹j5ˆà¿]LúóÊ ¹âğ–ÃLÌ×µJêÖn@pÉ;Å=cëKÖ&Ù~¼™í) eÛGd–($»Å/$^O1ƒ	uwù’·,iQA¥Ñ=¸_ÔÇ+è4aæladŠLMG{]ªÙQ1bà[´õïØóé"*õÖ=R—ŒxÏ&!‚æ¹HOw¿ëJ…É7‹¨¦ñ!]ú‰e@ç¬ã§İ®|yeñé½˜u´ŠäózİKP®6¹¾ÏÉÕ¡©Ö­, 'zˆ{7ş\×D2Ğ¶³<ÑÕ¾˜ÓÃOÒ9³{ÁWìá´²Ë“9õüC&[Ù™»->å6ô“mä×Éäş>ùËÉçÔÛ fpg¯H¯ìÃ‹šÉ‡¶¼‚SÇ÷¢6Ö¢oÒÖ¤ï(œÊ²k}±—¥×x>¬âg¨±@öåUOW“g+‚ä
-SQïRJnĞ›'tdõ’püÄx#b•"UÓy<ë€‚\õq}éYí
-äµ<³n¡ÍnQÈN´Vwh?İWUåğ†!É\×X.@d%{³QXó²£N[çÏ™¶éinY?î&8™£t¥!¬‘İº6ì1áÌ}7¬ ­2¶&ã¸àÎOéĞÒàßÔ¡ıSlòoøÉ?¡(õ'¡–ÿPPºI¼-©Ğù=EùƒÁ‹ÿuŠr‡ıŠrı…¢˜nğ?¢)ÀJb‹¿§)Ÿk%uù¿‘…TFüNSÆ_§G9·øßSàG±ÜY&Jüåı^!RÈvJÇO"Úe±‰÷2¼XôJ™Tmá^©¤+ÆÉÅ¼¼H%§‚úH*Ø$Ã«zp‰ÌzÔ•%^î*8 zÕÅãu„—PÉ®òœW‹×RµÀ .óë>“’ı–ª|Õ)âŞ²¿øO¨ã‡#ÊæãaØ—ãÿ”ªxxÿĞ³²hÔúZ9q&ıâ£ÕŸ­ıLU2òK]AËhEK€¾û«ù÷Ù¥‡¾>‚”÷¨qšRâ^£{Â¿]=º)ØÌåµ…H gŸé §UÅ=kl5ÌrTm€¯Â8zÄq˜‚Šİ%{oøîšÕbàc	ƒQÊï%JTÑt[bıÍYÉ×±HV‘ıRúşcŞÿÌüÿ­Ğ‚n>#Œ¼©ÇzskK/¦ËşLDÔ/²H{šöí»Úº˜ğönràºÙºÔ—ª´2ØØƒ4¿×‘ÒU:}Äi}xÚÉ/?S¿üøÕ¿™¬±©åw¡rı*‰ôÓµò3“ƒ\…JÓ/ƒ“€ÀÛìÈKSœªX”¥•¬­Rì÷R@ù7+øÕÏÈí—Ÿ_ø/ä$G¸9|·§öØã‘hôƒ‡Lcš€l4Åm™ã‡|göÜ‘›UÅÈ¥—§ƒŸÄ|ÜâH‚’h¿l¶î˜F±cÊ_GşÚ½Ûî\j¹Va¶X™Ú³ ÒêıÖÛÂ'O^wJ2bGjFŸV®9ù óğ«¿&K~ó¦*ši	ñGnjb·’D5bx/Ò¬fQ#¼ô~ÊEÁ¬ÑŒÓ”‚"½TÒ^ïƒø’giUÚwû–t,v…%ì*K&·í)Ì7}P‡<@ı#>j§³(!JE–â$şKôk½Òê¸B÷}PâÖhŸ¾cÌÕƒ§÷iíwH³Ô4b¬¶¢#Úõ§5IL„à:”æWXüœŞe‘ÇéÑÙu¨üı&ApçNñæv·¹-…êšFe¸µ~/7»ğÕ/›|`ËOÖ·À"hO¢‘_/z˜s%\ÓÆ¬o†kmû6Éé¡¿¯oNgX+¶ Ö]ò8[v€V´<Ìêa2‚{xşo}×KÒF²ElQmèšÖIÛrà)ƒ~Â7Æ“^mB…·Ös6Xwßy9,ª z]^*% y‚Öãô‰á(BØ„¦ĞlËÕ+Š>^ŞQª}0†múõÂtIèsÖÆÑ¥”Ş	VcÙ‚ğé²“9†Sdd˜ˆZ…Oó„çíûHjö
-8^Åevÿæ<âş™’µÄ¤WVÛ£è–Wqİo»P—OíùgøËÿi¯T¶ûó]ˆÚU4 H¶“¸­#×°dŒ¤ÇMo×ÆwébŠ“İh¼ÊKÀğµrVpõ-pM‚ùYÜ2yr»)EP»ù¼İÃ'2ì5ô§»|è˜‹ ,µòclœŒ,ï/Ö8RTïW]'[Ù9ltUÓ'ñÉ”Âk êĞ`÷ÅòXk"®‘6ÖÎeg|MOñ7Á2¬Ùà³R¾€äˆ^
-7-#vsÒ«cæ›£‡m]Bq{pOâvZĞO'p¨6÷vîà]òşı~%Ó¯ J›BW«'íµ|#	8œÔ‹`ÌĞ›¦ª5xÇåv§F ±'»ÜdõV±‘%ôG'¤ıvÂë×M…7ğ{6ü>ûBR©„ÍàB^
-¹drÉí'…Hç¨+ •aßê!FiÄB5ŒddqpG&'újhjCÁÖ× ñ·³Ãjóäx+‚ÇÕßŞkêIB5_Xl²¤ ıÁ* _ÏMèVèn{u(“[¸ú]!ªZO>fMsÕ6gbß’äœ”=cğN¡iÿz‰³t!IÑóxToQá"bÃË·®KIõ¦PİÙ¥5NÃ`³W‹™x…*Š£Yw(Pk]¸†UŠ¦„ëx8óRL·×;Öw­X›Äqs²…¯U-­¼wCó~‹ºÃ¥3mtºfŠO7O†rG©§È¿Œï1‘ş/A¤£ÏéÃüe
-uÒ:‹y&Í»ºß×”òÛˆŸù‡Àk âgş!ğ¯ î¿€xW•©Vİ6NÜbFÀ—÷òûEç¼¨ı ~@ğß€øA4À¯ 2_f	Ág<ğO}Dm8ùÆ²$-2AF²¶~’c5x$yÃ“SßÚâé%7¤#àÒvì¼.AVÕºNE‹Ïƒt“)&UÈñªT”–½ğÃRğR<}Í )¢ózX7 ²u¦ ½ù[á1W24;yDSœÀ¦¦õâİĞÀˆğŞì®Æê”2Àã“A)ğë%&Î¨?˜¶§2}~ÉÅ³Ç`‡>øÓÉ€¿¦˜ÀÜE$¹††¸JSÚŸHÚE1¥İÉ]-ÕGúÖ8 |ÉéMİ>ï—l÷=;wµ”Pª×\%Ù£n,(–>W Y²$|™š•—¦ªè¹+ŸœL¤±To¥Ù]
-â•ueÄä“ÖÛĞ¾$r=	l©‡GŠs4Ä_Y¯sÂño6ËÃ_Ìööo1¹ùÁ—ûı‡ú)¸ÁõPb.z“…†n`¤>tÒçß*µKÖüÆ¥>qñ3Féëd#cã2üÎªÙú¤‘¿25ó¿šóÕÌ>ÍcŸüı±³/fö>züZ íwf¦ÿ$€æÆMí I{’†UªúÎ~-×ùÌÿÆN#W¿±ˆ?*'şu†øuŠ}{cŒo)sÚîÆVpsQÈW6Cµ¯…,oêø›‰¨‰ßœ½—q®åv1•A•ƒÆº¶ ªfÉº.^Ó`O÷Ø,ßM_•OL·=İ;&<íNÄË1»E$‚W™•vÍB‹/ûÑ¸Âà¬tç¸Úh“Ğa’.ø‘.n'z>Ì1tØ(ª•]rä:;™ƒ²¹k†ğA‚óæ‘“tuÙ›/MÇš}RÂ¹xÈïo,oo‰ŸÉÖ6Û·ˆJ¾Ÿö]ìÕ·pmúšxLB_ÜjÅQæÍ_·%UÒu‘ïZÉ¾¼Û»Õná±XXbixOàUÉt^K±œ±$GœSÏƒõNÖF¦àÅ…pLïÉüŠ³æ¦&À·7Êsâg}KŸWše„~ßãq;ª	™¶+Óaì>:Ãz•–·áº¸…µTƒ%¯›w	˜‘~PO@ön±@îïÕ¥1]ˆ½å{W…˜^×m¹÷	aªÃ‹gä¶İàà©YŞó]ÁpS8Œâ«Lygj-¢"àVmWÁrİÎí'Ë¨úğéşz7PFu?³tSœª—fıUnß»ø¥wv‚ş:½b1a-=éÚßÖ5ôMÒM-jí‘löÇ#äû§éã»tªCÎ“:œ!Af!z=Ú‡~7 "NQ¶ „íùìk¸Åû6mç”À ÜïkîiænãüV‹æ_ô«ü6™"
-l©W”a.½±®~uÃƒÈôdš5'íĞR®e±Ì§ûT.Xİè¤“±ÏKW*È8kópîiF{¬ö¯Åc?’½Kòzn·‡íÄqÅæÌ6ŞZ"Â7’'<Oo¸>Í…A®+¥Ğ>³÷Pˆ^Y\°¦S«¥§=©P¢;peÓè¢¼^ÂpËüª¯C«!OnDˆ˜	ŠÁLGÊ
-˜"¹8ïÅé¦ş&­—kªùÂ!MÔ##J"$DG;'FZˆ˜™BO0Ç¥æÛJ8&`§Äk@µ&±Mmç}£8NDSëÖûhµ7{{7Å}ÌÑü””Øg–‘ûÂÏ—	º9İ¢6¦V!} ¹a†vW‡Tœ8í)wyZN³ùø«Üq¼ƒÛ•ÃRg˜Ğp”SânÍ@GN£nÃóséâ)t@™KÅ],ÕÙ'ø§c–n|òş.uô"m¹ÚW•eÏ³°1œ¬šmınyUuÁ™Ã
-ˆ·!cTG¦;ÙÌñåó]>î:_2ÕTm…orqdt,“µ,yYº\_æéıbŸ¹^>DĞÍ0“7`Ïd‰’‚.R]e¡#i!‚C¹2î¥¤%Ïöª¶y¤SĞÅjÆ’cb‹æ÷ àO×MïJcÛ>^–¯œkÓÄ¹Ë¢¦wÓE#Êóy„]|`ZHJK’D-íÖú,)P×øºæí
-ıMïê'³ÛülÓgú7ª‹ôk¾üOÂñ¿ÌŞ'0CòÀlâXvgô§}˜AXhg ûÃ	âÂ¿
-ÌÒ‡û|Ì÷%0sOÁ¬OĞüGèŞÖG¢À·¼Öíğ3 ¿M”eÛ	•¶_%Ê„Ÿáü÷‡ş·Oóıa>ƒ„€8 ±§¤cWùŒ^ÔùâP†kûc
-ù,µï¸¨7R' ğºŒ¹½¹IšNÄ?ğ[]ğ×„çèÂ·,¥í#¶D™Ü€]›v·¨çÄÉh/BJ?úX•·5=ø,o`¾Á!„i(EĞA8ÖèìÃHğÜ€Yˆ"`úœFì·ÃÄ]õHEñ¨ëuø¸ƒ"1ÛIvEîØˆĞö<¯Íã€+´»x‚~¼†Í–N›‹—;\şV%aÙ‚ó0q$­&!x¡yå¶÷ÎŒÜÔÓC™\VIØn;ïª&€Í¡Ğ(|ºÁiÑ¡ ÛÏòÉG5V	tşÊµ4 €Ó¨uHOïç—9¢—Kİ×Ê_y9¯% ¨‘¯µİ–ø…›™­s±/]Õ#ç…~ZÈU†„¢9Ä,$Ì_‰;I¦›Üy¹Mâ{E2Zå¸•ÒİdxÖØÄMÊ!/acìy¢!9İ³@A*Ÿˆ/ìUSö{Ñ~.Î†PÚ¿\'æI‘d©YèÄ¾§.öÂ¼
-â…j¿{cÇ•Ş›Úz¯·æîÑÈU•ŠMkEôUUìÅjZ[h+Ê}ÅµRyÎíÊOìnê½î—•«çğxv(Våu¬Í br\<ì 
-Mªgô7#ówHí„L´`º‚õ[&$™
-xÛcxEÜ¹×‘Ó[€¶úÃ–G4Y!ˆ£u×ô•š[;ùJQÅ`^Ñ
-ûÆ=‘8óJ, Ğˆ
-ñ§&ÈÍ4ş¹¼iğûúàÇ$!&Òj|£9Ïè5tj-ÆÆÜí~Šøwúšß•`sípÆq‰0u)Ğ;¢2×‰FHı¾Ò1¨Çk{eûDÔŒ.^{$Vü¦„b 3T’^»’G‡yÄ[órøI³—MÈX6Ëp©$dóqˆD"w„¿„j6é6Uœ¥¿y0·å7ò6‘„ãÍ0ù
-ÕC³æÑä>W¯ŸÛ¨>Rl³](ó¤›¨³;åzëbÁ)–p:·4†¹¦H$º’í{ïş¶øn!"¢€#İ¯²˜Xç^^.‚—-HãIlA¬P~>LŸÒw´%ëÂlÁËÍ8áî—×4Bó+¾°>Bã´UéãŞ1{ÖHÒGÌÛ”-ğº”5JéÀ!ÿ(•yÃRú-D%Ì;7ùÈ®ÅêLƒ/¥‘7knş*6ˆ×nwÃVâ@GŞñôŒ Ñ£šb´Öà{O÷‘á;’¿=*‡<œQ ¯¦»­>ß.¨Z@$ò W+"—u¦…;¤{¸ÃÓNwñH˜ŞL‚wzğê®57d²óÕÑ<UæZ9eì¨$§|Ø°}áb:àJ=p×©ŠğİlI3÷Ç.³4,>F­
-IÉ*€´<%gJºÍT#ÚULr_Œ%ĞW·R˜4p+½pR?V_¥'OĞjCÚğ•Vµ4ú Zô¾'ì¤y·×hû»‘ËEÖFß´şµŞ
-ï4M±¿šğ¡=k7×Pµ©8±Ë~ùİQÖ—š:¯üiÂ‡Y‹[’Æ÷£[Ú1»È»¢ñG²à`•ê¾«vÛ_‚jAB:ÃBŸúW9ğCûDÊGŞûkAYÿU å•†õ£#®3ê®–éWmñŸ®*÷óxĞRMñ“EùÆ­k6âëùéPt~QCFßTö‹œ©˜iÌ§78 õü—/~o“ş,À÷ÃfÍu^ö—sŸj<S×|İl÷Æğ˜nÿˆcàñàt+N÷ÜâÃò^-Hï¢yÄ¤Ï;2›§—¦¹9v"ğVìàª·İ Ó—æ™K½–Î·Bvk"ÄÓItğ­²ªƒ¤ó•.¨¹İµû¬Æ‘¢©¢í k¤W›NVMî²ô]®£av€A¬1c‘,Mİ‘ˆ~,"á®Gs5#“Y:¤!KÜÖNæ ·ä¦5…’?J9·*£v¥íâİfƒXÉbL3³ˆXßØÊ\ôÚö{Iå½ƒŠ'ƒzK¿•P´¬	yo\°oòt½~Êƒ&ìòKØïP_™˜Ó(ñîlİGq p¯[À÷¯üa'ÏT1œêº#ºsË*7Vnòà¦r_1¯ç#¾RÂÖ³7‡R¾¥&üÄ2%9pOLoø“ìöíà¸6³±Û&–Û,£4„ZIQO$8ÄîYk/óñ»^O¢&ä¨oÂ@¨¯‡-^xÁPüë“
-Ò¾e¨×±Æ]¨`á×É³éîruí®4lÄNj?Ù›î“¬7î5†8
-†ù±´{{¥©v¯É…yº¢H‡• Ñ×Jò–Fôš8š¯í-ş³â‰a{¡•Š@yÄ¨’úŞ‡Üq)p‚îfÌuhªJù­£ùZÒÙnõ-d)R•‰6ñˆPÎ¹k«K\©i.65Ãé‘G‹€ûßÃùM¤øÆ7ÿ4»ù‡™Pà7ØT!¸µ¤à­ÒìMOĞîu]„âéßÆßõæüÁgfïªå„ÊL«nüP-ÿRÜşÕòBë>¢åÉÑ½ä#[,Áéq€o.g	[ñø.ô¥~•wå æ¯'x8–T¥Ò`¦Dä˜u÷]ı<@¤é«úùW‡ (M¸+ğ/’ãµüüĞŸOÕ}nc$˜PÂœOŸ×i´ú•[úRhû¹ğ'7ùÓÖ£Z)ö…)k#+PüÚ¯$qS'uqô®N#&{;–¨X¢Üã9}ŒsòˆÙî²˜¶k>]HÆd~}…U ©{™3–åŸìÈÀ¾rÑóÓ±İÄíØ¼Éî.Ü®íÓ˜ùxîM‘ÂA­Öl°VEÈ»ÙfÑœÑ©ı‰ÃèdIØ)²hO-“²3VS¼
-šÜ `N¬×“`]ñãiïü h\%®ÙÜJ·ë ûõSµ®“÷Ûz"%pÊÛ„ªI8A—
--M°q‚=d˜n±ƒùÖº01Dİ½—¡Íú½/üÙ‡5¾t·Pïâ›Z¥E'/		xGÂÉód×Â2“Û7kÛ¤ îšèÑo8/*eÏ9D²BSüx·—½ºf­2P»¹mÛû=@ºÜè¡Œ×`ş
-·ûtêö,¡,ñfËîô{A!^2ódpåy/ïW”Ä*ö«‘ òQnSµıGãû-'
-Z­µWzó^Q±GÄÌ“¤
-/­( æzAõhë‹æ&È-ûâY*Ó,pÚFeå—¥~½ŠZLˆ—8f¹jõ¢çøäbÃÊ…î$ÑÃhÏO”b‘û„2i³»§n«RqêU"cê˜._1ıjYOÜßã
-+$Û7’c®HE<ku‰»¢?´ô	°·â¶Ì?íhK7ò~åtµ“»¯µû ¸åÀ®Ÿcy•KúË<Å³ù©Œ‡ÿC%­¿UVÿR­×îß±¬¾ü*È¶ÉÓşãlDûÿ—Nşo?Ša6U½ë·¢J±l¶ViõûQ_:×kÈç{ğE#Këâ†˜b8íC_ÍìÓÔ#ß¬ù(}æ*ÿrÃßTáß•ªt†üR|wâ_¯×€ïO’ùªuÕTWÖøVó³öuì~©Êv–TËYÅogì¶Õ¶ïV@$HùG‘*€ó/ò^!\×ÉN©'Äû¸ÆJ5×•ÿqœ§ırÃ_dõf‘M¾èB%õk]¨
-Z°»ÉX¯¶eCÔô\Áçsáãk·H±5@i¹ë²­‚ú·v'ûDÄ°÷4w<ÒñĞáx©®¡Ò»ß…*$§§	®w<´¡¡>š•ëT#ø¨+¨ğ[¾OnSªø0êÊ0]™ËË’Çe>6«UTWóØ!rH1ıı Ù)ÖáPß¡İ4Áô~>Œ˜ÜŸ¼àŒ{aÀA"«üšp`¸>J¿íÆ,òØ3¹:ÛÕ5;&zuw—/¸8w:ÃKîı¹t£Áò SÅ!7€;3XPz¨íDµ‚¥uZ_JĞ7Q£R,Dæ6ïnp¥¸$­ BØ‹ÆµKCôs›>ÓOÄQ rãÏ©8âZŞß×÷Ë‹=]^"oİæÙÿ\¢ã÷´á«.×^ğî¸æÈu{Dú‹¿¾Mø]Ú-?ÁÀ;\úàù~rÅ=B¬IÓÑ_†'nä¯ö
-#ê#é£?¶•§˜=¹C!^"ûÍÍ¹óîŸNGæŞq»! %jÀéæ‡Vl5„Œ·»0Æ0°²´¶D½ŸA4Éµæ±†É^cÌZ†i¾Nhÿ–‡ı‚ÔûsÒ‡‹ ¨ÅÅnkÇ×Œ³âıroÉ@¸¿æ²ºQäœ„]²İ‘í¯SK- ¨Ò;XY(åFç+s÷´º•Ï"¢ŞpÛyY¼›Æb€–¿Qdëï£ûî¾-%t˜şbó”ò0P:-—èş„úrû°DÎßä>r8î¶…v¿H¾ªîŸøÎïce¿ùÏß+ËşÓ²ûƒúÒüQ~<ağò•™%ÿY¢ô Æ?òŸ÷	ü·üçé>3à{åé?ı7üÕLÓïõ•æñ½²9û1ßÎß³¿ÚÇu×€Ë?üúôÀ?yüúôÀçñÓ/|;ùö’EŠÊœ13òä¬Ieoì7ÅT®òCß¦)È\&Û²~YüÚ-ò|{ZÖ PœÚG°X£\1qvØïÂN£õ<Ìé~¤É]¡fš1‚¿·Çcµ¡ë¶[¯wT¸rõo·Å¾³oˆ# f
-Wß´À;î÷Ï°Â¶ZôuäI¢Õ³eóó³¿'
-À_ÔLüv­ZÆèæS¬ğ~kù±Š†àY.…eAÜe@SOcÏAÙÖ3G†mL=Šv^oı~î`aKšX˜Íõe}nÒÆ½{‘kù®#3Ú”Ñ¾EgÂÒå×~c@)¼ÇĞhPŠ5ó^Ğxºén‚lN»½—ÿ
-ÅĞÿ3“|
-‘ë…È
-)cRÙãPnö»bÛ/™÷gP÷SŒÿ£˜x²éÆ¿$TmCZ?ŠaWK=³Kö3)µü£°ü>î«ß‡ÇÜTF<ÑÊùÏã‡¢îñÓµß<áé±ÿ'ş™¨«Xùk`r€K,/>¤’#iNÆrÓc^fï«u»tvS¼ŒãR£|k¾¿B/Üû–ˆXVÕ
-‚Ò>êŠg@K¢×9ÀŸ0ŞÀU½Gã}óŒ¢C%ŸñŞ˜‹i<í#9Íğd(zî‹ÁÙé(œf†0SïöÚ0áÜ ÷A$¼è\vÆÏÕ¼´p0'ğÉáŠée%»|rØ%»ˆéøø‡ÊAA|äO¤]Òj]O<†®bê1
-7Ñ~\ÈL£â'}Æ\ŠuÑ×ıE¼g¹ï#0Ù,u 5•3ˆC§Ê¡Q
-ÜÈÈŠlg}¤íêg×5P«KIË»hœöÚ	ök´×«q§z´Pæ/Î.ƒ%Ôm Úò*|‰çy1Ø±ó¯+&_G©’ì¾;Wô§®[ÚZx½oJb õÉ}ô=™6~¸€áG™8}ŞĞ 
-O:]*İ·l9ds÷¤8l\î³*oêI‚SËéo»v%síÕ]v´Vê°ÙŠ•5_}Aq‹şVÚƒ-YX[>mkÛÁäCºÃÙ$W@k{«‹¡–8	K°äZM6JvìİŞGeÊÚùÀ°kË6A·EÂ¸ÃÒÜ];‚}~ØWÆ¹Œ5Ö+¬ô'‹·½±LUdÉ&ôo]ê+Ü„¡)D•5[ÁÏÊa±Î¥Ågê…²XW=W$c„dÔ¦g†×€jDUUI×’ŸçùXÈÅ-ëïÌ¥/†«¤Ş^Âkïãˆÿ˜Ğÿs`"ÜbÌÿ &O„‡³:º±í¿&Ñô,ı%0qTêÇp{åWÀDŠu;7ğó{_ÿpT`@êÏNçø7nñw)÷ÿ•[ü¥éããÓnÑt4æ'ºÉ¨#ê@=à:ˆPLÊÉ¸ÇI¡Ê7ùcr¤“?68tUÊñ~Añ>¹VeÈ3İÓ-ã
-õ–CÜOK(³ßô2zÏÅ$òÙR`©®|«Â¥%­Âfš‘	¤¥õæ•¦9› õvÉ/—·¿¤+ø˜#K£I‘eöA¯H€‚«0½¿šõb?~®ĞÿËı?U%7h¦qºxÁ°ÍËwºÙ¹ _ÇJ9º"\ôğX*RÒ[fÓ2³÷z÷Zn–¡¾¼ºÜÛyju€P7ñºSÍVaL¯á”>#$heğîuTı‹¸Œi²BjŠ¼°;E]Õ¡I‡p“=d›cüue‡ĞµYuşùÏ£›æ¿˜'ñOë9qaÏïÆåĞTø*ª½ÆHFª æµ©ÑrF¹ÄŒ?Äñ·ŞGà; ±ØéW'Gç‹ròwÜ$½î%<Xë³ó¾)jK^Û?òÓh«šÁÊ};ÇØõ*~.Fğ—1¢A¿ŞãçÿİÏ;)âGa4¨_à¿ˆjL}+Œ†}MåñŸ2*¹ò«S%‘]ë/¿Ldç7p.åWËK~^§RÆw_¢}Y<ù¹ÃŸjÏß0àw EÎ'ü«#§Ÿ
-H“7¾†#Ã3{Äšk¦ÍXİâkızÉ^‘gëŒÔ´ó¤5	ØE2Ö½RŞMœ>›k^ê»í…¨º&(4¿€ÒVÏØ­ÙpaWûf—KõÊ¡fvèë‰¹t‹‚Eho¹5¢ÛQ	¨@ÓCçT÷V`Ö¸şˆ¹ÛRºh ´¶$Âa·}q~‚é›ÀDúŞ`WãqmN`Nx¶÷£pš[QàÔ™œ,ìˆ#­çc==ÉCYû,Éeı	LÊ­ìµ1Ùéc5('tM ¿+RÉâaæõê’u!µÊákAøÍ{q]¼=ü*/¬?î|ödÈ1s¥ Æ,ŠJŞŠÍÓdy»D¹JLÆĞ{ğÖƒ!²‹¬dxdptŞ¢ıšTü¾¸w³ñûuã„†3hÏ±ö¼ RÆš]ôV3ATÏL,!Ã ÜÃPyÌ¸ÌÈ“u1Y•ıÅ»Šì÷%)¼MëÂxCˆ±¸:±59Y`Ã°_™œfp‰ÒpÕ•æ*¼¡®ÈÒèæsê‡§/¸öÄëàù¨q¬áªe÷nN*—Õâ¬²ë­}A9 Æç¢+ÙK]µ"“OE.Ù"z½±°â,möwÓŠğ!ä,û¸iìJ^ÌÂ·‡©¡8‹lnŠñA ?“‰Ü]ùm¼q¤ùRh;Â‘ç’Z÷ÄK°i?ã@¼*™î^/ıS3<ê·~—©“Şø‚auì?sÖèØ¿tNıÒ8eøm=‚Pal_³²…Wòqpç;9Ñ„îíéÖ¼B×Ãé”ì5‘¾y¿=~Éq‘‹İ'Œ5b&XF?WóÃBKn—{¶¡Šu­Ùº+<FIxª¹"TWN“0ã’
-#Áf+àİáÖEôpHõL°‹g™Âg‹Ò(A´˜+½C™CÓ•Úû&)&tAõ-IãŞoìŒ'Léñ®xu
-ìxÙ™vë€•B±Î†ø¡‚Eo"0uÌÂû»“šù=TT8M7Á>^Ævlï-yÊ_„ÈoeĞÁ\º7 Rš)ZjGƒ{µ¯ú·«]¨RyxQXİK}¼6¬·=‰¿NÖçkLôt”x­
-øşŠD¦Ö˜xœ…4w»4³æâzÓ; chßè-˜ö—â»öÛI0Bë|#¶-Ã§UZ°jO7;(R£å Z™}Î¬ÉŸì«…ªp9‹—Âõ†]™,œ6OŸÈ|Y®«§ŒÀúŞ$×“Ùjü4M2¹/´«fcz'Ñ{jv·(Ÿv™ıØeÌ¢ÄÔÉhˆlo9Ÿßée÷ö„òv>ır²MSnÒ8I ä	;.µ·PËhP˜’M×­¯C56Ï×CA/m:s¹üòåŒ¡'„^‹=î÷b=Hk7Ï-H¨¢€;ôáGñpV”#äaHÓ¼E19F¹@Ğ©ª“ĞÂCæ¼íîDõ£K—^ºÖÌÈLĞÔ#ñI‹¾ ¥bBØX¾éßĞ_¡µHÆnê^ó¯Púa…ç¯d`èŠıwg›ĞŞ§ı*ı¥ı*|‹Äx{=Œ“OsòUC ±ßÃúúgXœ¸şyâ­ïáÖµ½ºLâˆáú½àQ°jä7ğ°_µÈÓö4¼ÃÖø‚‘?=r~+3ÀˆëG9ék±Ú¾äKuÕJãú5Ï(®ÚñÉ3–ê—9&^ùûÇş·OüÕcÿ›§ş¤?Ï/ÚÎ›h£u)vhiñdÍ¾£¡ ‚l®G,·&ú¶šĞì²GØ†Â˜óh+yìùR‘øïc|ë‰u©ûhê0^eÃ¾½ï3²~Y9}ÃÃĞƒ8ç)¹ˆ.óÓÀ±ã-ÀæÃ¡€§J—.CYäñóÔkk‹;Zï	'ª ¨Gà”™¾l#gfÍş ¶j¤2öDu"Âì—“?ï³UëH†ªÉ’
-ğ
-˜GıüÍädºãóÛS;#| ‡«àòvHúâ(“¤N1ù˜¤õ†…òGb<âäáİŒ æİ{–fU*™ÀS›’w¨bIp·ùhîÕ„áÑÕğÄ>ÎÏTeX¸±‘¿ñ‹Qfû¿iÅÜğ9qE’0„Y÷i÷ÌŠ&$Ô}x·7ıáØßšğ?±‰?3	à«$ÙÿÔ’Å«zî¡ï–|LùcŞ's?ş·–üÕcÿÛ§ş9/`d»;êmíëõèŞ#LX¡Š—j3ÁWjS˜Ÿ1ô4£GÖ†Wò"¾A¦6î:KÖ	å‡›hˆ’Í*ûe;æ®R"ZyúP˜2jl¶jıª±‘œÑÀ€uòÚ|}Z,J“l\uÃÆÑg=MXğr$ãºTr¾tî¼« 8ş]¹6-vidäM ä±¡+$~„ØcÅ€«›îoæ"î±ò´à÷M„×suQ'/-9æ&ãí’ÖtÏ"¸A×'£ÅÛ]À¤}Ègi0KI°õN´¢¡Ã•rÇ'»îsŞ[‘J¶Á8nÖöÑÚÎjÕr½´EWß^şÅ½e™¶çÖ®`W±™—	j(uŸ7‚v>érÉI"†ycP›iş\¡h±ÖZ¯åöº‰Ñ××ÑæØ,/a¦¨W}2º,¦)Ü.×%âƒÈ´ U©ï"K¼™#·÷CUÙ}y\û§lÌ°®‚lœ(!Ršƒo×|†bÂo§§ïŞ]B7±Z¸8	;µjöb_B*ÈÌ Ëë†ËHKÀ•|àº*·Ó›İ@İ¹9a¿¯7Ùá'{Ö‡vvôÎ°‚zcùÜJ 4¾óÔGİ‹yÓ!Ä¡tîMs«÷âa}*‡8‰Ñß¶ìÚÎ4Éá°JŠwBÎ6#i¦u;áØE¼Ë@×¶Ã)Õ0h¯	ŒŞšäfû3 ÍĞÌø5Ú.L	‘ı÷Óì?ë»Î øg·¿†út2‡¯[´'"­G[®ZÛ¿±Y›
-õ7}·À¯oÿ@èå+÷÷£Fh6Œ¤rx´Õù\œÙİÒÊ	 ¹Ì%¼Ë€»2ÜîÔ8ÙQá»Zÿ ¥Ù:\_szª]aÜW*ë’mô¿êt¦j}JÖ¾4·-2óÇ<ç©K=~G¯Äó•ó–uF’|4j[%…^zÙ	Ğ·-÷94ù±Û.°,’çfÇêj-±â)gÔˆô¨Î ¨¹œßâD•{J¡¢À]ØŞ´Í­Ö9­ßy Zœ.äõ\(bÉ÷zÒÌ—·TBıXYİ(ÔËç\àjªBŞ¾¥„Ú)lGüä¡§>îØã™ç—'Ä{:…„ˆcşÖüå`f‰E’—aö¸iB#­OfÈF@ú÷úX¶Õ§ï(û;!İ„Rf…Z[²AUq'bñ´ÃNOŒíÜ·!òÔjWSÎO&on}})ñÖÂ’Í“ãğÖ‡µ¯²Ëd»„@áÌv/eŸº„NŞ	UÁéÆ.Ã£ û÷¬P¼ÆØHwK¢ ÍFî,€‚£*òƒq~X™š¢œ=ùq·AõYÎO|ª‹8æE¤º"Ú‡¶ßBcÈ±›j·ÎÃ 6²$áÅÏ"@ÚÍDĞóí¢"ä÷“.i¡"r¸Â´RE¯dÖCˆz†È)à„k–Ójr¬ƒ$5Iu/ï€Êñ{^ÙÕ¯ùòùr×(
-)“ù‰ŞÍ­D†1Ù¿ÌÒÿë(²¶ûeüŸ‚„¿…ôÆ<Ì’PI×±] êk¥†!ÿ¬7¥
-ìÏ7÷Ó#|k’2§SÏÌşKô/YµìäqßÂlè©™-˜•R²¾J9_~«îVœcqÎüAáW1 İN6¡$“ïŞœçÌÒ*/ß¿éN~†ß‡@ğ…¨LøCQá7ÿl·
-àß,ãïVüñ2şÁ¤\)NÁLÂüŞŠ'hJôL×àŒp(#	P”síÀÅ¾Õw¢\Q
-cŒ¯v7O½§›€#:uôx#oß°í…âÏyø&™óµ‘îLúa”+°¦#BÑH=É}qŒßCæ¼ò|³?g~şøÃß>û§SuÙ}¥×[ïÒGœç•}¿juWÆe"Ş™I÷ëÙ˜Bh±œÑ¢Á(}lXàò¼ŞU¬.Ç¡ÄÛ®{|V6˜ŞÛ>Ôs>_‰ú7éûäÄç–Èk?¬ÿC=å¿×Gø¤í÷$Zbš+Œ×
-ş£Ng•ıi«ÖÒC5`¨ÌŒéJÕ‚]P¶aÿªÉc;Ñë—ršdB·Ì©ˆ‡ûåØ‹Îİöİ`v@e‚U·ED=Üï™öı××şì)şè!€÷-GüFLe¸ÔlÌ—cB©ø™rñ-£N¾²¨ĞÒğE××3 ´}»ƒtÙÅ¾ßşPsï¡€‰ë»f†9ûBËÅ«r”`E‰*u<cRQc…àÜ•Qv‚£Ô%sˆ%5†‹8ßÄæUQLu›}T1×ó(àra1v!¢Áš.ÉÚ9OĞšéf/²u›¥Õ 9yß‚V‚Ó­í?Z+¼§ˆ«°ÚĞãqääô¸Ó&S^>È¬ºb¸˜‘?=]ı®ò…<%}r¯M¼[ç{7ÒÇ!\
-ï¬DYšğ¥õ@êéDıšâGªA¾Àsïà ß$‚ñîmn"¬>Öë"“'6}Ùñç§ª™‚\NdíçlØWcÈ6SÊ ¾ŒÚ‰Aéåõ1Ò;¦tqÑ!ÑÕá¸{ãÎíšµÆ¶Š¦§:9ÔágC
-*÷wí-’<2	Ã±+8fâ¥ûF´›ãéçó!Z1ßÂN7k".WI9Çø|t<sã¢Ş¡ğÓ²›1À@–C^c¿_ nùtxAQ;Æ¬‘v`‰*ØPë2w©taïÛ^î¯!$ ¸¿™e8ÅÙ®$“ÃpLÁƒ°8ğ‰óªãÎ‡éx­!Â¥ÄUÖ=¹S7âÅÍÂ´¼ú(z‰óa:á~zf&›*Ø]®¤ÆÛl×mº
-k*@Ñål«,´wØw=²7…üß
-|s®´h]›m~f7Êj•RÜÌÚÚ\È?RSùÖwh·hÑ_{ *.yè°¯‘Œ[’t–Cå_xõŠv¼¡ó:¤RÇš®(™=ÃÀ3Ñœ-æ‹C‹·û²˜(! è„P}Ï¼f¼94ß±Ûµ.RRË»ú”‡´yYP³î3¬*ÕDÆàèÕÃ/=“¸ª.Ó;Ôôñ`¿|ÖTz(h¦k— )
-¸AsÁ*˜pT‡„ÃÛÍä7¸ ^fFİHš¯…Œì?$K•(5ïô„²hü‘d±”<#jóÛ™¾‡(€çªÒ>Ò”i§ªÂL¾…/¤¦ù§’hÉw•®A&Ú¾šs #Ãp«4nŞ¾Ò·y-ÿnÉ·I—%
-P…Ì8»£^8EG¬ĞCG‘dø…~UÏ)òófg">tş!Ê£ûasØô«#4SäÑİ¤s{ÕÍr2yêzBæì¢Ş¯½tŸfP¸—EĞ10ËºVs2%dğ5‡«^'$ÄU¥r4ÀÊÖ¦äp—Ù¬íUBHEÄŞ,íV¦+­i¼×#4ËÎÈ§¦}€M†	—±÷Ó ò…&[;ïB)Q”–˜ÌÃê±ø‘-ÜT@S[ÔÇ¢Cæø¶ß—ÁzZhÕúìµJÅåæ'¹±;qyÒüEï`k„P½*µå
-V¾úæÛÒâo ©Ï“wHébb¯ Å¯ƒÀ˜¸ß²‹AÁE›©ôyÅTß0©T:ıxî¦’˜%=Ûû3OuŞÏïRE"+üß·"şC7A¥^‰Ï½„CÁU‡ıƒ¶È‹”õşE3á¼›åmSä¡ïèÛ°_Dxµî“D
-a|í¯¸éÓÉÉ›XšÂ„%ÆğV7h“}ıRK¢ü48ä«‚‰~XÿJ›èwZÃÀoÄ†í_ãhuÓmRm)úFÿríÿéeşT¥N+WÌÓ‚E›0œÌù6à¸üX¸M÷kŸ,±&€…tp¿—Ä}; ÿh§uyÓ$)yşE“­A¬n‰Ï‹Ì\(24çäPÒğ¤Ö¢í§_C¯Jpdäôâ•¤ö)Öë2¦õÅ<ïé¥\õ‘@QV—²ªª¦‘[seí5 Ól·ÙÛd<è5ÊÁñxàWo‚ÑŠ¯íôöW¿SxÈÄÁçşî%ÖÖd¿`VÒq…=kc×bëÃ—It€§A,IïéÇ«ÏÂTk’„¨‚w%šĞ†¯ĞÖFû¥"œ)YMì!=Æ|¸-¯.ó©§ÑÍiğA@ŸÄ,ß7®Ã4Fn Ş`Vç‚§€®z'.‘´½ŠS0jé)ÔQÏL¬íkmÎÇrxma  ³7 ìÁi†Ä¡ÑWäJµœâÎŞb	ñƒ)+·±S×Ådõ#x­¹¹I»ç~ìÏß	¾ÁqUR7a…½}#˜m}ªCXhÚÜ
-ùF9TÉÒÊ¡nW(éº‰°«¾ÓNàv£Y%qˆo³/#è×r2*§@¢Œ$_a‰ŒŞÄ¶!nÈÕPNKì™°n…ùNrEĞ˜ÉÅLôAóÀHÌ—dáÃb9Bs†(^Šd!3Åz×v^‹à#¦ËG(iV‘¾rŒü^¬yÃeçºE)š?ãÿ!ì şLƒéK™–Ôf¼—hÁ<ÃÑ÷î.b©Æ]ø££€ú‹Qk ­·‘±1»l	Sæ¹íîAzîÈÌ\)ß€ÒÕcá^|8xm»ã2§ıX*wÕÑ³[Ä\¥|8ÜÛ=—½BÒVÔ´Z¼¯ËÄÆÓ9I«¯«‘ „Óogè¢âÜ#Ú­™ÂÇöØ!£æ/à­´„Œˆ¨9]ãTdn1©2=˜Å“Ö†Ä³¢1jÓŸû:nÙŒVZê³5{åƒœŠhßÑ¶'Ë½&*™w©ÅF”²æÖÆW	¾ÜIf–ƒ´Òö+oËoÈ£ú¨Ñ®´Î_¼ã˜Î9ft2"È,¾Ø¥¶Ø¹>M\¶£\‹ç³‘w©# :|WŞ†X‚4‡‹õ°Õˆn.G™ÇN=înîéÍ‹^QØ„ğ]#R¹å‚}‹.&3(“$ı85š™h&l<‡%ß‡µµ"¡ß^²eo àèİGŞzóôéÜØŠ´¥âe9 ‡$–¨æS'Ãé–»EÂGOw7Á3^êhü´-¨—ôÅx”wÓÂ_¡ê‡4øJğ \›RPÕ—Ù¥÷!Çó{IKÈ‘«û8ğNÊd‘I¨ÜÃ89±Ü	Ä9bKÎä8]û~ãQr‹m•HO‚ei°„¥2»7IÖB§5Œ*Š„·„ĞäDc¶hºº…S£CÆ@¾¼Cz< ˜àzA·åıIÃ­Şê‰/<c÷zá¯G­ıw|ß0zÿ_¬¾Ä¤*ãõ/šÁ;ŸAÍ:%Òß%ëDŞüƒ£¯ÃœYšRÿ,<Ûí_‡çOtş <ßU&û^+·ıIxæ¾”á2âU+~	ÕÀ?ø="¹ª6õ3"ùrí×K~½æÿí’_¯ù»dà×kşã%ÿƒ, €a±”ÀQwZí3´Ö“¥µ4^¡n'“ˆ]’V˜ƒºÛ½”ğºÚiœ§ğeÆaÈa™J'P(£[jb´=4Àã—ÆAQÊT×_3U‡!×„'jè –%j gÓÈ•Y©9¦ˆW¬wòóÆ\ÉÕ$ÅŒCÎî™7Ê‚ÂÇ—(½Õïw‘Íky ¦z5Ë&¡EjÈ;É½½·IÔÇ-Lv>õDcó2'[®ô“è6íÉÍ7±oÕ~û¿hÕí$úc¤¢J+0WÃ{(İ-2bìçªçÿ¬Z½iô¿·jXc´Ÿ­úËµÿ¬Z½ÚßÍq±ÿ¦|ŸGŒï\i† *B¹Æõ·s‘‹õÎÕÒËW÷°_{&êEéèg9HÎ{"•ÄiÜª!7ë}òHk$¨i½jÖA.îï¸ØÕ‰$¸ç¥Û—ÒáĞÖ¨³£(zèÖÏ8r×‡äL^w²Æ¨ìŸÊú6³÷û‘®¡2ÔüÜWè%A»¿ÍR‰å"LeÛÆwºú}ÉNU‘%‰¡ì›¦vÍêÌäH*Ã(UÕ‹{Òš`IL²…B™s©îqrş8H2N´Ê'5@¬ê/÷>@¥7’Ê¥	Š½zE) Ù½¿7äééY^‚^èÍ»İrŸÍFvëoÆi¤Ëš¿Ñ4ÿ_»ˆ¿M=tŸÔÃíÇ(#‡UDyùœº›™¨…†m@8ç$².ñ¿Š›T’Õw®-8(åV®%²§=AµnºÚù”j¸&o_%ík1¹¨¶¸ªßj` †®uÃ9§ø¶ùßlÿ_Y¼­:ãœ6Ã|I-ß.îêá š]G*_ıtB7[ªœøï›`uış´ëj’]¹6àì”a³œcV„e[_Ç)Ÿ¹Hù=[ĞÛç™®˜}Šòg3Ÿ†&ş›’~øúàm_qÉÂF&¤bÀáõ¥’LˆƒÜıäqµWÔJ2ËŞFë÷°?U^ÉÕÃ–ø­ŞaSH&<îVøô‚¹¹Ø2¬€'º’Qê@ùuœİ­"¬ª³E.~¤Ö³=cË¡ÀkVè,›g¨+ä[CêÜ‚Œc‰Ìa0»òàkãm<¶y=-÷‘@Ø\îEC±³iWatTî˜^zêÓj¾L“/!ñ)œU¨¾D*Aåò-%	¯ò` Š’Üz¡eVKRâ éX¬ÒgõTõ”=PBZô…ÙzÌÃ1‡&,±Nò¸ÆÑé‘Ş¬5À*äø¡y‚×ã¹Ş4®ÒßL[piõ=$ÂÖ"ÓÉdğÆŞÛûm{¥˜hÆ;á—7c†å'Ö˜7xáÕ†È¸B¬;GGõ½Da¤U–+\\V¾NK„?	ÆOè±w„‡Ïik¢6b_ Ns‡CG|` /Ç[w¸ŠP 	É÷Zë_CÌÈÉ”öäà…í‘HŞë*>R…·ûŞAÏ	l[Êwê"ãË‡¬T?£HRm­sW›¡íÀò:ÙÜ	4^÷)õHŒ‡:©!-QÅ¬;3Vm´=CW¹Ö¢÷~fª÷š]-~ãÏr‚<V2ş=?ÈU8èz¬ŞÂòéÈ¥…ã‚•Î*›æld£ô©h¨0tå•?¢ ¾ã9¨Eä.hŠ‚L„=Qd¨¦Œ;ıã~Oà>)Ña9Sôôá<’*–ò¦+Òb•*å8À²]î´¡ƒr÷váí(ğUpœñáÔU{<uAE.çw˜{j/ğ¼‹o:\mnä¦O×cÍe² É{9VQ¼ëÆPìÕ¡€’î”¶ãèïªè]¦rŒ]¾Èq2”¹Â ~¾¯2ß€Š³¡oóºÇµİø® ÖÃ%éÇ¢ôn7‰7 ìg—vv·VJïOí¦:á³ZÉGHÃ9T·ÓwòUT’w3¦è¼±R'S<0Ô ˜Z“¥·3€En9Úô»t¨ÏZ˜D)É·CL9÷æÛí^b§™õJ5’¤H/šx#¬Å\mU~.‚@Œ- ~`ıgŞÃu­´NA’|®¯`ôZ«İx!Z7mQìûPµ`ø.{˜ñG¦ÈX•½õ™Bi;ÇûB¦+Ô7 »ƒä@rˆE7OÆÌ¶%£¾ÒR¸ó§%/L¼ñºÎ47Óš™§¬˜
-e_+ß“Ş‹ı¬Ç
-€aà¤á,|¼À—ı™kx›Û§ˆØC‡Ti«ãÛôe'ŸH’ÒùIÜ+«øø[İ3œ`Çâ%ç»âüŞ.qÚ,Ác|à>Ø‚€gîÊzšÃQ™|iG÷ĞS—o²<Ü‡í,~ÎÄx­¸"EL“Uhš™Õ£¯œ/ËR¾ÿ,^éşW`¤ÿsršğ?œ¦ÚÿÇ¤ÕÿXìsİd­ó_yÇÔ­ş–;|æõú¡üaï`uŸ½ÁyÂÃJÚÒ÷´¶W‘û‰?p¿MÚg«hV¨æÒWË€ ?ZŒ”£ÕIã¿Ì=4sætş'`àœıjªe¶†-¬Ûm
-Cß‹^DˆûÔ¼S–Ûe¿ºyæ@®åV5{¢ó”m:©ëT„ı½!øöñUäP¯ß:r{m}ş4iŞü4ä~ëKú¢É†ºí3àTšö«‘ÌçºÈR'Ç/“—c}|JxÎ›Ì-D$XUÆ”Uk]åìû\i>R †SGâ·»n.rçÔ¡d²„uŞà³<Áu¥‡ó·ãØÑİ½>Ä}x¿´ª·Ä§åCÖ¶oªvRê™ã©0¹íîBÏ˜$eÛ¤Ò†aŠÅ;OŞ!?Ø°†síQÁ€Â¶1Åø™½IiÍ%}q—‡íäv¾¾t;îÄ@¥ra\;ÙiN4İõâşMÂÿ'èü•vàoòÇ$*àƒ0Ã«‹ax÷1Ù.-Ô ÒwüÒº[‘*|*íkQGCÕ ö%»£”HuSù%L{Ë|F‰]˜²°ñ%1ÍÄ´)£•jMJ7ZT<oÂÜ­fË
-áq`cC«Ë¸C¸ª&ü¤3JBşFG0$øUêºI¤—öl&íoğ¯Ï[hŞşpdá¿U`·ØTÆ–4)y	%ıuH•”yIŞËüe2ä§(ø‡¯€XâT³Z¹
-aßÑø·<
-+¾–ÿ¤òÛÏœØø€_§4ào‡ªÍÖojëßZàáŸ®­æOÚ%Få|Qb¾“k–ıÍÄ,nƒ9Ù_éºª6ıö3ß8„¥1Á¿R`ŸFÁØïŠV£ñ8{ö]¥™q×Š\	Ş#…pvh÷)éçŞ½J×mA9'u
-ßbáùy3á~F`I­q­íñéÙh™AÍ¤„·­:Ëƒq1ø7/rd]€ñ•ÿsÿ±ì6¶l¢}|Åé3î# $Ğ„÷Ş£OÂ{÷õ”J*•JeöÙç™Š¨XZX4äÌ#ÍI<"‡~ìK¬È2EZkáÍBŠ673SF^1ŞXÅÜ"È+uIoĞÇÁÑ¬ÇË5—¡Ì xâthx¸9n`Ååá³ÕA›¶:Š8Å½‰ñ]µ1Ï9vÈn+†˜2/¼­ğ®Ü“AŒkõÄÓ>fb/"«.9èy?iLºT¡nûÏäBÍ²YÌİà™Î0ß©¶fá eİ´Ñ"ƒj¶ u®±ü°(õ’_K@Â¨ôbÚwe½è}ß²à±§_ Í2SQ!€œ øvoz9¢æ\ónöí\[¬HOôÁYê(«æ‘€ªŸg4@p­³gÀ\’ò¤ìm	˜?ª?^±o¦ÆˆpxZWñÇF¡Ùlzâm‡¼ˆŠ'5‚ˆ–ƒÕ/J®]$I›ïvÌ®Ì81»=—<e÷|F¹+5—"~¹„©s/l~<ROz	³û9íğWõQß§õd®	Ç"˜ô¢İıJ¨7ÛÄ±X¡¹|rß¨åp“0¥^m5DäÁEpw¶½ß^2AŠg9Ô\]
-XıáÙ3<+ßæ7½‘
-n[‹¡»st''u28òGu•_¨oŸ\×?4ÊĞ1&ÇÊ±õ³ç eäY9Æ6o¬ú™lÿ®ÀÎïÈC(Yã¼Æ7LÖ¹H»J8í¼]{ª{˜\•jÍv ‚õxQ9±èğ¢ªíş¨· Ä¥-†,ï#UzDåû£å›…‰Ê­Éo5ÿØÖAÙıû-f„(äÈU#c{íá‹Ãü‚+åf]dnÎ¼(öê¾ãzl‡ˆ­úrèër?»@9ÍıÎ&è3fr,<9‡aPú,T}Ûöüt¡²!–"Õé=°Ü¿¹¾¯wÅÍZÃZ%=¹İ$Ù»/3p7YÖ|¾DR·ğ¦ù‚Nª«`ÌÆ]ˆãòéöñÖ‡ 9i%s¨:6âc…I‹ŸŞ(J[Êóè=İkÿºƒ§áJıÜ¶;‡Whˆš=œÃãÓµÒx¨ @‘ºsò’@”\XUØ©êËöàX*`«­%ÆxšÍ]Œ0'Ö·Üß
-U-@„Â7Ès¶ÖíÈ€áµ¢Ë%ÈËÃ»?Ğçùâ»ãb×‹Ÿ«¯ÑğˆrQ‰ó~
-µ98[Üb[ÇnÓ×êÈZ{Ü@»[%ÉÂh’¿İ€ZÂ
-ÆF›mÉ¹¸¦Õ9¶Ì]Ü‚ğ²–—5Ø}QàØI¹ä®Ş²ÅáŠ¾…tØõ4Ö_ ÍˆH€ó/ÆÄà©˜±3X FW•¸O×±‹1KZZæ¶v‹?ùÅn?ôv.û¬­t|¹áÉc¿•7À`œ=£úû‚ÏÌÿŸ)êÓšrÄçR] ùlD®déÀHíIÿ)#ÿ6 ø¿Âæ4¦ıƒÍ¿1‡ÿ
-›Ù6S»~}ÕJè‘×çË+sÚRõ¡6‡lVÕ1Y/bƒ³l§E=iîš­ŞöÙªw>—ƒy.SGŒg¾utºL«dqŸÁYAB÷^‘³µZJí„-¤¢°:ˆ_ÀäÏ¼æÒôğR§¨øÚôğ¿=jìTÿö1S”‚•)…ì½Ğçeg*,şS0õıØ)CÜŞÍ#\×jPÕ{Ó6ñıl_'L¡œÒ‚3åa¬òÜ9¦¢×Ä}!f±ëÕém)o	QØÅä’y›ÇSï€hvPV\ìÁkQƒÆ®èY¿®QıvŠÈNUxøğzã»xyİş~>''k$!¿c,Ëş„ÁÿxT[|(,ü=#-{Õ‚{ë¬¿êõfÎ/…flû§é; œÄó{%¦qæ²vì¹G ;EìáKä›Ÿ¤ñG#†=QøÁœè9ÙNÎî8µk.õéV¶¯f"|Î}î?™ÉûßÁ×~¹ªÏ¢€ÿ«U}|YÕ?Œ üqàøB½Ñœ’Ç5rË;yãÕc;Ş Q<6£9Ì ¼d‡üjKöæ-ëšØy:ÙŠ2uG4vIÉäZÆÎ!NFËÅ9Ÿ‡Ş^G¬öÇ¨®¾ ÈDb&†9}9’«Lpq$U]Ñ!Ñu‹á~dÀ—áºäìCé»Ù˜Êòfxºt®x_Â…VÛq}ÊPI/ßlÎ¨§Rá¯W—öEÏA–ï¬Üèé04.xûÚÔ·C|Ù°z&J˜Å]¸ƒĞ¹wy¼N”"ITäY2åBœV;öÆ‚ã‡’zoØ[|/dÍ‡f`äÌ„TNc±ø"ì.Û…—°Ë²¬A!İMŒD Ä3L5¥ƒ\{E{$Z‘UöÔ"“‰àÜKÚ2ó®ìÊ¡Aœ‚
-)—tWİ¹è	‹8…5ˆk& ¾fo*~Äß¼C³h[N¿=Q yÉ«>úÓÕ¡GXƒöÄZ;[¤wó…ÉÉ!º5DäÂ#{	"RÍtî‚Z', ‡LUô¦JôÌİÛ‰aØ0+ÈÔ{~W¬ç‹Dö—™;Å­
-·çÀa®d©NuŞˆíheu€¤ÖŞÑ	ÉaèsØVîj\ëMàsIYÔuÅ²t'«ÅÜîı!¥£şşœY©„i;˜OÃ'Ÿ\ÀªæV¡@GhÊT$¥eg§çd9Õ<Üy£åÃpzT°ü8À3¸•Ò‹Ñ´­Q¾M ,îÏ•ÃŸ>P·…ÇÙ§z{SlÜw§]Ü#"q{}›< |=ğwşËq”‰11ô²Á%ñö×üÁÉô†Ş¥fº¡Ó´<æIqî8øÉ,:
-Ì\ê¤w}°Œ”ÆãœS®F6‘òç³3ë‚Way­éÓ‹w¹™ÚFø¤¯Érâ>>º=8Ë¶§LsH³ÇaQÓœŞ…M·n$
-òõÍà¯½hk—áÀkÑì‹ôfRö°lr©¢Ù§ú-x¦ÖO3Ì/ÂU"LZÈ¥ØÃœCP"	W´Ó Â°„A‘‹]ÔPºÙ¶z¯¤}Qˆ¿ª5é¦J¼%/µİOÌdcù“Şåıİ?¨ñò†”üê1ºŞÀYQğÉ0ÇYO2>2§¢şØÆãâ86û€‹ZDèòh‡YÎ°·“T½`•Œ$s^‘áÏ†á—ŞÎŞ–·[Àjk¤-\Ñ›ç‡¬K¢û6É£{£1 ns‚‡KÜ.+qUÌ /@‡íRG„Qå)fá¶ƒiï”âh‡0 ‹à¦‚Y0iÛ)Å
-èFÌ?²:ä` ıdŞVåÒfÖ”L:LÚRs[µÈØ®‡&ÃªUßS}dsD``¤{ó:2'áâU|Ó
-çÜ×±JˆÊàùr]Sî>óc¹\„ˆ]»-­÷|…ªÇoMäˆvy¾ïùr/k ^SŸª½û‹i•‰É®bí½•Å>†|4ˆt¨0éñgˆ­vcâ¨®·Õ¯Š¿¯J*û?V–,cöş1®Ùø—Sˆş=Æ?>4ÿŞf&Ğ©^®Ü‰F_ *ãa5Ç¦œVNÔÓyCîŸS³âIÔßP–¯XÍüZiı kxF~Ô~(Çğ§[ş ÷¸+²á Üµ5V|FşÛ±•Dñ½rÎ—µCO…’Æ)œÏ‹5îñS¦ı¦ ±i6*ö‡(È×‰ƒÕöE²ÿÛµ’"Ÿôòw¦"šgp*eqSmf~N¦;'Ó*”óM]"ûºÒO?"Ï|†Y…Öjåå}ŒNõÉÌ6“v|9ê4lŸ•¿O&'v%üò¢¬Z7÷x¿˜ı~18ô…¦3Qğ¯ÜÕuŒµ	YË-zª|ãoH„pB!l€Í½¿Ÿ'@2è£.Ö‰ÉÈ¸¾	.¨Å¾‹ˆ¤yåñw?òÕæWü¶îÛÕÖ0pzâ5,×Á}·+`CEÚ§((ˆÙóá=•[/øÖã¯°µëÌÃnz`[óÛaà{";ºê-¯İÍ@w8|VD±Ã
-ì“ a×"¤t9$¼{è†S¡ÏC1­…Øgö©¯ªÂKc¸l]„I¡¹éq¶4M™úÕLµîåOpîO›²|&pGÃ£D³w´­2S˜*æ 4“s±ô*İkü »¥jg]ŞÉÛ€k$î¯S#‹v˜=d*€»µnÚèìs²GçÖ¤—v×G®nÒ»3e÷†ıY‚ŸVr¦çv:½ŒÓ{¼ ´Å‘Ço:	–ÀCú~‘²Ú¨ë°'MXÉòNIïÅ_¡ i·Í<ŞwC¥4ºZ/MÆ]Œp‰Odm#t‘JæÑm!¥`Eb†¸>BØ_2prhIˆW·`ùÚbÅVVÅçËHTC©#™İG¢c†èæÚ<Èñb$¨id f‡oF+¬¹¯µ·JVl­i7¾µ(ïX8Á5†É³0ÄgöMPpÈ|İxöœf¿oÔ^éÍ8HŒ®¸À—Ğ|˜¦‚(¹`º&=›ÁR­OPYiÛ´bêë·÷/‡–M$î9Èí%ĞAûèµ€’`åyw&_an?ZN|œœ‚»šWØ`7Äk.…¬–Ù“Tb-À©¹_dæş²Ş~ŞÑ×¿™GKDõ.ÎpÊ!šÂ»®`åÕ•â9œÂ®iGÆN„öEÆ2Í2Ç T,ò¡(î±ìu!å²&ç”÷~&CuJ¦Ô»ã¸!emš~ç²rÜP—F	1XpÙ‹dØ¹ò„šëfYxfáÚ;8y\Í®˜$C“yzRú‚0¨Ã9IÙ=XêÙy`_œuóÕ¢}Á­<ÈûRÛí±wT àóz C\ÙØÉ"}ÿ%R!©ø
-ğ.ÀUÆ¦şºw+]Ş•“Æ˜Ş&U~º^â«GQÓpSªX7rWš`è˜-£s!¢B-­j+±¤b 5i*Wé¢°*:C€ÑcÍÖ¤Ç:/jÕ*døÂ_ú("èÀò4¯géƒëXµZ0?V—n¤‰r8†„³şìÆ, ©Õ©oùçâˆ8|W™}MwF~Òsikà¶KCËÍ´Ã)ÄÏ
-Ÿk”Yì‹Ğ%ï`ÌÅóúrFLªàÈ…‹‡Ñu³76V¥Fô4”Û#Wb7	ÅÁÜrÀšNLî ŠÇƒåÆ·7­Û¤C
-èî°Rî*ù’56óÓv~éğü°vº­Y„×5&sä9{æš· àŒíCd²	ÓîŒèeĞ³7)˜®â^Q¯Ã²×Ñ*ÑQ‘jÕİí§”âÚ¡U×e´ı-ëøt¾-Íÿ0Ôÿó¥Uö?yH…Ÿ¦×ì»`¾‘	XëŒå¼¨šT‰ù÷'şg)9ğ'¬5 ›f¾YÿlÃWÏ7ì¯c>Sî·úL9wNÒ–+fQ¬äı´ß0vG¿€pê_øğcÿ×Oí_?´4ÅÉxjô×AƒßÇXœÂG¼69TÚ¿Ï±x_ü~­üó­üİ ÿé­üİ ÿæVş~¤…ÍHÂ}äŞX´Ra½:³cÔÖ\éâB+ªÖ¾š¼íI¤X„¬nÇCì4¦èöa7ìERR•º"˜¤5´À‹T¢è‚2•‰n~}w÷O¬ÛuÒÙ56CÚ|Ç¤¿=OÍ_‹'_#KäÂÖ¨Òr<_y†A#ÄçÖcX\ş•Ò?åø€¯I>‚v-¸AŸ%“kWÑùÈ†n—äyÇÈœN†-)á×Zd°ì7¨_¨9‰üØWÑ•…gÕø"U^ïkÛ®‹Yiz“ÉXáyÍ/‹(š«½Œ· ½‹6Fê$ña,ÉËYsüJ3ØßTùÍ6¿t¶gé?„ÿl–xı.7â¡#—bA§
-¹æ£ë\ ‡ı3ô±¸ûÏbq»Ãÿ“üÓç+“}‘~¯¾op'iİÏT?~7ZVìOâ9·Ù®•¼¥_İğß¸ŸŸïøßŞÒ¯:U¿P™3åàş˜ÏxˆíÌlÁ»İo~%J}>
-¿a2Ü™Áå2Ñ1ed®b=Ws-£ZìHEĞá¯”L˜fü½J¹†SÑºF\‡Ú&²ÉCp1ÕíiIêsgú>A‰Â ¯a„ƒbè´j™êé&W>Qø§1¨Û"èÊ°áJIuÑÛb¤!ÿu• Ğ×ï¸{[%Ü¨‡Á@.6Âœ:tS‚.mƒ÷Az²˜èj¢[¥gøì\W”©Q}X\}Á`}]{Yí-L@±ÍJ‹ÜWRb^â'ÜyÖ»1ÑSêDQÅ¾µCÆŞ	6R@Âé™—ëĞÜs(ŞEB÷§Ó¥+ï¯r¸¨^ïh8îmî sjè¼qÈ‰Ò· ¿ìÚ9'ª„9ö°¦ñšÉ÷·¿¸Ö¼†×ÃMUa¹¦ÄôÊ6* wı²¸eMø¾¥™ ‰NzI-HÜ¬˜ù	_Ò=|ÅbY"ŒcIwŸ"©SW½ĞÑ)ËLô«øp‡‚/üM'2¿|[¼0ï°ˆÀÁ‹š¨QÜEsÉ‚¹WÍüN™¬Ô—5êád¶+ Ú2Ó&l®dw½WO‡—‘mHc½ĞYĞ0Íñ!zô›ø’…qÇaÁ_2|¨ÃóáoÚ*PJ|-VÈâ%€7Oã‚YĞgîö”Â³í
-ó[UÿE=ÇR.û+!Û-ˆ,–Ú¢k»¬ê—_ÉÔ_®~¯3¯d2 ÏÄu%OwvM‘¯û×ŞPÇ7DÙŞ¡^+^JJÍÌ
-·†§jï5âí‰ÁÊeÃĞ¸¼:«_°0sb@È­Z×jy cO~O#ŠäÃé#‚…Ù£A¥Rkw*c¥ß&İZ¼eÈP×Áµ›Kùâô–€'lú¨™Ü‘µQ—L93…3`¹LgD5QÅVÜár-4A•„†Íq’Ç|ÃÂ4p0Åì®@‚ÅÔ€TpÚSÍï´‰:Ÿ™®ykKäÃ]f“bm©¸Üã·¾œ¯ß+aöÌyÀ­üIh²ü1ö—çÄah U˜£™NlÓ]²¢X…j¢«¤.½¿Õ
-|•rg<yõZÈuš¨¸µ(vuGçƒ%Ë/¥@'ÁÕ6ë Ï3G»®"Æ—¢ìqø½(¼e^ijÙËğ^	l‚ú|<‹ó)(y4ŸZ`ë¶ªË1=O/Ó­«]÷Ù¸¢àå¾Dmš{Ãü=dÑá#G™f÷5Ş]ùE²•AñPŸ*¯êè˜›})hoî£9%¯±7i ±q}ÍÄ*kñh_í„óœØn§ƒ‚åvôæ[,ó‚vüv)fû¼_VtLÖ«„iD<-L*àíPXĞKS**E6ïàæÌä+âM³¿£>C(Ş^†ÅÕ]CÕwHÔû0]‚	Å§ºŒÿöÜÒ~¡
-ÿëéåìôI¢ß©¼Ãl²‹T¤RUÇ6i:ËËcj¦Ë•T~™>~>¤â2ÈçŒô­{S®Ø6ôĞ2´H-ğÍ>†ÑgÌ9Jş†›lÌ¹%òo<lê=õœ?Îgß¸Y=ìö#f~Ëªô‡¥z:ğW`lÀ.–ï5ş‘8vÉÜÚùÖ=»^ZÇZúuU;½Wÿ%ëüùˆŒ;½)˜4Ÿú"…6ş8{İåİåëÑ3ãÙ½OrøWÙ=EWÁë“¬Òo6ÅB:3‰•¯iØ¢÷,¸<O ^np°|Ö+™?¥yÑF^ÄÎƒ¶Ãç¸¿céw˜¦Ê!$)ÒÔlñ¬&}ØSX4èNÛ@ôM‡Tÿö+0â’t`İ#ÌpCÇğEÃT›¸Ø¹¼šU•¼œ;©[‘jën½àèıİÀûËƒ]"ºáë2¤|à’{ jVäâã)Iö°È8uç\±ú¹DgJÈu¾Y‹¹jM]äbHË-Û«®xĞMæ>„ñæ¨×”H¢ä1)ÙOÌŞÛ™ xZcë×U6If›¦,Kä§õÍÜ_VÍ‘ÉV´®?nu”âÄÛĞĞ£ûò ×âãgİ:#a·€]H|.‚õ11Ü#Š,ö¥×1ğ´ÚçkÒµ·ÀzXóH8bœ¹˜¨ô
-à,ÀrÀî«tê0…~×Ã½×0ú‘¹ax¹;ø©·o¬”Rõbh*w·Ä¢B¨ïC&ÄJÍLú*çÙ5L³Wåâ«î/R¶'x}/÷uĞfG¡ÑP~"\Äc!‰q}¬¢ÜH‡Í3v_m]®£…íé-¯.ˆ&€öwmB%¬/Æúâ"¢
-fTĞ©Bnuë|tù¹‘ÏNÿjIŒ@ÖÁøªOĞüÜš'«Jü$ˆä¼6p}¢Ò“•bi—ö­T['
-ÚÃC¯GDn”ÿÇìŞº3¸¦ŸrçvÛñÈ 	.¯†³¾¿¼¿¢?¥‰(jvÜÎsê•Ò~–÷g5 €ƒÆó/BÂ¿Ìî…»Ì3èñåÜ_4LVÙöì•ú½2=âZ_]KDûáÛøë+ZW¾†ï+Îzï—g,`FÏ`1˜Š§İ6{íÔfo‹2Wë‘§ Ñ=Âz&§ºÏ#„9-qƒ¢AïÆİ—Ì™ßøÁN³Ë,6—Ç+óĞ_Ï —ğqeı}c'é†Â€ áõ¯ ‘=lÚ˜˜©m@\ŒáaØ[Ñ~:šIu*ÌH(Ee.·¹dİŒı3jë¹z3æ²JØÍ{ JcN-ùçUˆ¥Şõ][nÊp"©ÇøĞN„KÎ[T†ßŠ½buöŞÕ¤émÌxªçÏ‚{éL8§M°ÜÑØÉ³MÙ:xl‡x"S†Jô&p–ÅRıJz‚ŒKõy
-ùº)¸KÒ˜ıön·^²2‰‘Ÿ9ÔOÀƒ()ò2cÌÃöSg/ĞõÙëÄ'xcÅ%Á­0®7.–;v¶E·Â#n]Ød¨@a‰H;¦…S&‘â´é:>ÿæÕâkÈÓ$äœíöV}¥,nÔõÔÊm¥kÒ%aİ»óº"¥Ï_|»ˆO“eüB7).áÜfMØ‰ÌcĞhŒ0Äo]”_®°‘	3™÷Õ5¯‰†ŠGÜÙ6È±
-ì°{æ§%¸jq"¼°¶2O±}lÄ©(KY¦ø@›Â’¹VI¼ Ò®hTã6zg#˜–Ğ¿OËoNü-[?¨ÓTfá_Çü×D¡ÿ`ò}Ô·¡%ƒÍk8a‘Va9
-’ÿÊĞhrú9—ği’úäZœ;½ÿMà”·—PŸá;èşü;ğĞOl\'°ûLµ˜zInæ;¦v¿ŠB½#ó7œ2•B	ß 7¶Ö²œOmÑTœƒ´œ/E¸ïã/ıE_{ö/ÓálfSmç´¯ÍFĞ—œ_/ªP·Å?WA!á'Šó¬cn“†º¶<³bïıÇ.!EZ¡¯Ö/–EŠq«‚‘oB_˜E«|èË.ÒÄëÅáÀ'éTõG^Ó±Yå‹H=ğ“Îì¡ü'úWÂJ¡w¼n6·­§JD¹5èÆÆÎE¨8ê`ò[jÛàÇgöğŞ.}T¢Ñø!ÆòÛt1Ù2|évÁ .G]ï§5sm*/›ÙşDğô°å‹RFFÖšz·K4+¥Ñ„’OY-ÀívaXæ¿ÃL¼ËAÌ3_ìR½BÙ,²HÑÜW55=Dp 8õs·ñaxwY´Ê/{6Aş^cT2#Jkù8Té¼ÃçUèCôí¢Ãè)¢Q’Wb«	jÄİ^« ìî˜^ÅWx9ªhÖMz^4
-ÂwŸ=£úWÀËÄ]î•Q !¶£õó~îaòÆìgË¬@Ú´X¥ŞbÙ{˜X¿B\³dñî)ÙJÊ’D¼4¨b:ª´«°U¹Š0Ø•ÔOoÄLĞ.-ôYI@,	€³­vNJí!)uŸ 7Sê¤©µyärè/b#…DRD±­\¦O=fMH‚SœÅV³›±Æãğ W*â…Á~“š(·)Ïğ„0p½±ZeDE°Ü£Ckü]}Zs00wèf“]Ğ Œî©ç*‘º« ğŒÂ>Ä¯ÉKÜ§Ô©Æ“k‰‡qBàG.K±»)´›8iL†ŒD	İ“†IyX™_Ò¨u•g ”¾ë¨R=âSæ†(TgfÍ#÷¨‚ûËÃ*pİ ­»j&NõPåÏúW¿Ô4şãù¥^îaÑ‹‚¤\ÛÃ\ÿşrÕÕ”—Ÿ9ğ[3é_’½'ßŸúb-·É¶Ó-…ElÓ|¶‹|mUÂñ!ÔX½—WI†0QßÅFi!Â«!Ê´UgPÃXVã§JÁóïıŠMHâPqÙ–áœ×[†0£¸\Ÿ…Ñ jOÎº`˜3O6¶l•Ìuî:Ò0²;Š®§ÖÑˆ²Geôş6ûÕUô]¿&Ç¢^°êUÊq«BàevóNFoÅ‚N›g,2«SÎí)Ù›åá ‹§L¢N®WşØº¥£Êj—dÊ`²³-Wá%…¡‹£S9='&PbX°gJ{}Å+ŞôóÌY_#íAxOb»WxtañI×$Ìˆ–ñªõ¦Ş¢{šX,õ%³™H(°†Ö\’ï0
-Uq|òÏ¡µuRğœ† Adm%‘ó®'­‡âß§©ÉÜªŒ²öÒ§wéÔÛe¼Ê(¿İ%0è§«Ïî1-ËáéÌ;Î4²|úõ©e÷r²Õ|=ôS:Şòû,vöèm’È6ç	ûòxj³%$}ˆ:o#Ï(ÉµdÕ—ê¾vLßG¡u{¯ª¸Ş·ëYğÁzà‘şŠ±Á×û™°ÑØÔı¦,CİŸÍpÌ+ ³\§Íã!ÇÕŞ;š.o²k[ıŠxûví
-I$Î9£´E×ºNéfOÃ8S]¶eÛU~»zx|£`%¶yF Ô¹ßB›@³‘ÿ5)øq<ìK
-(÷ƒ3éï…Àğf¥¥Ÿ<ÆïğåêeÒõü¹ sş‘|ø ğE>| øBÀş4BöW„àS3Ø?ÍÇÀ„àsqÓÜÿ!øğàÿ‚|›?ü‘üƒ8]×‘+êY¼.j3M Šò¤qO¨&ú‰Í2X~"‰AğŸùá9¦Èˆ”fàîã\ªÚ£nmÚy»Ëæ•†A&H!ğ&9s‰†r†/æµ'IO$ÜdÈó_œPıÕÁ¨Ã|»ZS¾ªã`4`Ms¹u¢ÆS÷ÍûólÙ„P8ƒRH>×2±»×6äÄÑ44¼H¬ÛRn2ãêfE–uŸçÅS¸ÁÛ0u“!{ .M!l˜E$›[ÇbG±xÃÄİÕØ *¼CÂQ¨ínÁ:«½l"ìó¼Ÿª$,Çorb#v?ımà2wã+ÒÿI³ß5i’&û›¨»<›Ş¿~Äröˆ;|¿!àûÏµ¬ş­UsìÇª¯ß©¾Àİè\/KÌÿº…Ğ±ÿÜ%ønàÛÖœîŸ˜°ïÄgÂ‹kØ¸ççÚG›Æ kN`PÊàTßß¬Fÿ&Dó9Bşøöå8yúU‡¦$ŞÆê|¿¦°?OŠpmÅ6ÀøM‡¦ël^Œ_$ùâøäÃáÛ÷|Í	
-Œ*~šµ`å46µ,şZª›E»¯å‹yc¼Ğ4àÌ)>?i¨ï§qŒŒÇñÜSIìÆì{ÏÍÖÙ")T˜ttÆã¾Ğ,ùê˜('ûJË °a(I4áè ‰ã%éıŠšëf5Ô&Û‘Ó¤./ó§ûîXYY-jx\é'ŸãKƒS–s2.Ì^ İ©êîE®@e o½³‚¢¨ûU¬Êô
-!ÌŒ&ŠĞxmrPob¼šÄ	¡/•À7²D
-5ü&Ä¢wØ)iÙİMÛé·ox»5ô‚åœ|„»ÅL}zUƒqêLP®Oÿë@Âù-®äÀ¶rAo¨ß	½$4j.èóWÃ; ¯i<jÛ}Zà¸Á7å¶W8}"ˆ€Uk¹&±"±›†(€Ø^*ìz_¥Ya[¿ºdö%¶’C¤ğjl¯Ü¯L€şËSÌË]ÚöÜ›9@êH¤HV¯ø ŞaR	ÚWuR¤·¯±Œ˜xò9lRæ09ó_°xÑr,ÓSŠ¦åyàÑ¹ˆ$5Ë»]82[–_+9_6>Æù«-	Øî¹«}R3³²Ä}ş00G›‹„Ë+Ş¯N]Û•;Ÿ–D&àdxnYÍYK¶­ì]­È]E5VFê<Û¾\Š+·:…¬g­B"JÎİÅã=Í«ğÆ%ÛbDäF–ñrÜ§fé<Z%›9ÉE¶åÛÉW„_Ÿ~¹7ë3[FÕD½}¸©B$3¯òô³¯äóëõo©=ê#éôößo˜"k¾!˜"D6 §­dT >ÊØ&oğen”áğï'yüS¸Ë~KoÉ6õ{ì–4xó×¯U
--×àF
-»½bz¿«Ã’›@),‘ÙÅÛ{q‘ldMpñ†ÉŠàœÏÏésıı“ú\òIpÄ	ıtòÛŞ/Påç‰1A®ŸQô;šx¯ âç^ÄOøE¡ò÷Á·¼ÅK„0¦;Ş¼<{.oÆb>Ç —µÃô\íñ$ò‘ú‹–Ä(cf+Ib ©£N
-â	Š¢ÒVY+ÂEL#pòÖ³4^ñ½¡÷bÊÃ¹EbmÜ(»"½{¥^;.¦c@ú‚~¤kM$Åâ3pU'	=\rgB‹¨2 1$—ëóM¡§”Ò¥}ê;¶~¢Kİ^½j@@PİÍX»ÊŒuƒÂ0Å,Ğê¸îpØjİØ<¹ÚÑwÑ(Ğ—T‚äÅğ-Òf©Ğ‡kË¿í!Ã¼ÙÉ‹‹t )_öÍ¢nªüğ±-Ë*E%"Æ0¨fEx)ûR¾Ã¾»4w‘@Ä½;Òô\(r&º´U.f~î‹PïÛÄ)¸æİVsìˆgYY2ê`0ÚØ9äğˆVë3o©iU:8‹%Şf<‰tÂúNJÇ$}Ä×ÔK‹”Ş€s"‘^Á*ªXáVFÔ0•³‰î1ï^äåjsˆÎÖ6ÖƒìĞP%¿ŠiÈ4Ë CMõy È
-÷î®#fşt7¶§¥}ÛM~5
-td.Ên\?xïO×¿bTÛß;t˜Kû½™–÷N´ö9 
-qŒ>şzGÏĞÇÃ døêİ¼ü‚<H÷öİ$İE²Anì U„­¥‰±{Æ¹S¡´*qñÀ á‘è+#¦«e:t¶¥	æ½|Ş~wÿæ¬Ÿ2å±ÇŸéË?ô—¾ß§]9q3`^ÔÛk_ á]¶¢»ñ@0æî'Re3Ïß)
-ğåÀ ˆüpd¶³¸şÒcÀÏ>n˜7	À™ÙÁBv®$‚ïw~øåqãÒ	àÛÜøo’7
-œŠMÜŞtTÙßoşxí«ùq1À»šï‹áƒ`ˆ€ÿí3øtE°ò6$J ƒ‚`B—”ÆnGëêÆDIwwY½Öµgø9.ö&µì7•RçsªgÃ.	`w2¸^ŸO±s'¨sã¤¥­k:¿f·_x7ÙçË(ZşÒâ1£åC¿°¢ŒÊ’nı˜5ÂÛ™g™ZŞ¶Î?j•}ãıİªëü:J=;†7‹şÈ%>æ1ì¯âøUÈO_?½qh›‹ŞRwåyäÒ –KÜÒñå¤sË¯\Ô±Cœ-ğ\Oƒl0qJf²¿CÙå¸å;<Ÿ“Â÷TçÚ:Š¤éxÂåU_«í‰[ñÌ‡±
-ú-!$àŠÆôµó	ŒÔN-†ãD[ûgCù¥‘ücŠŞıï=ïßÄ¸¨;ƒ¿NÏ4Ó»+WÛÇãÇÆ–Î¯úçOµüÿÄHØ’p¾mKúÛ¶ü!LıŞ^«Êşµ“–€¾uêıáZIÒ?åh»ü:
-ø­UÏÜ/M tÄÕKğÑŠ<é·inßÇ½»¢¦_š”?•Ş?·üóäÈÍ9Ş^H	
-¯›ã–È&y¯&Ú×Ší’×¹la7O€%‰0®!Ê‹òJ/i´õÚ¼Ğ‡ÁåÂê%‘@Ã½½+ò$k‘/wæBÊ=-¯zÜÄó¨â8TQ 4(6[¦õ½Å·)°·H¿‘ns	§½ê¤Ü^Ôux—h	Ö»g3êÅ5­7êVœHkÚDnt[Íg,à†<¡2ÍÓÅæ¸iéIoÓşítIØıi´2â•g×KxQÀ²¥v4 ­dt6Ô·ßÓ_ô]Yi×&¼ÁO:iÅLh»‹'ô€T¬¤|^ÎÓ
-Uí1¶öÚ¨D¬·N©pÖæ0aGİá:=Iÿ•,»l£¡6ö\1
-tTÎ"Ö:èCCDxUT‚KË«´f_o/êeµ·Æ©zö6loŞRãB€Lƒ0@øºDÖ¯æm¾É¥09ò¤Ã1ù…ePîõèTMD¨–¨ö‚õ–p:xÖT½:{İèTú’‚Pí¹u®¸©-³"*¼'¤r†…“»9åùx·ko0Æ@{·–}£é5 , çSÒgN¢w‹‹±+ïX` 3Q/<ëÏo/#ehíGWóQn>õôyÜıeeHáğ7Ú¤˜şMÆ}k±‚¯Rc©ÜÙ\•sXµfû°Ás+M½!¦àeaœ«Cd%³v=¯&%¸ÿ‡Ìùµ} %KÌ÷zi Àô¹ñ„_UzÿªéÀ's.ÅƒeEÙŒéì¶],/½˜ºc[Úïx­¯ğ²Q0²7¿²ÕA‚—-Q!¹0ªõó±$Ê<½hwf¾òuuÓèOo…‹5õÔ†›#Ù—yë7("@Ì÷}ÛiîLÊ°vP×Ë¤í2^É>TÆÏy°öRÊ(ë†İŠ¹Œ»ÅƒŞ„ññĞö5î&¼S©ÖíNÃè€Š ÆNÌsU¤hD)É©»-Mñ³yì…ê4`QâEqƒµWg?.aNÂšÊÜşã—ŠÜUxcíğR!KiÎæ1îÒÊRC=ÃM+ÎîÀ&^læ5ø´kÑPÑŸ÷F³	î˜ó”‘-sCŠÈøuòéü’ypÆ'’˜{ïSâos:an®=)Š"^¼†Õ6æ¸ˆ´ù(`/!,'\óƒ§¹ò“hÈı.6©o“†‘8ØÈîåLºı!¤Jôşìºb8˜˜q(wj
-VÊïøÓ×t°¾apÑì´şzˆ_?ØY
-(u`2?u¤Ò÷ç†7j!¹J:ëÒË­äí‘¿#¿]¶Óc€½M)Ø÷¾Eğ®Âéô^û\·Lél§,ì¨…méö|¨Œşl
-äm—‘¿ÌBXÕ6Iİ"¾sC›úüü ‡ í”@nûã¯O‡ñ5k'r÷İ‰=îüğ´â.Íg“ò{ñl.<Pß¦¿Íœ–É}…cÿ#ÿ‘®rº}×£1ŒTJA_CFlÖ>İ­ïü97®ÿj$S¯PÉ·6õº9úâúÆçll™ú_šÌßç¡Ç\æM\SŸØY›°¿£2SÛ€S%ßÀ0øm†äW1FÚø*®Aÿ6šásÍNöäçšÂ`?tm@yâ7•œã“Ê6ë¤Aë÷‹ÿvz·3ëénş¡C	Í¸Ÿ	¿¡´b¹ª˜ßø+[şúwôõW·E(šZ6ÑZÏ*Ñä¼eÓík´	òÀ<oŞdV]_‰G3Kå¹LĞh÷"Îñ£óxÉB÷Ä9B/øN4aõÍ´¢æÑ|ş jæBŠû>Rüº]*~ÒÒ:š‚§Éëğ—â_Æ_0ü£,oÎHŞ8£²E¯÷j}e¥‚Ï¯{}¨¨ó—ô5»ÕšYSÌVY¼ùœY Ññ Ià5²-7
+	/**
+	 * Translation strings for de-DE
+	 *
+	 * @var  array
+	 */
+	private $translation_de_de = array (
+  'AUTOMODEON' => 'Automodus aktiviert',
+  'ERR_NOT_A_JPA_FILE' => 'Die Datei ist kein JPA-Archiv',
+  'ERR_CORRUPT_ARCHIVE' => 'Die Archivdatei ist beschÃ¤digt, abgeschnitten oder Archivteile fehlen',
+  'ERR_INVALID_ARCHIVE_LONG' => 'Die Archivdatei scheint beschÃ¤digt zu sein oder Archivteile fehlen. Wenn Ihre Sicherungen aus mehreren Dateien bestehen, stellen Sie bitte sicher, dass Sie alle Archivteil-Dateien heruntergeladen haben (Dateien mit demselben Namen und den Erweiterungen .%s, .%s01, .%2$s02â€¦). Bitte laden Sie <em>und</em> laden Sie Dateien Ã¼ber SFTP oder FTP im BinÃ¤rÃ¼bertragungsmodus hoch und Ã¼berprÃ¼fen Sie, dass ihre DateigrÃ¶ÃŸe mit den auf der Seite â€Sicherungen verwalten" in Akeeba Backup / Akeeba Solo angegebenen GrÃ¶ÃŸen Ã¼bereinstimmt.',
+  'ERR_INVALID_LOGIN' => 'UngÃ¼ltige Anmeldung',
+  'COULDNT_CREATE_DIR' => 'Verzeichnis %s konnte nicht erstellt werden',
+  'COULDNT_WRITE_FILE' => 'Datei %s konnte nicht zum Schreiben geÃ¶ffnet werden.',
+  'WRONG_FTP_HOST' => 'Falscher FTP-Host oder falscher Port',
+  'WRONG_FTP_USER' => 'Falscher FTP-Benutzername oder falsches Passwort',
+  'WRONG_FTP_PATH1' => 'Falsches FTP-Startverzeichnis â€“ das Verzeichnis existiert nicht',
+  'FTP_CANT_CREATE_DIR' => 'Verzeichnis %s konnte nicht erstellt werden',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'Kein beschreibbares temporÃ¤res Verzeichnis gefunden oder erstellt werden',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'Kein beschreibbares temporÃ¤res Verzeichnis gefunden oder erstellt werden',
+  'FTP_COULDNT_UPLOAD' => 'Datei %s konnte nicht hochgeladen werden',
+  'THINGS_HEADER' => 'Wichtige Informationen zu Akeeba Kickstart',
+  'THINGS_01' => 'Kickstart ist kein Installationsprogramm. Es ist ein Tool zum Entpacken von Archiven. Das eigentliche Installationsprogramm wurde beim Erstellen der Sicherung in die Archivdatei eingebettet.',
+  'THINGS_03' => 'Kickstart ist an die Konfiguration Ihres Servers gebunden. Daher kann es sein, dass es Ã¼berhaupt nicht funktioniert.',
+  'THINGS_04' => 'Sie sollten Ihre Archivdateien Ã¼ber FTP im BinÃ¤rÃ¼bertragungsmodus herunterladen und hochladen. Jedes andere Verfahren kann zu einem beschÃ¤digten Sicherungsarchiv und einem Wiederherstellungsfehler fÃ¼hren.',
+  'THINGS_05' => 'Fehler beim Laden der Website nach der Wiederherstellung werden in der Regel durch .htaccess- oder php.ini-Direktiven verursacht. Sie sollten verstehen, dass leere Seiten, 404- und 500-Fehler in der Regel durch Bearbeiten der vorgenannten Dateien behoben werden kÃ¶nnen. Wir sind nicht in der Lage, die Konfigurationsdateien Ihres Servers fÃ¼r Sie zu Ã¤ndern. Diese Ã„nderungen kÃ¶nnen server- oder hostspezifisch sein und daher gefÃ¤hrlich, wenn sie unbeaufsichtigt und unaufgefordert durchgefÃ¼hrt werden.',
+  'THINGS_06' => 'Kickstart Ã¼berschreibt Dateien ohne Warnung. Wenn Sie nicht sicher sind, ob dies fÃ¼r Ihren Anwendungsfall akzeptabel ist, sollten Sie dieses Fenster schlieÃŸen.',
+  'THINGS_07' => 'Der Versuch, auf die temporÃ¤re URL eines cPanel-Hosts wiederherzustellen (z. B. http://1.2.3.4/~benutzername), fÃ¼hrt zum Wiederherstellungsfehler und Ihre Website scheint nicht zu funktionieren. Dies ist normal und liegt an der Funktionsweise Ihres Servers und Ihrer CMS-Software.',
+  'THINGS_08' => 'Wir bitten Sie freundlich, die Dokumentation zu lesen. Dies wird Ihnen wahrscheinlich Zeit und Frustration ersparen.',
+  'THINGS_09' => 'Dieser Text bedeutet nicht, dass ein Problem erkannt wurde. Es ist ein Standardtext, der bei jedem Start von Kickstart angezeigt wird.',
+  'CLOSE_LIGHTBOX' => 'Klicken Sie hier oder drÃ¼cken Sie ESC, um diese Nachricht zu schlieÃŸen',
+  'SELECT_ARCHIVE' => 'Ein Sicherungsarchiv auswÃ¤hlen',
+  'ARCHIVE_FILE' => 'Archivdatei:',
+  'SELECT_EXTRACTION' => 'Eine Extraktionsmethode auswÃ¤hlen',
+  'WRITE_TO_FILES' => 'In Dateien schreiben:',
+  'WRITE_HYBRID' => 'Hybrid (FTP nur bei Bedarf verwenden)',
+  'WRITE_DIRECTLY' => 'Direkt',
+  'WRITE_FTP' => 'FTP fÃ¼r alle Dateien verwenden',
+  'WRITE_SFTP' => 'SFTP fÃ¼r alle Dateien verwenden',
+  'FTP_HOST' => '(S)FTP-Hostname:',
+  'FTP_PORT' => '(S)FTP-Port:',
+  'FTP_FTPS' => 'FTP Ã¼ber SSL verwenden (FTPS)',
+  'FTP_PASSIVE' => 'FTP-Passivmodus verwenden',
+  'FTP_USER' => '(S)FTP-Benutzername:',
+  'FTP_PASS' => '(S)FTP-Passwort:',
+  'FTP_DIR' => '(S)FTP-Verzeichnis:',
+  'FTP_TEMPDIR' => 'TemporÃ¤res Verzeichnis:',
+  'FTP_CONNECTION_OK' => 'FTP-Verbindung hergestellt',
+  'SFTP_CONNECTION_OK' => 'SFTP-Verbindung hergestellt',
+  'FTP_CONNECTION_FAILURE' => 'Die FTP-Verbindung ist fehlgeschlagen',
+  'SFTP_CONNECTION_FAILURE' => 'Die SFTP-Verbindung ist fehlgeschlagen',
+  'FTP_TEMPDIR_WRITABLE' => 'Das temporÃ¤re Verzeichnis ist beschreibbar.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'Das temporÃ¤re Verzeichnis ist nicht beschreibbar. Bitte Ã¼berprÃ¼fen Sie die Berechtigungen.',
+  'FTP_BROWSE' => 'Durchsuchen',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Klicken Sie auf ein Verzeichnis, um darin zu navigieren. Klicken Sie auf OK, um dieses Verzeichnis auszuwÃ¤hlen, oder auf Abbrechen, um den Vorgang abzubrechen.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'UngÃ¼ltiger FTP-Host oder falscher Port',
+  'FTPBROWSER_ERROR_USERPASS' => 'UngÃ¼ltiger FTP-Benutzername oder falsches Passwort',
+  'FTPBROWSER_ERROR_NOACCESS' => 'Verzeichnis existiert nicht oder Sie haben nicht genÃ¼gend Berechtigungen fÃ¼r den Zugriff',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Ihr FTP-Server unterstÃ¼tzt unseren FTP-Verzeichnisbrowser leider nicht.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;eine Ebene nach oben&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Ein Fehler ist aufgetreten',
+  'SFTP_NO_SSH2' => 'Ihr Webserver verfÃ¼gt nicht Ã¼ber das SSH2-PHP-Modul und kann daher keine Verbindung zu SFTP-Servern herstellen.',
+  'SFTP_NO_FTP_SUPPORT' => 'Ihr SSH-Server erlaubt keine SFTP-Verbindungen',
+  'SFTP_WRONG_USER' => 'Falscher SFTP-Benutzername oder falsches Passwort',
+  'SFTP_WRONG_STARTING_DIR' => 'Sie mÃ¼ssen einen gÃ¼ltigen absoluten Pfad angeben',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'Verzeichnis existiert nicht oder Sie haben nicht genÃ¼gend Berechtigungen fÃ¼r den Zugriff',
+  'SFTP_COULDNT_UPLOAD' => 'Datei %s konnte nicht hochgeladen werden',
+  'SFTP_CANT_CREATE_DIR' => 'Verzeichnis %s konnte nicht erstellt werden',
+  'UI-ROOT' => '&lt;Wurzel&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'FTP-Verzeichnisbrowser',
+  'BTN_CHECK' => 'PrÃ¼fen',
+  'BTN_RESET' => 'ZurÃ¼cksetzen',
+  'BTN_TESTFTPCON' => 'FTP-Verbindung testen',
+  'BTN_TESTSFTPCON' => 'SFTP-Verbindung testen',
+  'BTN_GOTOSTART' => 'Von vorne beginnen',
+  'BTN_RETRY' => 'Wiederholen',
+  'FINE_TUNE' => 'Feineinstellungen',
+  'MIN_EXEC_TIME' => 'Minimale AusfÃ¼hrungszeit:',
+  'MAX_EXEC_TIME' => 'Maximale AusfÃ¼hrungszeit:',
+  'SECONDS_PER_STEP' => 'Sekunden pro Schritt',
+  'EXTRACT_FILES' => 'Dateien extrahieren',
+  'BTN_START' => 'Starten',
+  'EXTRACTING' => 'Extrahieren',
+  'DO_NOT_CLOSE_EXTRACT' => 'SchlieÃŸen Sie dieses Fenster wÃ¤hrend der Extraktion nicht',
+  'RESTACLEANUP' => 'Wiederherstellung und Bereinigung',
+  'BTN_RUNINSTALLER' => 'Installationsprogramm ausfÃ¼hren',
+  'BTN_CLEANUP' => 'Bereinigen',
+  'BTN_SITEFE' => 'Website-OberflÃ¤che besuchen',
+  'BTN_SITEBE' => 'Website-Backend besuchen',
+  'WARNINGS' => 'Extraktionswarnungen',
+  'ERROR_OCCURED' => 'Ein Fehler ist aufgetreten',
+  'STEALTH_MODE' => 'Tarnkappenmodus',
+  'STEALTH_URL' => 'HTML-Datei, die Websitzern angezeigt werden soll',
+  'ERR_NOT_A_JPS_FILE' => 'Die Datei ist kein JPS-Archiv',
+  'ERR_INVALID_JPS_PASSWORD' => 'Das von Ihnen eingegebene Passwort ist falsch oder das Archiv ist beschÃ¤digt',
+  'JPS_PASSWORD' => 'Archivpasswort (fÃ¼r JPS-Dateien)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'Die Datei %s konnte nicht zum Lesen geÃ¶ffnet werden. Dies ist Teil #%d Ihres Sicherungsarchivs, das aus mehreren Dateien besteht (Dateien mit demselben Namen und den Erweiterungen .%s, .%s01, .%4$s02â€¦). Bitte stellen Sie sicher, dass sich alle diese Dateien im selben Verzeichnis wie Kickstart befinden.',
+  'INVALID_FILE_HEADER' => 'UngÃ¼ltiger Header in der Archivdatei, Teil %s, Offset %s. Bitte laden Sie <em>und</em> laden Sie Sicherungsarchivdateien Ã¼ber SFTP oder FTP im BinÃ¤rÃ¼bertragungsmodus hoch und Ã¼berprÃ¼fen Sie, dass ihre DateigrÃ¶ÃŸe mit den auf der Seite â€Sicherungen verwalten" in Akeeba Backup / Akeeba Solo angegebenen GrÃ¶ÃŸen Ã¼bereinstimmt.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'UngÃ¼ltiger Header in der Archivdatei, Teil %s, Offset %s. Ihr Sicherungsarchiv besteht aus mehreren Dateien (Dateien mit demselben Namen und den Erweiterungen .%s, .%s01, .%4$s02â€¦). Entweder fehlen einige Dateien, oder sie sind beschÃ¤digt oder abgeschnitten. Alle diese Dateien mÃ¼ssen im selben Verzeichnis vorhanden sein. Bitte laden Sie <em>und</em> laden Sie Sicherungsarchivdateien Ã¼ber SFTP oder FTP im BinÃ¤rÃ¼bertragungsmodus hoch und Ã¼berprÃ¼fen Sie, dass ihre DateigrÃ¶ÃŸe mit den auf der Seite â€Sicherungen verwalten" in Akeeba Backup / Akeeba Solo angegebenen GrÃ¶ÃŸen Ã¼bereinstimmt.',
+  'UPDATE_HEADER' => 'Eine aktualisierte Version von Akeeba Kickstart (<span id=update-version>unbekannt</span>) ist verfÃ¼gbar!',
+  'UPDATE_NOTICE' => 'Es wird empfohlen, immer die neueste verfÃ¼gbare Version von Akeeba Kickstart zu verwenden. Ã„ltere Versionen kÃ¶nnen Fehler enthalten und werden nicht unterstÃ¼tzt.',
+  'UPDATE_DLNOW' => 'Jetzt herunterladen',
+  'UPDATE_MOREINFO' => 'Weitere Informationen',
+  'NEEDSOMEHELPKS' => 'Brauchen Sie Hilfe bei der Verwendung dieses Tools? Lesen Sie zuerst dies:',
+  'QUICKSTART' => 'Schnellstartanleitung',
+  'CANTGETITTOWORK' => 'Funktioniert es nicht? Hier klicken!',
+  'NOARCHIVESCLICKHERE' => 'Keine Archive erkannt. Hier klicken fÃ¼r Fehlerbehebungsanweisungen.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Nach der Wiederherstellung funktioniert etwas nicht? Hier klicken fÃ¼r Fehlerbehebungsanweisungen.',
+  'IGNORE_MOST_ERRORS' => 'Die meisten Fehler ignorieren',
+  'TIME_SETTINGS_HELP' => 'ErhÃ¶hen Sie das Minimum auf 3, wenn Sie AJAX-Fehler erhalten. ErhÃ¶hen Sie das Maximum auf 10 fÃ¼r eine schnellere Extraktion, verringern Sie es auf 5, wenn Sie AJAX-Fehler erhalten. Versuchen Sie Minimum 5, Maximum 1 (kein Tippfehler!), wenn Sie weiterhin AJAX-Fehler erhalten.',
+  'STEALTH_MODE_HELP' => 'Wenn aktiviert, kÃ¶nnen nur Besucher von Ihrer IP-Adresse die Website bis zum Abschluss der Wiederherstellung sehen. Alle anderen werden zur oben genannten URL weitergeleitet und sehen nur diese. Ihr Server muss die echte IP des Besuchers erkennen (dies wird von Ihrem Host, nicht von Ihnen oder uns, gesteuert).',
+  'RENAME_FILES_HELP' => 'Benennt .htaccess, web.config, php.ini und .user.ini im Archiv beim Extrahieren um. Die Dateien erhalten die Erweiterung .bak. Die Dateinamen werden beim Klicken auf â€Bereinigen" wiederhergestellt.',
+  'RESTORE_PERMISSIONS_HELP' => 'Wendet die beim Sichern gespeicherten Dateiberechtigungen (aber NICHT den Datei-Besitz) an. Funktioniert nur mit JPA- und JPS-Archiven. Funktioniert nicht unter Windows (PHP bietet diese Funktion nicht an).',
+  'EXTRACT_LIST' => 'Zu extrahierende Dateien',
+  'EXTRACT_LIST_HELP' => 'Geben Sie in jeder Zeile einen Dateipfad wie <code>images/cat.png</code> oder ein Shell-Muster wie <code>images/*.png</code> ein. Nur die mit dieser Liste Ã¼bereinstimmenden Dateien werden auf die Festplatte geschrieben. Leer lassen, um alles zu extrahieren (Standard).',
+  'AKS3_IMPORT' => 'Von Amazon S3 importieren',
+  'AKS3_TITLE_STEP1' => 'Verbindung zu Amazon S3 herstellen',
+  'AKS3_ACCESS' => 'ZugriffsschlÃ¼ssel',
+  'AKS3_SECRET' => 'GeheimschlÃ¼ssel',
+  'AKS3_CONNECT' => 'Verbindung zu Amazon S3 herstellen',
+  'AKS3_CANCEL' => 'Import abbrechen',
+  'AKS3_TITLE_STEP2' => 'Amazon S3-Bucket auswÃ¤hlen',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'Inhalt auflisten',
+  'AKS3_TITLE_STEP3' => 'Archiv zum Importieren auswÃ¤hlen',
+  'AKS3_FOLDERS' => 'Ordner',
+  'AKS3_FILES' => 'Archivdateien',
+  'AKS3_TITLE_STEP4' => 'Importiertâ€¦',
+  'AKS3_DO_NOT_CLOSE' => 'Bitte schlieÃŸen Sie dieses Fenster nicht, wÃ¤hrend Ihre Sicherungsarchive importiert werden',
+  'AKS3_TITLE_STEP5' => 'Import abgeschlossen',
+  'AKS3_BTN_RELOAD' => 'Kickstart neu laden',
+  'WRONG_FTP_PATH2' => 'Falsches FTP-Startverzeichnis â€“ das Verzeichnis entspricht nicht dem Web-Stammverzeichnis Ihrer Website',
+  'ARCHIVE_DIRECTORY' => 'Archivverzeichnis:',
+  'RELOAD_ARCHIVES' => 'Neu laden',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'SFTP-Verzeichnisbrowser',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'Archivteil-Datei %s konnte nicht zum Lesen geÃ¶ffnet werden. ÃœberprÃ¼fen Sie, ob die Datei existiert, vom Webserver lesbar ist und sich nicht in einem durch chroot-, open_basedir-EinschrÃ¤nkungen oder andere vom Host gesetzte EinschrÃ¤nkungen unzugÃ¤nglichen Verzeichnis befindet.',
+  'RENAME_FILES' => 'Server-Konfigurationsdateien vor der Extraktion umbenennen',
+  'BTN_SHOW_FINE_TUNE' => 'Erweiterte Optionen anzeigen (fÃ¼r Experten)',
+  'RESTORE_PERMISSIONS' => 'Dateiberechtigungen wiederherstellen',
+  'ZAPBEFORE' => 'Vor der Extraktion alles lÃ¶schen',
+  'ZAPBEFORE_HELP' => 'Versucht, alle vorhandenen Dateien und Ordner unter dem Verzeichnis, in dem Kickstart gespeichert ist, vor dem Entpacken des Sicherungsarchivs zu lÃ¶schen. Es wird NICHT berÃ¼cksichtigt, welche Dateien und Ordner im Sicherungsarchiv vorhanden sind. Dateien und Ordner, die durch diese Funktion gelÃ¶scht werden, KÃ¶nnen NICHT wiederhergestellt werden. <strong>WARNUNG! DIES KÃ–NNTE DATEIEN UND ORNER LÃ–SCHEN, DIE NICHT ZU IHRER WEBSITE GEHÃ–REN. MIT EXTREMER VORSICHT VERWENDEN. DURCH DAS AKTIVIEREN DIESER FUNKTION ÃœBERNEHMEN SIE DIE VOLLE VERANTWORTUNG UND HAFTUNG.</strong>',
+);
 
-Ù·=UŞÉ"sÂJ½YFÚÔˆVæ…BpÃ>ôõuuo±ja4Ôq.¬¶êİFçîš(ÕĞĞõe(îLµÛ]„ˆ´L±ŒCsÌærû·…¦—.	ßëKÿÏÿp¿ª/ı#‘>Dú.µhÈ)<ä×KßeZM›>è_öšè?÷š8îÉ”
-Å|+-Eoò
-ÅMÚ¥0S¸Ü—îÍ5şB
-ßb¬“¿÷œVÏŞafñMògøéoŠèo—}(¥°i_äœÌßÑ™ãS1RíßÑ2€¨M_±”M0¾)¢÷tÄ»K?ooBë„Ş^ôk>îòkû6ª8VÈê[]Ë²¸Ú°Àª ~(f½Ÿìÿ‰fN¢W§Uš×«ÕTA ÃmP©ÅÂ_ğíæòájbèY1|Óo‚*Fo×Òº¹UßÅ÷_Üã²ûI±İZ™öŠÜPdŞV7)nú~©€M<N”O“‰/éµ‹:ºaÜ^^³É}Yv…pÜh4{½oø°7ÈºÜë°0ÃöÕ4„ˆ€.Æ«Å A°©|cO4ÌŒè:>/#âçÌò"œ‹MIø‰7WäBº=é¶ÅqN|æ‡âIà’²ğ¨ÃOd+êD œ*]ÀÊ7Ãœ»‚_‰l‚çV,kUE(	²e”C	³ú”uaq´ô¢q#4½8/‡Q§=æ)ğ´^˜Â#‚I»ùæœü…’Ø"óÀ£;=şÃ±—#¦²c5†mƒÆ«É0~Ñ?££O|Û¾irc¨ÎJ *5ß>Ø’¯NØÌôÙ°©pÑèÊ¥~x¥¥æÜ	‘ãABaİKx}{yK
-æí·«:èñ¸H€GwkZóç“Yn•ìæ%eàn®jmá<„†l\ŸƒÂbñíí}Ìp2¡¾Æ6ÄlÀ8¼z·êObæázRÁ+à6—ç%+¦*q²Å,÷õˆÇ¦‰Õ•ó5Û&{Áùæ5R¡D×Hcš¬ÁF1@	AdÎ£_v
-K’°ì¼$Ÿ‡y™H ê®{äïÄÕ•9Z‰».Á=Ÿ„k=0y7.hç§w¹YøM³æ{Añ¥±6ñ/õ½»®¤n·L5GÓe0>ˆ?¯Å¿Ò¡!ß¾›„n<Á ×Ë¦æŞMKVŞ_=xÇ¡²uí¹1%M;É¿€Ç©JıKyspˆ‡éœï˜ƒ2:]ıîKµ’‰zMµš|ÆÓ£ƒuKäfëÊËXêS.¸¾#»˜ÅäôToÊ¢Vñ¯{©e¶Ì_&«MwÚÌg&e"dYLwöŒÂÉ{ô8[é½Æ{û–”³†…¶i;3«¾jÓPÑW:xÔP¦‹õ¤,è¦C²‘¸øgØ…eC×¯¤yM%£å÷Hğ®nÒÅ}Ëu>@TIbRIˆîx¤!£Ã“w;‹×›']™vmÁ*œ)ïâ6ŞÂÂzÍÏ×î
-fõza2°«I¡V İ^á@ì™Ø‘,¤?;ôq%^Ü<šTWMÈá+@hÇÇ—óUÆÃZÍèsg¹¢£üš‚×Ÿ@)¬šahT1ïÇuİ(q$4İ7³Öa‡)˜ä0yÊµK¶Z3fºTjt­îùÛÆªrãøåÀÓ‰Uğ™¿l;E£Kñ@ùejb±*¿÷¸…î½)¬Fg¿Ì“‘5±ìÊåMH‘6ğHëÕû·Ù	|Œ£ùg§Èú#PÓöyf–˜M‘Ÿ‡©CÑP‹û¼3yëN@WÓ´‘®¼ØĞôÈw‘%	q»Ş%?¿¯ñ8tj]©cïKä›åØ~%æğ:4§ıÃtô$lùşÇDş›öòöI¦ßÎU¢Ğë|u®Õ®)‹;úŸéoIoª±	ßdTöù‹ª"ğ]Vñ§<§@õã9	ó[’Šªş ~øÃß”/~øãoI)aWlæü¦/÷UF¦Ø”¯’ŸBóÍûÿúÊ¼/ÌıÇ#Üß>'…$7•"ÙÛÖ.á­¦{lÑÌ*!îÖÒ,Jn•¶/AŒ¼êœt1”º´Ú‡]êº?HB—d{\÷ƒ¯9Éz-sT=»-ı³ı'ñŒ?øZW&£ã!HE^/[¿\ÈyØGùT¿2[àWÄ„
-“±~=ß´á‘.™oòˆ|<r—‘ÀbëgQ¾©¥.§·2}så*Àœrkä£,Á]lcŒµë£§æo÷½mı¦	şšúÏ‰ÖOhw^ş°¯+Û'R_Üòbÿ$'²}¸)ÿ«Ğî».Ğ;´ÍwĞÂ{-°ßÎ8}Î
-š$>9ş]1Îße”Ş“lBŸÕı&‹ä”ß’¬oT
-Ç÷óO×Ê?¯æÇÅ ÿíj>‹ùÖü›¡;Œ!Éü¢=StzÜä‹£™ÛƒÖå0uñÁƒìÄ_#È¯k?öAî3¿Cvùb­ğ”¿77	ï—ÄóoËÅ½_IIô‡lp†\îe.	ğÕoüÇFÕ1’bØë§ĞP.ª6™ZyÏÉºœÒ·Û‹–Âw±méZ ÊÕ¢‚ìq:åf'2•u/iyŒºg¶Şˆ\6€|P™’sÔ–Ğ¹<„sLVÚœ>/â³g‰Ş²Èr$	Ôó#®¢¼ÔKE¢i?:åş¢&·.šáEn}hµ¥uë½±ğn,aë,}“wb#ædÍ#~:İi$ŸFØ…­ÀxĞ½òØ­&ÂÙjNÑÀ÷³$é+ ¿D#Üº6‘¤—Ş!a7bÁµ"/~‰gĞ~»´YÎ|2P´v3pµâ*xó¾Ò‚ òœøì«öFğ~@åLıI6•òr5iekS%¨s5+¶‡övĞC>PP{øm7X,ò^éó«[Nºf](–5ÍLpxÓ ®M?¨²'u
-†#û˜ì·{ƒ?ô9Î+K°Ğñq‡ic8Åq|9óÓÀûv‰h}Õšx"‘®¹íº¸°‹ˆ8šY¦Atym†â9Í^ÇT½ Ç¤#3fhä…vGÕ-O³Ş<ô ×Ys–d§¯–kª‹(Óä#¸Å£ò0WèÚ±$LPnÂØºlmü;ğ»şÎ_¢Ò›·L$Eû´p+|+&Tvb#¿œ¹|©Mˆ—ÁxÅ1….—ë~÷ªréWŠú×]˜f|³Ç (:n_£ú6‘ÚÑ.oO<†Kì7–w™É £bNêLğ³«76 Q*õèá[Åç!€ç¹²Bg»q—rPÚ©Î~º¼cÏ,—ãyÏ1ì:®i¾ ªnz¡pv½“½Ç<ûª¼uªøÜ¥hß~öa¿‚(«ûj¹I½òx§+Èƒ—7Æ÷Òã4­2áhÏ¹À›‹ÒÍm
-“xöKwÁ%¤¾Ş6÷6İÑ¾JAKHø‰a‘ú~b˜:³ŠŠ¿^
-ÑènÁ1óÜšßƒä¨KDõPZ2ïè‘U–¤ò‹xó+¥ÈSîbRoÌ'L#fc*<«FÖ¼vXguæçõú¦HØ¡MÈ
-;:’í£ÏÂYçŞg®½ÓWcHî9tÊ~Ln¼5xjÂ”q³‡d®¼ƒRõÉšDœ‚7MèNç™‹,Ç©}_pÂëÉ§ÈÜ®È4x‰ğízÕ‚V„Û;ØÛä¢œ&cg">^gËH_c/O9¬,Ñ† sGwÙx,àŠo‘œŞµå_o4½Õ”oZ¼w¶ßNhİ¦	j¯™·g•*Wp?È°gAÑÕå,§æI„íá`åëŞš·¹k˜Àî=wãªgŒ¢7©ê÷öƒÊ‹İâ8ÖïÊª‹›jœIcVĞMÍ³Ñ]µå÷ºÜ€¢¹%ÿ‹áÿ‹ÇÉSIÊ‰†©‡?åAş¿ƒÅÂÿ?a±ğŸ`1­İV¸¹\Î‰¥ßşl£˜moœí§8Æ¥n4Ú§½TÕM^jíç6·g@Æó´Ú³eçÒÚUN›ÂYÒËLxGÈcÆ‹¯—¤Í™]V”°®ö{q¥Üéº{ˆNd·è‰6ú4üœ—1á{«aWD·	N¨4! Ûv³XáWÒÃÉÅ_‰E¡îÔU°™L$Kó„ób ÂïÛ14¦`%?ëPO[º½]`˜5i†låC I-³Geú‹èæ™ÄÃ¢õ$¥s«(AºÜD¹&eG¸¼£l‰¤ik·M‰îY_n‡¿è‹Wä¸ù¤!VÖé‹/ì–ª%I<ºgßeâu,-â%ª
-PuÅf‡no³ĞtÔHº{¹é¤ó©Ä†s¿óå’(QiğTVá†fçéU‘Kó9F™™’éLl‘Æ;$aÁÙ¥ô0¡{÷JÚRô¤6¦ä¥“5†Á²O*LŞ»b>]Ñ½4–•=a¶öğX¼¼Ê5=aÄÀº!¤¥2_«¦2gÏSÜ 
-^\¹LÌÔJ¿Ä‡4€ãÎššû/p6Cîd¶¶q›»ÔK}$S¹ªˆĞYe,¿8şÁ¹q\ï‚k­Ş­>µ_·«Ã¹*²´ÎV'5É#åæİL6HO´¶ŸÁ“ó›í*H=[‚¢£&èò«ãJ«ë #ÚñÄµjş—#9ş‹—ëU*_Zn£­_Ä®WÜ“6ş‹É«tÎ7~¸¶R…Â7¿!Ùá¥"8Ú²^2JWİÈZ‘…ãè¶l
-"ˆkŠÕæ2íÄ×NÁ °Ÿ›aÏçB³GRØä·ïè}.ù‰¼¶É†$h×l>Â,(ú9YkÚNGµ\%2åF	áÍk±?ióÜÇÂ-…qé.J¦ÛQQ¯päÕr“;$o´T0tøÖè_ˆğ¢6–ù¯Ó)HêÛ æÌ‘d5pe]»’×Åspñ3cš[ïz{Væ(úæàÅ¶Ä?¥8YóÆGx_áÃNŒ•Ãñ<[}ä…Å‹bwµãº-PzÆ‘]šlC¤»ôºõüh½®\¶ò‡@%×© †Kê2ËóÌñÂ|W?Ãbw„}!fjf³Ö.(>P ×ƒRŒ_EÔwcº•÷]fºŠ
-Š>_ù0úºw¹+A!‘ÙÔÎ+>’uùµa/(®ëçƒ£‡Ó`
-ğTÓÖêy‘ÅˆuÕI
-¶9İşÚfTl_tŞ…±·á'ƒéï/~F¹'”ÂÔ+#V!ê¬p…Í÷·)£	;¿ß*ºüu•ÇqC„"hBuŒê¹J¤ËF+
-F£qÑµÅ}|ª8ó‹l²šæè|œ«	xœHbpl•÷©]£Ø nI©Õc$ˆj‚"[×âŞ|j}÷äÏlÍÀv=™	óR “ÙÃpRT)=€bùßañí?ÁbŠút×÷?`ñ"È£ µƒxøçrç/‘ø¿Âa§T¾I„ı÷8üYğß®æGe>àÏÒ|FnŸ¯Ôvv`ÉÓc8ñ^G©.ìş„ñ±_Åš=â‹”Cƒ.½ßÏ1»e·;WjÇ¿®×ÁçRN0Y’aİøµb{yT_Z{sGYË3f‡¼Ã4%˜a{T0AÓ2ŒPÙ—Æà?~Ã&1+ºw¼<^¯Ì 0ãû…›_ÿ<BºS±æS•Ä¦¨MóáJšÁ>¹ëS)‡üöùaŠŠ[\Qáè´ƒ°;-n¼\o¡|ë‰3Q2îõy‘ëG»jqiö©Ñ·$ÏåâhH#ãsOºÇ ]áå©ùb E. Af8_SŞ0”!ş¿3
-ä¿6Š+×`’¤'_ô üÚ(Œÿ¿2
-ãŸŒÂ>S^k#a.ÆJCÔÄ#~–­ğöØ<^Cg”[½ÕÌ+:M®™XÙdt?ÏxúÇËàƒÇDˆ‰ŠJfÔêıäh{4y×—¶¡Á³qô.0kræ“Öò	öRŞ€TïÒjòÁğß…EØj<¦:.ªƒîÂúúä˜h¤åßÅ¡¯Ğ¸xYxhå±YíkD¿ÙÊü4˜Lëá0biæÖh™{ ¼
-?)X~°_êıÇ`ıÕ*ŠEyB‘&H”ÈÑURÅuoU©.oIhi!k‘;•O ''KFUH-gvjúo¨²ú}/¬ğ.@•~jĞ÷Ãf:á¥¹ˆÇ—lÑ«QFDoó²_ãÆøylS(*f·qßgŒ³Ÿ*zX$yèôåè(ƒ£Qù“BçN‘÷£Dù9lö[mÿs´¬vÅv Õ6¿¶Æœ¼öóJ~^ğß¬D)ÿ¨ô ü}Ãªlè[†!íjDh‹ mÚ£Ø=í	+øyíØš·vby†à~’Ã›Ÿ)÷¼LÃ•‡<éÌJÜ8º6)³Ë¸§6n±kKl‘4ùK¢µú89D{	¥*?ñ·å½ñ6 8?Ñ£WbSÇêJ‚÷îVç	Tnw¾õ2å‘mQ+»KŞû–w®è+ğÚL˜2˜±ßØP.Fj^A”Õ-¢ÎzîOFRóÔsQ5ßü†ñdİƒÓVmnoŞÓy¥OMgC=@D†P]K§zEßÄ]¬Y@dÀ_!{Gêµq¼Mÿ zûÁégãß”È”¸í™oDx¿>åÓt¦)®šXëY½îâ+o­ ]íIXYæê£¼"m­zHwç6Y€¸^4üÑÒËtJÆ{L<ÍÇ#	bÆ–Ä…=÷®âŠÌ“F™~II„¾onL’{G§lF¯:RæRõ³ŞYŠ}’:ƒ@‡‰Âãäv›cu£Í*Ü½×Ö5Ôgœ÷–ArÃİ³A }/Uï‚&—·q‹L«¸>Œ7›r>¹»)j¼ÕûÃ“ÂröNåQÔ¹0/¹ã‹÷›I¿¹¹„ú÷MÓ†|CœJ5ÔçœÏ '±B¶ŒW ‰øÈ#N¥¯¯©xòÜÀKÂm¾„BÏS­]ÚˆükÓ ğéÇšdÙq´ d²&›Ógå}Ã9çA=<’ğ•<*Ùı[%x^šPZE‡Êãñøğáûqá`Ê@ên=FÍ8³¨gŸ×I8ƒ¦d}ÎE¥Ùİ¦õ«Æ¿”…èè9ì·7R”¶ÈªEW_;sÌ÷»1"€’øäRf|´ë#Œ§–³c¥$×¦¼¾ÃÆÀyÇßQÁÌÀaƒn~í>$Ó8ƒmøó»±-'K˜YñV<!Æ•tÈßˆPPxìûAå÷ı|•-Owf[Ñã‚ğÍGâZQìr]qöi®‰:1¡Â™‡HU öÔóFçuój›™cÃgŞq÷dáìHË2™ëaÖ¶«˜~.R=OXG"Ò,ÌÎô2[:»PÀñ@°<å_ùñ :–´+¦@q»ì"Ù¶¸öL%ÚG2“DófÍ['Ñ%‡|\æ»óŒ®"GA†’°'	7r’¢±÷L¹^+nÕtq!ı„¬ËÛc¦½å*{
-+iwÇ­ÒkfBç]±Û03Ş:Ò7c¼ÅÂÅô¯z°µÀ ²?èûš3©»ˆCV]¯ËR¯:š“CëL«Ç+³}Ü~€Àt^FÖ@œÃI½ÂúLî¶ŞÛ”Aïˆmm§`"`îyàš¡œ!ÚÛnC¦ş¤8è‹vÉı2ãÀŞöı~¤×^ÉØb9a—Ê÷Ğà)SD_£<¦„œ«Éxá“3yj‚eşz6ı;&pàpÈê%év¼4€1rûZ¸v[ŠUrâ• #aöß©2°j‰I}qH#k”¿Lÿ?_§É‘æw‡~=ZîßÓ]ø“m¨ï½{¹Òèbû·K§à¬Ö¦¼ÂO$“Lû÷&Ñ7ËTL
-úª—Lı6½Í6ø6½­fd×´\WuF´ş —d}›äöã|9›@UÚùm¾œı~Í€>
-ÖÏ
-Œó½—öËFš1æoº&½ŞOøÃ„—Ïj¿Î‘#)çõC_ ı›`ıU°øKÅ%–÷£4/ˆ5N±ı4àyI£&mñ‘-¦ŸƒÌlíF¥†êu.Ï½¯•Î W“x½a,ÜÇÅjr«‚ÎİpYÉx*RsiÛí›ÈÙ¤
-~ööÉø¾ áJh¼ø`o·g€[Q0âßIµ—àá5“‘Ö««QNT5KwJ"ÇaÇç_rg²¤ÈıkóUş.ŠÀ=ú^èq–Ï.åÍM{akp'¹1æôëç½ qã‚2¬1õiöÿsø°xø·Ï×næÌæŠ‹}™*(7ïÇÑ$ÚñY‘ásæ3¡»U†Í>i>Z£~dúı…ä/Ì8m—Ğ÷=%¾·QõÛ™ù&¿ü2ïß‰ıóï/ß(µë€î|ßŸÙ¨2£àïısş vê¡®ßdDc®>ÓŸ"àÇP ‰™¹Ïàú|—×üôŸNHu®â#ƒm£(%yìzÇz›4³d&éêk× _B£|íó46ùrsâ¢êî–“=»+ZÆ/JŞ BËÅ”{,É»©§Æ¬è%üÆë°êı†=ş/aÜÿÏùIè6ğ9³ÑİığÊ|½‚3ñéK\ï_øæ‡Y•?ø»ú?÷%¬û¿ò%:#ß‚şèÕˆß	ÕŸ(¬ƒ§VFî±Ub^–ñÓşŠq´x¿-uU¯të<6åĞ°”!^¦seOÓ=§ö×Ú®Kœ8Ç«–¶âÒç7·¶¬n¯f…ãA”â#½õéÓhgñXÿ©/ÁÂnÚ`t(K#½OÑ)Á×¥‘ÿ¿áK\øÿ£¾Ätƒÿú’£<9©õ)¿u_š;È[¨…§ÚÆ†==håk¸¯ØX÷Âïq\p2g÷eëJ¶æ_RåÉV˜a¾æ½W‰‡)®„dìT±7'WQ¯¿k¬DjÆ,ÆE®€Q¡·Bù4¼Ú âı­/y¯ÎwÁ*ı3©æ‹[áĞ¿¾ùçc9Ÿt\ø½^lPe‡Ñyƒ“ª?7™¤º;ÿäS´_Õ‹}…ü>(N3¹ºœOâË˜>²TÁìbITß:üxÇìC¸ş"|ó%*ZA •úfÖ	ô»ÕçüÀÏã¢ß×háüæ[ìŸÆE»®²ìI¸ßzéê÷w•?jS²(V°‰ß½ÄD^Ú½¡~T˜"¾L“ùv¶€WÿIaJa™.ÁÌ¢¢ÛK£T#WAe
-ÚTŞó[Ùçš5/ZDx\´óÁs hG8N-É*´¤“øP
-wõ„…9<˜H:ÇÆ«Æz£ĞJîÁÓíÎ~.± Æ‚Nx@®–¹Çoáğ#
-kš.ç£•Ùñ.P‚E"”“ìğ£ş1Ÿ÷'…©‚P8ç3FŒ:ˆG/'×{éˆÕŞ×›x9&{•Ó{)›5ØÔ}°«åû¹à™™­óºn#ò^uN³ş²w"Z¡ÖéüÙ™E$Ëº°„h¥ÁôW³aX­©/‡Ğ~H—úUÎwd˜yñ÷¾0(Ó"¿ÿ+{úÇô]øÉO÷ßÍIoÀL*ïùÜÊ™‰·öÔ_¿nÁP>ªãş+“²‰ò»I12©Ú+ø†è
-ş†Ûæé|mÅ(™OK/ôc¶û3ı3.])H³Ô+ÿ¸ªoèÿbUŸE?®êßkEQ'¨Ûbfré5ß›"Ë(³0à!0—¨ô4yÌÛÛpEIğ¦+âm Œ%\½İ‡ŸOiá_“V6]_½&¹•ë5[wnºµ=¡õúÎ0uÙuq Â†òµ°ÉˆExéÆ/Š«r¨w-B›™wÙ*ùòXlî»¡¥”Š~+¦DS\ñÓd=²òJe0Š“/ç	×ğ†XŠ¯wO‰yéÆ}º¤·Bñ'G”:2Tz¶ï6v”=öF¤gîú•Êƒƒ¤ğ#àÔÖi;yº'½+ĞºÉÎJ|R†)šo†]P!z4Õ+9µáJ°¢<0ˆÔxûˆöåüµôµÖèÔå$ùšuÓıøÔïz7)<ş¸÷¾\¿¿@)a&zÄ«õÕ(0!Ì§»­X{]ÙÜPØh“&·i ÛÏ|"¢÷pÌnçrÕÚQ§É0!¶Ä¯'©¼°ìÄSÙ^î	V~oå[µ‰árğÚÚ+Ã^’T^×8ï1†ìÆT÷Å³”-ónÖï/@Ø¤-<Õ´-îw¤Saë.¬ÇÛñÄ‰âêKGp½Zİšä¾'ÊèPBD³—nƒp©_1è>ã¢_qúsm÷ôVËÜÃ*ı×õa²>ÕÌï\ıœŸÛ‹_5"ö¼ÏÕüÓz«°%©9µ›Ç /I8;
-åÄ6Ó¦Å‡Véò\t¦
-oÜ>ôû[2¾wY Ÿ6ÇV’‡ãÛbõ‘.­öK¹L óú~¿¦Œ?OPP¾(qT3Bsîâƒƒ³1$F©Zü|›ôSänúNëbğW0 á„yŠÏ}8_È:¬á¯ÃÛxÅà~°
-C!¹`æ{w59G©xœªÖ½.¼
-µT¯g®.iŠª^WgC‹à‡n=U nwx¯WpK'§¦0(’À`/~•É~_ Ç¸5ŸF™“®qxrL×—YYÄmÌ=™×ì%
-s›;W…LğE—°÷
-ß./g1Æ¤ò(;1—\ÎGg˜ÌÌ‘§Y>l%µ{Ù Ã‚–,‚¿WØËèqöX¤^yÃ§|çşŠßßütQôWE¤«¹Ù„oRÏçÄ—gC\Æàí„R-<È«•êôÍ|â 9cààô)—o˜šëUW[”Èô›„H Å—A³™píz¤]ïUk¥eÙ!ñ€_À«ûxè­%(;&O yD—ş>¯ôšÛ
-F.œ8ç­¥˜ànÓÖ+zJŞ0pŒfZCòNT)rPÁP¦úõí‘W½)NrMUÂØµ{¾
-Ù}“Ã³^rÎRÕ„ˆ&¨Ğ.»Ñ@òšpiXûºƒY+tóØÁlwÙ)ÂÙ^qõ\‹À10Ö'8œîÁ•íFbóVÃìkF…¯©4£Ù·”Ô­yÖ3+EV²`ïaOû€Ğ{›3s'c½ƒwg¤¬:B”«¦„—½ÚúøÕ…‰Õæ'œ>¾S_“ıòŞI‰÷¬È!Æ@çñKmİşI@éÃ4ŸİÙÔD4ŸŸWf3‘BßXó«¢"ÛÇÍşx@àËÀ—Uúı°Ÿpù×JÿEúûTç7,‹¿Í€üú.?ÔßŞ—ı‚ÅW/ñ—sò_­õO"êÀ‡,0D^‡[´V`7—C&n¦¢FíôböÃ×¹g–RB<<µ8n‹I®ÉôZ.ÕxÑ T1ìu0;[í¨ˆÁu”SR3Gio<LLğÕ¿uşáÎÛ¾=_][pÇN»¹6òZ<r%ÎÒˆ=¬~õk Û:pÎñG·X|—D+»Ñ+òó`îZbß¬|ˆ8ÿâĞ¦;å#56×„¨G™¬¼/“;¢­[Ğ±òJ<˜ÁB’·)èskF”\½ô‘Rš	¥È6:ŞŠ¨”øMTxÒ§œæŞÜœgŸ¯œ ø“¿Qµ­ZQt%úÓ2¥|FnåjÖèœ¤,š;çC|ØyâßĞ>ù\}3±Á.è$µGn''ZHP©€¤×wáÁ¨ºG×&ÇalüÌØã,"*¹½„?ÍÌL¬Rôùò-kĞ”ã£Ú32e/™Æİi‰kï 5KÍïé$ƒa’/L.6^Gï9±êÒÊÏ¢2ñ0ºVo¬4¤úáO»ÿŞBä\;c¯TuhªIÀTc-ÂÚn†¸H #z³œ	Ddñ¤yo£öÊ«ÚÏlßaºØ…¥µ{ìÁäJÖï9j\ÖÒ:9_p7÷*bˆ/[rÕù\2½•İ 
-±Z{ƒü$t­>.ˆ„ñ—S1³«ScÌqáNŠ‡Ü —ô£ôwŸ™yÏ¬é'õ_J¹ümóÂoºv1”X]†ø›3÷;u_Ò÷fÑ›DÁuÿ·jÙâfëBÊ‘‹hzDL'Àªíæ–›hÆ¨Çz¿b°ŞnĞ³`äƒo9Ûaªçyóƒ*$,“pÀ¡ú6>İê„f”ôÓæŞv´İR s«i³µZ×4R–+™×ÜÄ€ÖoxÆoã½z/¼<¾·cñ¦{'ÆpÀp\ÆDÂÚÆ£òûQ3P¶Âkq70Êd‰[Íºø½¿ÂÚcpzçìW5g­”ª2tbw«%uLGÓÆÁËã%şêÒ-"eßëzà¦Èêİî€®¾^˜{z«/ãÜÅíè§©R>6f¾æ(€HEä¯h‹?U<9—:+¨'‰µ·–ïéÀ¾ (7õ*9ô¥"Øq²@™rm1	«uâ×û Şa§oò•¦rŸz¢Á-Òd=ú+x~½-/x@$—û3b"Òhˆ¥wËÃ'1Ä¯m<TæîÅ&OïQµz‹ÒØş¼8Ü£÷^efá;GœZôÒ¸÷A+í·¥××Ht›ÀtŸ”ÜßÔ}Ÿ%ğù¦“¡ƒ8|ÍAg84×ûb¿ğ¹óà—¶Iåã ¶³B…ØÁ»ÚŠ’9.¾ãY0¸QZÓ÷]“M]xb`Í·4‡.°Ğór­™·Ñvó	SWğÂ47äˆ|­¿Z€;›XcšÕÙ_é(ÓÁ×Ûk¿÷Àï†?bÑÎÅÃ¶DwÍ½HMT“‘m²„ıãlÖ ˜ù_@0‰ Ø‡¿‡ËäË9''¡•#M.-ñU¹ü)£ıgğ~…~ÿø±¿‰WïŸŸp™ùƒø‹Zà×ü“ø‹b
-‰–¯Ú/[ııM€ø3nùGÂ‰õ-Íåìÿ¤ñrk®ïgşÈkş‰D{¯PÒEŞX1èÓgR‘”ÁÓ2E¾OÚAñó`àÛr2n3q³˜ç<Š¸ÛdjĞ?·
-«ü^I¥¼¹µF²ı „„cuRIËHĞj¦ÌLøï4^€s;Šà€Mèñª†û^¨@Ù*Eòà‘—9Í{Ñôô¬_vzßl_À7­ÄBüug³Ìw:Jú~ºWìF‹ä¸ŒF†=Ã1`,„ÍœÃÁÑƒ–©ĞŒ6›&E×#»Õ8r.µ—a
-ê™#7[5[ŸZ3ÈÅß† =Ç—ùwv`eÉ2¾æã¨®i–ö•DóG®üÛÉqŠøÛ™ÿ6O«}ÈWü=±$j˜6)¬Çøs2Ná~–ùîÅr6áK‡Çgƒî»m:oñmæ.EÚ™¯‚¡Â›_È¯]qcQ¬i“Œß,ç1¢cšÔCı÷ıÈ÷G´ÿ7PX¡?y>Rlçø:RHA>y[ş~íËØDàÇÄ­U?$‘:›gUÖ qõ‡–J4¹™uì&|‘]tL
-Ù¥“è+$)¶P«upsßĞD?Â1±AŸ_ç."ßGÄ7ó35é/Ç„_û.­ª÷ğ÷ Ó«Íƒà%bB£æãº›.¬]ÑÂ«îN¶šŞ›ğCªHY`.TÛæi’øÄÈr Z»Æs4µûëMIŸtà=à×¾¶±˜~:¿Y]éõR`L•Î¾‹öŞKüg;€$-×òË›WH¯­¼H$_µ¹pd(ÿBfùoô˜$àç9á¿	w}GÀ¯r¼àç²«Ë+Ã'““˜êÙ'-5J2ğ>óÃk1@¤w!AZo20µjÚ!…°o¥¼_o8@-ÎÀ ›gûnù±k”…£œ¹É1^1Ìâ$Käƒ×øL6•©bfí<Ûråàf€ŠÿıœpR¤ˆÿù*Ûğ­Üúk«ûOû/×Ãkäa‡×ÅTÊNúDNÂ¯µ–œŸ¸ÎF¡ŒoZK©Q¹¢U½áú iÓË	EdÓ"I×5E—­vŞ&âozK,#JÀ§ØjÂû|tö/À~³1ô£Ù ÙÄ©Øo[ƒ¾ÔFÀ/:å÷k›KÿBÎô÷ŠL§ğÈZN/ÚUò~q×r™šûÌ	q§0\×±Ü²\3TLpã¾ÊœÑ Mš”U©¤Àü&æ@ı »ûŸŒåÒÙ ä[¸›îó@ÆˆÜ^½%é“Ë¤Ş,‘°“Æ6ş0Ô² ,ëÁL„?èA
-è¹ª"œzú0Ÿ‡Lvÿ<×áföıœ“3^n73ØaG—ºçoĞŸ{î¾NyŠìáâ{±aŠbi+Rªl}‰7!nA^è·gey•U_H…N±£…M[‡|Ó¥d7…A~IëQOf4?8Nyí%’ÏCÆv¡ê\õ¥ô6!]ÈÄa»]ı¦­ÌÑÄfö4ø¸M‡˜Z2!u^”ÇdI\¹…sFäxeŠ×‰›’—qCeşĞWêĞôÌÈ–zi^¥§È·†ÃAwDì¡Ur	7VƒıÁûäl.òË\M‹›öÔìE#¢G¿oS£‰ùÚ»Jj(¹w_rA±¿»[d×—B>5S|ºñm¤*¼ç}èiW5/‡(Çz(3“úf/1?\ûòšRì œMïpc*¹Õ6Yü»yvÚvø2.OÌ{Ø~T¥t»Ÿknj'ÜîqeNe¥e=N¾àîõŞ7¶Á;y[hHXæ˜D¯L©ÏyşÁVWMb5:eÍı¶´|¯ğ-Şœ>D*ÖÓó•¥øzë%€Ç•×aºî‰ãkÎúF/L<c§yq÷Şíqñ¸‚²úÇmw…ˆ|À$pSİ}õ5€ÔEŞ÷O@	üZ]Ôf—›às¯Ê
-ÁG¯ºxñ7â¢À2«Óé¤éMîrá*½`½AÆ3¡5Õwt…LêŞ•\à9y÷†ä7mtIZ#7}»ôiEP%í»RCÌüƒeæ™P*2
-ÃÜ¤úmòf`O­µŸ"*Õ‘°æ¼99VÜÎV²¦`ÕºÈIä5üBßßİrÇı¾<èriøê¶œôœ®88"M´‡Ğ`À4ªfšğµººÙt×Xl~mi›ñÅ;5Ne%,°1Ì¬á'´\Åì¼v½Â¼Ãs‰äëÍŸ·Ë¹<;2Kb‘u®¤O¿
-G“g¶R­nwZÅ{áUÍ#¥'Ó^tÌë[Şp	EÍæi’zìoc¨€ä%%â«¦˜Ÿj»ÿ6øı¸+¬wuËÀeò«œ¡Ùnü°Íû›FñutÇŠäÄ>Ÿ7=À£pé}-¶´`(&d{ö.*f3ÄKaüVCµô/®«½>fH)÷·S{ÕĞÃ‚ymníÃ¾ˆ{”¼q<¨Ï‘A};²îæ$"]m'Ïfø‘‹ÏDrëfÖD•|—›p¹gÀß™3ÃÊ!›½÷pS¤X¤¯—@<:ÔÑ¸í•;u}Cùˆ¤À¯Kš›¢zÂÁ@tàÃ+Îº½8‘:QÈ>Ãær/İŞ°ôÜ’-”ñPŠÅ.©Z×9â8Ï²ó¯÷3¡¶¥_…ÿÅÿ|‚â_±eñƒ<Ñïƒ¸d2rÏ6ıÎrlÅSºÿ¹«ÁùYhø¿Bğ€¿@ğãÏ^Šû3‚¹öÁÿ Úÿß"øÀ¿DğòºÄ›\ˆœêÀ´¸ÔN\Ë°LœŠfs\1€^Xbe>möu`ÓSÇ¦x(]ÌhKâx‡½Œ‚ç
-3íÌ<XÓ­^È·õJ—KÕ›MIÀ5ã3$¼Ênè]EdtçğtzÃ èòÒ/ºTQš\öJ®´Y<q-®/cqİ ’)ó¯jg®³1¿˜£õ[—9`€‡ç—!ºêS°wC=A÷-«¯B¦Q@Äv5‹J>ÉûyŠ†”8Ë÷Öx¶Êª<!]Îf¬ _36é)Í:t‹?ó‰ÜJ¤ŸCy¾Ü®5TkŞp‚¡öOÒJ|ûû.‡w`:¿Šîô%®_ÉÿXÙ¸fãÿËüÌÚù[˜ú5wƒÜÿ³ùYÿ®~ú ’Ô~WYŸs¯‚fÎæ(ô‘ÀÿÜª˜ÿiQ2Bß;ú…_®nãƒT"êSÎ­¾Üû–à9 O˜úHÓU`I(hö>8H;ôE}¡0|Œ8wy¿È÷@ğ[èSgùŞqşñ$à—Şˆóc_{# ¯üórÿ·«~µÜ³Ú_…¬ÀïGMøÒ7}ü¢çKšŞ-yê„ûgÙ×¸ÕÕ³´qÊxØ2›eGø˜‘%	å­£^P­ùv¶XQBRIíEÙ+v×ÒB%»hˆí{s%~º-×—kÍIóäz¹ï­fÜµ?P£o	tS˜{ÅËYÙ?dèoŞc™ÔíºôÁ¯Î¦ü…ÎpıÙojûÃªwÈÚ>3(îqw2¿šóœ9WaÕÌ#Ë‡lvD45ˆR•š<P¬×­Å);u»wo¿ˆuä…Gû¤”êq´ğî¦š¶ŒëRsËc×“"v~4İ½ø˜xV´C`œ”üŸY§ùmìëc·ß…Óà†¿î(Fnô}°¼I²™ıSû¥K)ÿÓğêÿ+şÅ·ş­…¿µ/ıŸX(ğWåß¬öç®&àoÚšìuv`§ıäµ‚gRÊÊĞr“ç5±\È)F±İg§£,Çù€+ ¢Îû½”S+‘ĞÕÀİŸ£†µÖ¶÷”Áø+K<o‘­G3:‹a­H}{Z4ù¼t,Æ‰`½y´´o9À1û>¼#É1.wz–àO'İ‰ORâä©+ØnÔef)ø¿´,wÕZÀÄ'51Şî	b`é«Š°,³Z*¯ó<ÔVqŞÓ"æéØ=q·OéÌóP~K(k\AE]-æ.Ÿgß7Y]JÄÎ(F×iêÃvøQ”Ø)Z¹	‹‚<òbW”½62
-ºà‘9ƒGÅ}Ö„Ü‡åÚ@iÕ8˜•#UäÑ¨@°İ‰›FXn@5ZÌ‡N i÷(©ô;æpo2«í;ïö·”/d|ò(”¡²ËÚMè¦Œ%^	`³^Â¬UÉ1d;æF·¬/s
-6z½9~{×D³oªŠ+10ÏLÃgŠƒÎf$ŸÂ|¹„)"I¶`ŠrŸ[ôõóhn•“l>N”f7uÁV®/#‘#Ö^à—Í=¦WÏØ…oî¹m·ké–˜5v|ÓZ€ò`:º¶r¢/õ¾±K½@Á>±œ¯Û<¦ùEæ#"$£õ~¡ÒX
-äíÚÃ
-âˆ®K7ğî×G;cûÓî‘çò®Ä×èÍ’BŞ¸íóùmM_„/[5E­ÃÆ¼:&h›§Az 8ÕÔÖô—]M Íû–Èú®Ôºİç·G`cyw%Æ31ŞŸ}2ŸU6H(½”¨8ó@§ìğ*Áºp@ªÅ¼¿¾;èæQ¹}Í•¡•qŒ‰=ïöœA«¡ûŠl.–?»æRÿDá‚ğ'ÉÊÖqÒ_ÚÉK¶@€lèÉ¸`ìÎ=Ğ"V‚ë@b«ÀÅdDwşY¯úÜB‚]ñGn>3Í”*E/J%ı‹3?İìí`Vñ¢ `VæhÍ¡j•\+¹åWBN¼}×éª$Å@K¨ò’M†r2Ï®õäS¶I8<âúEôŠ×Å"ß§¶u Cø=lÒÅdâ1ö>ı,W¹oÌ‘¢KÅöÿ~ô³iÌâ+¿s&ª\w¡ÍâVQì“ÆËîÅZqxôìò²Óˆ¸Oƒ ŞèzÚ^ŒhrÀ¤ı|=)ÃÜ÷òêÆhf‘ãí#Ôé:üƒ»G>}YĞ”oQ~ÜRÀİ ~Ä”µER®¿LWà^ğp_‡—‹Ò2–Ü^ûFWu½+š™Œ·`Ûï¨¼J¦Éò†‹Šªº‚_c€¹²è¨Ø¯·Ùä;¹C‚•I£pô†´ç,t|@š9ö ŞA÷¬P°e×¹E:i}qqÉŒwµ¦Dˆ³ƒXõëåÚ³d¢åUºÍ¢>)½Ù1L§„Wö+Õ„WY“Öâıæ8G–7\˜]ƒû[¡Ë’ÿ_I×|kKşq0õ¯áøŸ€øö;hô5œbè×„/¾×ıË´¶ö«¾äß1´ØtR•O}%iÉ5i¾Vƒ¾Õ›¾†˜»í€ÛòEÀÿ÷à?õ”üP½8ÔOéè4¥şÖê_|&Q½ö‹VàÓÅÑ„÷-¦!Õ¶ß/ßÄíıÿóË@é’©Jù&1|V.7_|iõwêÏXìŸ‡I—ÿA[¥*ÊßT¼°ô± xkëòmôÁh“è*êâãÈ.Àˆ1«L$«°7Õ )Q
-	õÅ¨¿‚ VjÁ|¿nêx=€Çó•µôlíNú¾}†\ìúIÚÍ2óDT®N Û;w#ÖÎ_ídİÑ‡cè56_·>|I” FpÉºn$šˆZÀ‚ã5=“õ©IŒ7Ë_ÙŠ)J—B¾éíÎøˆ¢bW>¸Ê£\ú±Œä‘6¨˜rİtnö›e„äè¾$Åt~bÉ!5Çè3˜äü¸>t¼ŒH€÷³iÏˆ¡çş 8´h ï´’©fñ³¹­gïsÕÍ„£3ÒWÒ)¼îÉöúR‹[·‹ì-‰îöºR uÎ+ã¶J}”
-ã¶v'òÇcKG”tváë1†Õ§O”,ı€Wfo|å¡âÍn´N¯ºjŒ2ææ®ıÜ“ÇF«æÊÖ% * ÓÊMC&ä”l®â1½ÕaŒtî´6JjCİ„LÉğí8Ø™ÛyE]MYIVz¿;*?e9&6„f@q¤Jºijeª Ë÷+y=£ÂÇ7ŞÈE³&ï15KÜĞ¥¨#f§äIİ»§k¼äı¸Mms]È	*àa’r .5\îï]4öë`"½h­Ù9†h:7/8/Ş¾!<å‡EWØò’rÖ?Hü†ÁÀŸ£}ÁÊwˆ¹±á\äöX4&{%ËiVĞd¿wn2ÆXı1£O ^å“ïZyC5fÎ\¿:&#¡!!ó—)ï2¨gàÉ8æ\ÎNÃ»^!Ò‘¦°¶f‚ááÂpVFì­Iİ“æıPDB„õDãY'Å˜ó§7YíÚ*Pb=í\ÁaÑF$L:r ""¢\3{Î(U\+Ù\[ô»²'O"×ÜD^Çh?
-Éd+ØòÁIƒàE‚Á8êf_Îe^mÔ.¤èVYÊu–<;ñâş¸­Hëì^S3‚OWB\:+ï}R‹©“|–Ğİ$Ç8öâ ‰RÂ¸Íƒ¡y—i+Ë<¹DàùÑÓ—Là'<7¤ËIéäús İá~!dŒ4vhlÓ:€QËm±òÇæûcszô™Ï]{z	z`‘Ë–«†·<£Dş-	ù½DxÊé/NJqdé‘D«¦¨¢W(Z=Ä²QV°Ã;ÒOÈ™Úæ#æÚ:/‹ÉDüı¡BĞ~½97ÒšH.]‘ç²wö<2]¨ÃQĞ|,P/`5CC ğ£p¯J­_Mİ+e.I lÃƒåäì¼9Yn(¦²‰?æÄuœnÃˆ¶“Ìš—RA¦…ÇÛNì³@•“”°ŞQËcÃãn=*D*Yã¸"8/ÃL—©|)Ïî~Eá´«zaÍ›z_+C]P’übÆË£=_y£iÉ£ì›ÿÄ…—Ÿj¥êi[çß™£}‡DÖñ~ÊZSkv¥™U×kâï³ ? ş³şkÄÿ-÷ûaa–Ğ¡á:İ^{Jx‘ßÜÿœûåÁ¾ÿí¿ì{ƒ=ğ÷h¯€û3Ú+à§xıËƒ}ÿ-ÚÿŞÿaÀïhÿ)oÆéU_¿ocQOÿÕêØ	~¼ºÉÁÔ‚²½¹ ‰ê¬Ó0­*"¤§¨fn4øØESboí)ßP]ğÉµŒÃZµªÏËñšJŒPØuòı¢Vf>lt… t+)o=¦YÖ^;E¤–Êû»ù‹>üëôp…ù|<i‰åq)ïÔR°¬ù 0(BÄo5bIÀŸ¶W€­İ¥;Òt²«ê-T˜‡g!·êŸ§Â|â5à/óã¬_
-uÜC¨Py–Õ´ Ó„ o+<¥´¨½Ãß¤x3äS_ıû±^ÕÛmi–¥^¥µÈ"Ä'?©1(åãÛn;§ Øïo0=‹ÓjšÛ%p®®Nûò<$WfdX"õíÜQ lïÅ½øû1wÓÿ|æËÎYú5Ñö›ñ}ñco#ü7½[ÿÆÙ/Çl/Héañè› ¯8ı–¿B_#ì•ø³5*Š…lòo©(šrÉÏ‘êó[Tè™¿ˆûıHş×=ı±º/F¶+¸Q¿Í¤£	“ü<ÿ›‰ßÌº¿î`¥T¿Ê{}®ÙÉo×ÄHa¶].‰é[uKtX0¾)ğõl¶Y‡ßN4ü.ÛõÅş]f·…V@Éì´MÈß,—d¾¼ÀÏêe&ûO‘uH!N·—r_‘F’×—ÛûŠOæî(w	 õ«?ûÑ£ó;´WÄİk8F¦—è’§{K§d DW6ß˜Ÿö*Ùu\4TMV`@–¥Øb¡añåêï)²\ßAßoY¡xgÂå{yF6MÛ‰SÓ=ÊR÷uVõ®üuÎû¯¦ŞyhÕcè¶Ï]=Æj„§C!ö,ô¨vg˜çz‚¥ç£r$¸Cq1¤©HSèy¡¨‘ê¡QøWo2EAï:=âª(W%Àaz„Ã¬ ‚k\ D·¤Ïæ©:a—Xq9)I¾Ãyè*Vo,F÷¿2¬OLûkXlø	¾ÀßûµÜ×ÑgcS×i$M9Ø^Ã«ÿu*ûÆ|¬ëŸŒëkxøÏÆü¨¶ñãÚ›üÙ¸v…®i\ÀÇºşÆ¸¾„ÒÿÖ¸€¯ı oãúfâÍ¡í|ƒ“ÁO’–Ú–¨W’j
-•¿¸İács†—ğq<‡;0’õ èf-ìO“ ÕÈ†½ fGŒ8d¤õÙ‚5È.Ş•"9`ÍV';±kÎ$)UñPËù;R°YÓÕVÇÆ;Tî·6¡øÕí4ÿæİ¼©`½°j¸ø´:?O—ßÜ÷™J@H=Öª'beG(Jß£ğ°Èˆ×ó3Úí¦:´.&,=qÁ}Û¯"èÁ3³·°·„…àyq&\ŒSı€»s¯¸¾ÅbsçêyÇÆ0hwaÏ,uê¶­dôÚz}w¿]Ó¢oMgqäÆ?Ã>l)Šˆ}¢Ïvš]	ĞÕÔ6Bİ,Gš›íycêK>GéÁğŠ*kçn—çB@$ıq`M÷h”ª«„Sî§ÀT/Š·è4¸gÃ°7¥L®”Ä¯°ıâÙ4Úş·oïƒ^Vûš½U)˜š¡ğ£‚÷ÒÃœG‘‘@7q^tøåÂâ%Ú™.™ÇË3ŞwˆÀEu¼m‹‡Üx·Qb»Tè¥xş¿{û%É­dË=¾âíacĞ"–ĞZ4°ƒˆ€Ö@ €¯ŸÈ"‹²Ød¿înÊx-3Dâºû9.ïŒ'3Í˜nVÍó2‡ÜX–üÚ:ÅÃPO6Ğ<·G¼Ğ8Ú+g^-ŸÛÖ«°0‰o²áÃOÙœ|øáº»Çİ3†xŒ!¾j1Àw
-<ÕnQS÷n<¬¨hz­ùfª®%!Oz¡9Á27CJäû-£ï¸,üi'Şw¤üUwz!ô	üáG_‰En‚›yWóq€eùÙê?¬à™ï;ñ˜æmÜ½7È£¸ñ™ÌÂZo-Ì[ê¯áwzj¥2ìÚŠt ¹†8Ó» Î6òC­)|s_»‚'E¼¢Ö Ë± t¿¿?DËİ'DY‡v(—¹2÷V¢‹Aƒª4±×ö_¢
-!7uÀSŒmã]ü¥¸_Æâû7xÅØ:H}w°ƒA>W¯<kQŞr{©³A‰m;Ëƒ]˜ƒÕÅñ/Œ ¦x?%è+ÎD¤VØãfN—iX)5™Eë…G¦ê~ïgHÁÑıe¾³àqk¯><Q¥,Ìš*¿IŸKËÜ*‰KòÌ¿¶ ‰V•?ÀÏZ™ÒX–ÏkS«ò¨Í\òhÇêı¬o^DáÂK“yÂoV¯¨íq A»é3³¶w‚é‹.g¢Ü²}¥Q×3ÍûÂQ¢Å°•p$kq¶n[jk><L£› 3pC‰aN5æşúš_×ÏCÌq!÷KóãøãÜ‘¥•
-œ¯©#OSãø)FR±ìÅëCùÕlg1ä;“Ğ÷x¤„“2û@zĞW šÚÎ®#ÊçDQqBîOÎbá³VZ8·ı²À¥8b¸À;ß]¶²{¢à½GÑ‚®ÖYoÕ2Û†:Àc‹÷t{}Úå1œ„Wrxˆé‡ŸÙ¹ƒ!L¹065ÚdüaB—¢D4´÷Ì?o& ‡X¢_zçÆÓY¹ìå[	A»¡¾Ïóovâ}çÌZ§hĞú	ûOvâ‰Ó0Æ™ ò;¶’¨¨Òy¥6k+}×YõnÖ°ùQWó¯“†üs<¿GæôÓ&YsÌúÛš¡Å”DÆ¯’<S»€„üî—¾í¶‹Ãã·aW6®_â:b|­…ş&¨Ñ}ŸB¯ıv|âø‡‘ÓúiÖ>¤ù§IŒOLùÒ¼¤ I%âõyã!ƒë»Vğ›­{¦½ıî—~Ğ_V:—ñ—ÂÀ–0F¬VíîúÒ1ÎIÁìÜË"¸äÀ²Ë®S…5jMÖ_yÚÛÛt=äãîûºD“f›/òİdqáÑöómeòZÇ›1‹€Ç „16»[Ç€k„‡;?kÌÆ…òÁ›¬+¿Ø+”äH>l<¬Şš9Wm»K¦¼¦óË¶Câõ¾?û„“¯SŸ†¨ZNşeƒ»î¼A»Y#¿Yâõôï~søÂƒÀ&éü’	)"¯gÂrgGk3¶şt¦yÅ¹íâY¿5#_;Äb÷Ú ;&•¾~èjøªg§#L	,îŞ#ã¡šƒvÕgzs²ˆ¤¢bÚ@	c*‘TäSL˜Jb[$O:©öp›GŞo"?‡Ñ«Á¦n!c_ª±V2ô†¤…îáG’¨b?M´ğìÈ%=¥†äTöI—| €]•‚ô2¯à’e_z·2ºª9xx¡1Á©©ïŞêŠ+™×eÚ'X£àó6ÖF\cÅ,îZ%¬˜Ì«0Üî†{÷ÉéÆ%ökf7{Bä7Ê
-KréP—×ŒšLK,áRÇ´tÓ×>Ñ¯Şó&¶ö…æ¹uãP¡r0Ãeìş‘ıúH;~PVİÕ(q0ÛÍ3ÄÛ¦‡6& ³Û6™ÜĞì"ôù›l®OAï÷Àã~ŞC§õE¬,8ğ”üCòÀÇı½ïİD–ß¡ÆÿUoõ…t¾%l¥¨«ÑVˆRl£Ôéş¹1„å
-HãçÂíŠÇ„¦¹Ómó£­_6Y¯)ÿ!š–mœ’îÂÑ.vÑêúŞÍâÔÆƒ¾˜»>äˆ <$ùV`f‚oA'
-Ù.Kz]~"À²:49ìÃ…‹Ã£7mSŠ3‰¦ “ˆ0a¢Ÿx<ˆ&5!°z¦»ÄÈ¾™Ş¤/ï4İ¢‡ò^n…fÙ†¸ˆª½à;Ödîá	Ùëí>µ§ª§²PW$¯Ù Ån˜U¤
-JçC²|M^¤¨“sC6Š×"…Ò÷éªàĞØw0·$„NËÕ;FŸ3_6 ;‘SX·ÈåläÆq¯øf@ ı¯P;2Ğ‘È†ñî®Î©Ç‹23E,‰×wo_Âvë|zpÉ€wAòsÀzËaÀÎ,Çğ€eÖ4Éšu½Ş,np8…ÊD^sˆ)ûŠƒGbÇz6Ñyëí&BŠ”íjà+rÓ‹Ó¡ˆ¬£©sIµ¤%Qÿ$lT(û`›_‘uc !_±&ˆÒr†ÒE
-*bñ­g“Å'´ìÓ¼@*¾f9+Y:¢(Ÿ/qK‹JÛ$8zÕ7}z]ò¢æÖ4¥&éWÒµ<­Í3%k·ğsÙqTÔşÊVÆ’­:[LÏägõØ÷êş¾*’•¬i>”ŸkO¾Ş:j'÷*\lÛ§éĞ{W_ñšN=_¢¨w•MdIŠ`ó<^I²i¥pU®_šü¿ÿÑ¢\.øÅ/¤Ş÷N³İ2Š	Jòq™-ZJ×†{€lùÓ$¿ ‚ß7Iÿ‡€à Lş€ Qÿ¾Î€ÿ øÂÀ¿î9èøÕ4
-0Œ÷^i'¸€'
-<á²}¤J½ƒ†)(n¾¡×Tmƒ‹süBúÂ>3È´§¨xµTvú;VÀ*¤Úd¢öÙÆ<óÕâQº}››ø(²ì¾©`ÆL˜g¯¾@·Çµş])ò{%ø«Rä”mZG“—†­QQ‰ôüÔßŞçÿ})R©ñ²Ösƒ€‰—n&%™¼òüõøAˆ¿è0eô¾J—Ğ¾˜a€,+@óÅš‚]'Ş’º\;¾ff‡1!êKƒZÖËñ]j*$åê4¶Àâ;æ»½†GŞœ±äSï(ü§$|eS@OÁ'Wl~àÕZ‹Y¬Ğ7ã%
-á…áß¨ÜyîÑıÿü2 ü»"Ó¿Ö¢ıç¶zÿVgêIÀ™Í6F—¯]cÂŒX¼AôƒÌvó#QÚÁàüïu¦‡#H!›Ÿ[ïİş5	·¯ÊÍo‡«ıuH™çÔ¯Õ~+>ıfü÷…¨‚û–ÁûpíWŠÁÌÏ¿?‹K"?)ğ]]2¾ş¬\«^L÷‹gi®ˆœ+F«¯İ/]&K†Âå·ÓH
-¹ıù¦h»\û½0UÿÅ×ûS‘ê·ê¶_õ)àÇÊ“$uñuçÛ›K¯ìr„T»%°n´ÖH*ŸŒ+lhu´Ø-dm…fó hkéÌÈ"´òı¶hôü<úÛİØ}LÑãúĞoEÔı¶J“ò¸·“so?éšáh)Z©Qé“H“ş4“a™ç%‘Aï?ŞÄbV)ë3h‘WA>ÿn$ø×39cHwÎ·¦­ €»[qú::Ù}—{­‰9tfwÉ£»×mJ c¤Zàóõ¬%sXåë‹|êr©&,ÉvcÓ[Ê3‚|Ó‘óug€İsÌ‹‚?§cPU‰wÌ¾…”)´>Ag@©úNmp÷oÛã/m^{ü—LúŸêõKRƒøµÒ¤$o_4(%‹÷HÆFİr7ìôş[6	|å_Øä·üõolòúÙ&/ƒ7N‹>ñ4†ÍŸF¢ğ¯3À¼~U|ıOmø2Ê×&¿·‰ıb“×ObÔßûq‹˜#c,14½iiğâ@Dâ—:»á!u•zË}ª°€4WŞÊ@Y±·ÎJ±ûU×53
-\ô- í•±D¢Ñ¢™£"˜sİAÜuŸrO¤ºv˜Ë;uK^,¥Ú6 =¦î9VÇ(Ûôí"A¯W9:Â=Or»v>tgG.—óÙ`|’o×yç-1¿ÔÄ}¾Ú²è-©Ù'"¿îÎğ#yh¯+L—8°ÁMw—ıôîEÛË6Èì'Qˆ"¢ÓlÓ/ËF¸ëÕã†{»£woZ©Ïk=…#ĞÑ•ÌCìCP^ƒì\àêí%ë™#ëKÜq7&o†FRĞ+Ü„íñ,jğšÕìXºÂ\ué4r!¼^Ğs ù¤#şâÛjvuûÔÎMìK.G}0æ»Ğ.0«ñâ¶by$Ê8úÁ_§û!Ü¾§f½P˜šø¸ô}GÁ{àWí‡´lóv"zËÕ\áq}…&JæBºPóáÃ¨õÑÖÓ_[Ë©­o—ô¬-,Gõt{Xbs/Ey²zD©IûyOVjièQ©J¿ ì¢ŒÁù¡‡‘å%{úJ½ˆÂç5çıS.ÙäZğ¤ĞÄ¦ÓŠzjõóÌbm'³Ñ©b»ÛŠ&Ò•´gÂ“àÇ½"8´ZJÿõ@JšIX‰è|ƒÈ¢'åahA¥Î-fëfš&«VÉİ,Áô\hN…¡~ß"öC¤ô-™|Ï¦oó#*®’f« ×OQš‘ùù?m\@‰xpväŠ=”Óa¥]Ô!şøŞœù¯Ÿ[Äfã]MUpŸ¤5Ë¬øÔ'Xƒ…O›ä†'ŞËÇKXµéÜB÷ÇhØU{Ûô%Óú(İDÒõhÙú›‹íÌĞñ¾=ÊKkXœ€öŠú=é–xq+á©ßš÷ÒYt­O!ƒ„÷B&?åÃèajGáÊšI+_"Ş}½¦ç#|÷x¶ã;{Ûìü Wè8RMl˜6„"Ë×‘vâ’/$)­Ğhm"H²ğ9æ”YıŠfPÏ~Ø¸l`ÚŒ.áôÉìí‘9ÜÛØQÈÍm&õÁ´âà.~\Ÿ‹¤§şì»Ó:¨x¶·ôÆZˆÏ¨ÆÈ5wm×–„ÎŞ®`»€TG¶·¦x|Ÿ'»‚pÏş0ú,Uç•¿Å‡Æ K’§æMì“'Î|óÑg>ÈH»¼¸àA6/hHS`œã§óJêù$ë»†BÑ•ó¤ŒOL5pöY;îBç[Ù0¯	F§š¿1"ËEŠÿø2”V<¥Ã~æ8eË¢›Jî¯m*‹Ag¨kn8C4¨›`×D(…q‘€•Z®lvQ¥şŠ÷¼ƒÎlJù¼·i*°Îš¬³^j†fğû°Y£ÏXYC3®ÌîD…ğç*·7¸îsò„ÖÀXå#f¦{ÇÀ‰ó\äŞSÙ\Kw¸u‡B§•·Fbƒ‚d†é†îŠüë1QqÆv,QpËdôo…tËòşó?¡Àşdø[øşø‚ïå¯mbF’WT
-ª÷Fîñ£JÄÈ¼?Á÷ığ]üjËvü<çsÅ²P<òşÖ'Öœ¡Ä×h±w÷~m'‹ï‡´¢ïÆv÷âóó`ƒqÀpóCıXBrÕ¼¬ëÁ‰èÃíµ¢ñmåƒ¨Úrß>ô;rüŸwŒ7Ê—X&jğºí(ğÓlX~—ñş~6ş
-ÿä ÿô+ü“o üè+ü+nÎ0ìƒã*¤ö>—™¾%ÏÇÍÚà"Úˆë=6îñğŒ›¼ñqŞÆ¨(_İŸ		Ü²ÌÃ=en	ÒÈ–Æİšäòó%'Óª5—?•¥›®ÖÒ)½i3pÎ¢¬ğZ¶<ƒÜ/7Âı!7ÿ+jŞ‚"ÄÈAEü¹Qú*RÚ´œV¼ÊßóÕ®î¨™Û*ªéRìãœSz½aşCeúpóï‚EÅSs¨ï¨Ù!g¦±ÀT¥J1ç-è¨:“t^ê@.²3‰Gô“<{=Yï‘a¾‹nø«¾–wJÈƒ-t»Íì?÷ŒïnxîQµª_öâ2trÃ)rÓ;0Å‘¸G³oòuÿ×Fí…+æbVøeÕÔùo±~ómª#üuÊšàÆP˜_şó®óıcµùû±¾üAB/ø<“ -İ7YÃù¹ğ~×…£øUÀYé»@Øûó°É~İêäŞ¿İ:õİ0ßÆ·~ÏùpZâg»üéÌó¿+Îÿşdÿ\u—@c| ÷¶|VÈ
-x+iãp~9ê%Ÿa?[İ†Sï¶¯RøaW‹SÓäg ÷Á!×Ã´œú xp½<ìµ¾ßbúÊÇÖ+  }ã­™÷¨ ü-_“säˆ"Ç§kÓDe?¸˜~Ç§ä$fÁ8XX$kax¦¹ˆ- 1zÊÇ¸ÂFøYÅùû¶eüçYÎ;'®Œ¦v¥Sv…&åEï=´$×jE±:WKc¸1‰»Øã0“ŒfÈ{€9ïûá½Ó0ÀŸ¶ñ¤éq±ìÂ¾²çŞ`uë8Í¤Ö ÙŸí¸¦.fõ(°·A¼ÔBsu¶áº@9ø‰ÇcuÎ|Ø§g´í3x“Á	c…nÃe fDèAñOGìø‘ŠyÍCM”_ƒÖÊ€²›Is6:ÖXz¯Çí4v‡éyÉøûy*û¶[.b;ôF§+j”;c÷ÜX¨ÜŞ"ér]qo<™÷j2GßŸñ{jÎá¶w—T[èÚ“{¤³¸ÌE´ëRíÀÊ"­é©œªiâÚÊ3£½ı2Rmğ†&û'¢|[’Hyãm2à>ÆÒâ¬ù*×Ğ#qÌ@¹I¡ˆg/®•ùÈ­júYJÇj­ÜŞ¥+ul’¹à8™;8İ°$ÌNh
-«i(Ç0¹ä˜”â{ñìC"“áDššV{.^2±°H÷Ìñ»Ú˜üzp„ãE
-şÓëŒ(FB 1ànIş»æ:i†8¨DùbãŒRË±M˜¯–ñ
-šü/kc #¹öçNÔü*—ŞÈUIVn•™9³cîë+–¢<ù„8eÕÕÅD´¥k=£°Ş6©ó/ˆ±3œºMÆ5q~¦è›LqÇ3}Ï”	)*^Jue)ÒY4iĞ !	m2ô›¯Ù´fn)!Be’IpÃĞˆnŒ¦¹§£F¥m¤vwÍËµÎ{6"”Õìu®ëC3ïs)û—ıŒ^}‹³P‹JFYÃÅIŒ8yP$¼•û0uî‚X¿]ÉùšFV¥6‡óˆB`(å²–cµÕĞ,pñó3]*A½bGñãZ
-µc½e 	©^J–¼n”·7óû‰‘®©P*#Qy¯c9¥0ârWnmÜac·÷ÚòÙ^LW:^ïtŸÁ1`ß™r¯`şÄG¸å¤Q ›sJÄ g¤++&ÙNŠÀ¬ôÕ}qÛy×_¡NŞT$‹)Ì|‡ğı¢§é$öØ=9ùİkÍ%©p‹šÓª¥ÜH`Ù¸^)3Ã+fÈŠIKİÁi›qó­=µFojª¬>¼`Iî×P6RÑ¼Í@ Ü@Q~Mh6å’Úù®ÄQş‚Ä®èıpù#\–}dS¬;¶\ÎğÓ
-åŠË!•;@©”‡ï79¼fÄĞt½3v»Oë=™H‘ÜˆŒ8œ[Î*ÏÂìC]Ó•J‰C\Ãù4ÍËx›‰WŞF©¹ı[–ïáÖåğ‹"áÿNÌˆÏ¿ z7ÿÚ"óä#…Ö£“`*°"bO¹ã\ó–ıSéù›V½ïı¡EæK\S¹˜ê»¸¦ÔšDÜçÏKÀJ·8ÄË;Jï:Ç…tß+$¼ošHŞ^ûï$	›Ÿ«`ü—hny˜´mòÉOí®83ÄŸ„Jß+•‡rÿYI÷=ñPıÌıIöS˜ª\÷¯ù½>JOvZ½
-ƒ]¿«ëûÀÏ©½ÎG»!«+G¨|-\û«hÏşí…¯hÿ9ã>„]À€¯n@ííÂ$x÷H¤@µUI´Îı ïu.jÿ*Ñk6ÆÙïaœîvïæg`r&&ø‚úm¢TE;òP¡ÀxÉŒ[®èÑ­•—v'dlS;‚êwOF]+Eİe|ÛMş$n3q*b`+9ÆG×ö”¸>á=é€§z¯¢Š#æÅàhğúÄf-|Ø`ÖkIQ·È,­n)¤ÜñRñÉÀNHÁ¸'3¬MÇÕÉ†*¤`N`E@H¹G ¸Âíöù"¯àîÜÕP_ûa‡!üÂÕêcÉaJØËˆ;½üº8D›ã:•´TÏ$ºw¢6ODüÇ0/Q50Eôî'Ä×;ÀA­ºIÛÛ>ßÛ~¯Ãşïäşß™™ŸĞr¸QOûªW¢?úrùÑ$3cqŸ{ye_çÒÕU¸/á}{­³ø˜f´G÷5ŸÛÆ•ärËÙn—˜Ô‹¾¿[½ø~a1IÕİ½tôh’`î·Ín³‡$í³	;	™»²b±’×“z7lïÀCµg¹néd£^ö£ôz.¶2Æ”?€¾nÁ%Æúñ½m·ÈO‰…÷`¯©¾“Õ+¬ª©gèËÔñpoÕÕ~b·>fµİ*B8¾ä¯ö6{ö{zÚ.ğ
-5aQğ|Î‘ôååTVõfß‚ã·7	0áhÎvd¤k0ŞdÊĞth&!W‡×Mèu{%ÏàU•)¦
-QmzK7è´ì:9öâÆ\s`Bî:ƒoå%”õä¿)GşÀ!ş¸KàoiÏ7‡ˆüÆ!š[Ês¬EšùT|«Jª©zƒ7z]Ø3øÿ×!şÒğİù]úKŸ ÷û³ÿßñşïĞæ
-@ÆùŞ›ÙÙït—ğúul:ÆBxT_¤GÊêGÆ9õ”ìÍKØR¸Š¸!¬%ÃË*_òŒè÷ di¾ûšÎv8Š‚j„¬ú’<ofÙª|KÓ´ü9îºCÖŞæ£èÖ^:ÉI}§ûD [Şïô:€á†8ouÆæâsO/ï™\®Á[Ï>0ºyÜ[Ù"õR»¡YIU\9~pöò…•`í’WN) Ğ%ª µ.¨öÉ<•±ZªóÁæÌWySÛ¢™­×pƒ¥ê‚=¢Á$×ö·^ù®õÜäyî˜YĞªáÄ%9lÁìÁ1åÌfY:£ƒØÍÜ#›–ô™DÈeÜB•ë3êíWk¿A·›{ÇƒLS¤t­ëœûš@‘_Qô4®³W|ni'öÛ`G&?d_,:¾«—ÅøÙ@CÏMãªôÊg'±ª”-O(Íº¾€fÇ¤¨>ˆÆƒúĞÚ¥5&•Z¢RÆßôMôCÔ¾¦(~É>gyw{Ü›g4rçs
-?¾` 3şö(¿.×éyë2ò¡ùô[÷,åĞPÀÎœÎÚg¯İRÖ52¹°=i1LÆu’ªàÎW#Ñ­1Àˆë'Ò¾ï|>»Æ›«m·a˜ßš¸R#`BN 3S²˜<çõæqTt¾ø'.–îÒBßÔósk ğ/µşE9ã;£a'«á:|L½ÇÄ¶Ğ±e§İÒäŸöıÚî§¦L^¶ÒsºŒö¸‡;ÉM¢ZÛûmñCèaX"°sæ´„vOuDûÑ<Ô¥æRûÂ¨O‡˜³í›¬ågü4PB!ö(%{4UKè#œıõznLCbµ¡nfò§†õÄ07¡¶ÂPÄ´JãñP¼G1ãä]OÑ¦ılA+™øœ®¨ªF!~ä+‡LäÆ_¢TlO.:–‡˜ö¥î°Tç?Hïj·½Ze—çœÄ¬æ§®J6şn²Nõ5*‘f~ò®³›8¶%@\Æfß®âY}Ü¬¡h0Š˜:=‘ÄÑ¶¸¡M“-üÈı¶jÕÃˆsôE
-{ĞFÉHêøñ8A1ÏŸKÎÀ°fm8ï
-aø£ØµÎ^tS~ÎîC¯İ€XºY:?©XÖÙD‹Ö^2E­ 5DJiDÕ Ö385<tízI~èzºY±··)£”[:fŞ¿7Ám»¿@} ĞvOëÁ‘ªù‡q_C5‘KUÔúN«ôŠõ=
-3ë4‹^ÈÂh¥™õ¤ã­3Òô+w›:ÈJ)O0Éòfëôq!¹d²Ğ1ŸéT™EiÓY¦;¢—»Z÷ş<²¥—£½OLïù¶Ãû2§ÜÒ·F¿…,FJúoÄr-ªĞî+E9µe÷rĞMà¡ëJs|²2Ù×ìÏım^+wì–«©lèş›üÇë2ÿ¶ê |ÌÓ_š†|±ŠäãV©EL¼2+Ô“=ÀÅìñÏ~şWoı7¢÷Wğ~½½ßGo‹7NÓK~½¿Ÿ}Ş¿´ûÏ£÷Wğ~½ı¿)Üu_vÍÏNúÌvc¦Æ•‘€‚{ã·	zˆ<å¼ß]D)ËÅE	ñ*”{Dè)¢Gìw^Öl°øÜŠ™Î,={ ¶¿Twú8k9™ÇÅ¨µ‘\…’`>S\ÖoË•nÌ‰j‰¡¤1ø0şwˆüã{Ë=¯wÈ¾ß ¯øW'çİİ—÷'õĞ_òÿƒº¤
-<;ÂšXA~ÇŞÈÅh*Ok“à+È«“'Ü¾õú½³p‚ÙBoMPbvp®prcVè…8-Gÿ‡½
-¸G¡'Kø˜—¹”[9a¢;™µ>YÇLò¸´8­…DÍ½EÑE:ºÒğñ½öçõğ¬ó«äÃß´ ı-,¿ªÄ¯Oùµ¬Pe¨àú`êg*çÉŸªğW5@ùQçÏÿrE¼úÛôz	õ»züÃòÜôâë'¡ã¯u ¿9ÿzE<ğËç¾"ó·"^ù¥aøÇšNqAï”Ì¤¥VÜÚT=FIrÍ^yÛÄ)çùS[êf¥¢‹MÕOQÓÉàöÂeE0¿î©Ë›Â–1×=—âó×H¢\¬şkĞtS(£ÍYnğ¬aE#-a@õ6îùÔ§¹·F]İLø%îE¹|YV+u$´‡¬ã£lèA³ÛtÂ5’J6À´U%@X×•©ÜS5‘Ğ-†^ë«gÀW{³YñD-ãU™øp/vN8Ï™ªáÄÍy™fº^hé%õäˆ½Qc#¼]37‹p¦’¥É›eæO¼@èèĞGŞdGvK »„p—v(«JJÏ`ŸÏ†û5¥Ï…Ğ}¸ŸÎÃE73¹AáæöƒıÜõflài:±Áa2SBuÒ¹f´=3gäÓ[jänQ77¥bµ8å¼oå«¨D
-ß9i‡–Šä•C0Å#†ójlwŒZ*3³&£„„«Š{îì_¥ŞiÂ…Öº”¹»#€q<”_1«7v“E¥‰Ç¸6>h03:ò
-5iU3Úe†z€G•î‚Æ(fq°ÂÙtÈêQwú:Ï€˜Æv”Œİİ”‚uıBôİçCé¸/œ¦ 'ı"'³Îdá†›üÓ«×FJ½gÅ™Ú»®g¾3ÿp‰ 6o·e‡°·L´ƒ¶ÆìTs<˜¶Œ<åM§2Æ2^ÿRA÷w07!øÙHD2I‹ˆ|†ê§¿ÛÎù‘ ÈÇWßl´ç§O{fè‘Ÿ%KªàBfHı¼5yì	‡À?ybO¢û+ÆÔUGïÛO!ÚyÆƒúÌ¿Z ?^8èˆ®¯YvcÿúÁ?ÒSşşËœ-|£LÌ¿­‡¸´ÛäÊï;'"$¸)â(Ür{¨ç² Ùz“4ja7úÆ…Œ2.íé54XMAOô‚…lú¶æ£1Räñ$©a©_äş:è˜xın5Tê¼ ÿö$ï~ÜîL©3¬Ñğ;<¾AôEçL‚no!±yN ¾ùğ$w
-ÉçYw^“E›Aå¥Jº–Å„ó—âÀĞĞ sf½gîEk‚íû<ó~'µ±äz/´áìÍê±]ÂB¸ë±ØFõ¬¿6\ŠS dÁRÂ­¶uÒ·Eİ ñœËX„HQã`_pÁÙÍı!áÈú2=iŞ< j6löHjv-ê1áÃáÚây®ÜN‰O zm|u7¥W‡Ig-ôĞ-ç†ÁÑ0»ôÄLbƒ+Ó“àrdOÄH7âJ9Í[ôî™¡ÍB‹á´UjGÙ'#Î¦<©85Ê~DNAMËMt¥Ö·ÅÔghÕ¡·ˆ,ß¶Ÿ2Ô¿¼ğz@Bâ™8Ù­ĞTì8OĞ*ï7ï¯²,~Œ_P/…^2Ñß¡ms²€»š¼Ágà0çº{Â±l šºB¾ ‡½Ä%âóOÓ•6Ari#\&Ëi† b_C¾VE&»
-sºÃ³ç÷õöˆö®ä·Ç—ÚŠÏ]7b>×J*wÒ7Ÿ?ëL£n‘Œ+7¯y}®#ÙlÀ õ[2KƒÄ±+ÕJ%‰ìµN}Â¥i=Õ¿kÚÿe¤æ’Pÿ{`À}ÛÃ“=~AÛæàU^ô	Út¿~ş2İÈî³¾İSãã4?Ü9ğ»Í\ÿlœFi˜òû<)øı8ÍŸİm¸æ·%õ>üÁ»èO-¿;CÂ†?.nğ~#ıô/ùÏúlvÕWpŒV{†¾_	Úuùy”nH4äıD ßQÄ~é?äıT”^AÀ¬ã7Z©¶¥îc<ÙrŸ²ÛÑ@H¸”Íº	Ó‹g±ƒòkÑ£îy¾ÚáN?•»1‡—J.±úZBázl!$¿]îãG[äã®nåL¼ğ·/y´N“éöZ €ğ—Ş_Wïcûüåéó0[24kñ¬¥ùWŞÿ7øÀïåŸ¡-å&wip‡¡Í[_¬Ì¤ÎşÄSq³Ô7Š÷2µ­x¹÷Á\Å#„<¾äŸ4Ë© Å1pûóégÇjÅ×¥›29…wWI‡™ô$áñ1øc˜¢Lê£`Q±[c…%}‚õ¿ch¿Q[ıxù…ÑúC“Ù&¾ÀÀ³Oq:ÓWù÷êÜÄüóP<ÌşÃ]ÿ¡±_ÖöGcûmû_öcC¿¶Äÿ-c~Ù`l¿™ø2¶g=µa„;»Í“à\D‘X7}°ÃãÅÂÉÌŞBëh`›İ?¸M–ŠÅâ^ÆoS°P Ùów^±M ³–áí"¹~ø!3áÚÌA]Ì%~÷ªã;‹®Ë„ÀÉyóAÂizËèİÑ–º,Vïoòöp¢ÚÛk¢Ğ{Õö¯ï«K†Ú÷ä´÷üğçãR’ê1Âó†prÃ™6A"r/3ù mBÎSÛ]ôİı¸GˆØ×ë†íF·-Vô¶”èıÕœ¾Gl¾1p†>7BxdûÙ°W
-ÃÛªoÿĞI½İN­))ˆ§­>æâ¸®»\£Ä"=&|Ğ^ö6väyŠxÂEşÁFZ|cCgo¹ÙÑ‘ÎºÑ?Ä²CF¿"±¶€Ís.T¡WãÕ·ì>ÜlĞ6)‡²Ä8Aq`õ˜ez?Ë*	Ìò1±[×TÉÑ£Û6˜î×ŸIùCø}s<…Úú‚Ä‰{óº¨"!ãpQb1ÌíHT´—ˆlM hèêÇ§ºm˜Î}0;ØxCeô\¸Ğ¾+"Ébš…¨®DŸÕÚ„9«x³‚-í{é’oï†N¨è%qo†y/°íèœpkßªcx$o.s$©g€ *ŠIètZ+&ˆ[:oWöwû’»yÓ±«Ò·M»ôéN%Øúm…*Ÿ”£ALx=é®4|ñc8Òîà3ÒoÈöz ÜÎş“²èïZ&õRn£.g_E[œİØ·i!jPåıEVû/Ûæ•d›Y—-$6„ÙÃ ç‚Ì³Ù÷få¸k{+jTF™Å—¹á…İ6$·åF¬EùDèB4èâ¶-ªWÍü^K^Ï†€õ½ş¡4ğz„/˜U2"î–œØ^ê]ÕÛÏ¼Ú¶OS©Š3ëİıx•ëºüá6ßi7Ç(‡XĞf	‹©Ş¹MÂk&Ÿå´½<½0¿ƒ4R-ÒŒX³öPï˜Ğ÷‡õZ²Pg¥¤XyöXÎw‹J©ä3ÎÎbpÈo`ëÆMŒ¡{õ„¼îµŠµ£’Şä«%vÃ0Q;.ó(}Sö¬nÉ±WO‰O']ïı‚®cÊÒ¨„İ¶	@)G‘f{iºPû~3İ©Ê‘|°^ÅÙ`±:¶Krsõ¾ôl»]­Ö*ê5¸äB`5YES3ğ¡RÆ´—úÈ_eJ¸ñ ƒ»Ç9Ù*÷TzÑ;0ëùŒ^‰š§¸ÏZ2ÅF‡[5¥½lmøğqÀÖŠşL¥’5æÖÉ1küº"Ms'P£™›äÖâüãÈÌ§ØĞÒ=v³LU‡»r
-v…÷«¡¹›äTØúT –ˆFU’©rwÎëÆ,õZı„w3\ò¥t#7náîÄÖzÄ·Ûª3	ÏÊÇ†z¯%ëóÄåwyˆÃ”–ˆë6X|ÿ~j»s­?ÕÍ‰¡Xİo›‡*9ÔÌ¢`ÃüH÷ã}İÿQ†MşßeØR7VŸ#«{74rUûÈ-Íş4›ò_Ï°á?É°Æ×:1äw¶ŸÎºÿn†Mşã›Y[#Ş3¥FşvN>|`{tkÄ·ıšµ	ÑVµÕDZÒßæ>âÆñŞWı¼lÚ ²XĞEèâgäĞ}€*Šàó(ËÙPkgÖYÃŠK%NâüOà( Àë,íuŒÑæ=¬Lf¸,ôâFÇCqòf½g­›^84ç·¦#>#[+4UË°&/n/Ìx¯u&YMÉ$}}04üôynæyûÙŠp®wáMêı\’l{’ÔjîëGÛĞ#W¾QÔ^NÙ•@Jj÷u/ûRƒ!Õ7¦íÃãıÕ‰Ú¥dNç‡éœèÚ³§º …¾lRNŒâÂS&E~éÒÇ¨KvúÖ0 –œ£g-²àGW’üÔÖAãí’»{hÄÌ:º°BºaÕ„8ªRñÂ;j/YÁ;ß6WxÖtÇòÆ¼ç”=ä^æM_6ûÆ_¾yÙI|»¬F—Ÿ6¥•µj¿F¢vĞ¬»âgMš¾-©PÇÊªî4Çn=.“·7D#0m_Á-,-<n4È.KR3Ñ(—bNkâËè(öb’^Zòø®‚Œ“$)[ñÅ»˜Î¤ÀıŠö©˜'§;÷j?g‚Õı|²Ä±^ÑQ9¥6&Ş/Ğ†¶ÊøêqIÅ4ÜÎ‘£Œ>È-åş&q:õÕwoÔÜeªm[ÒY+OZÃøÂ¡vÍH•ÿW¶ùu:»Ëm@‡{v³]B|0ìù6ÆÿÇ¶$Jş76Î;IÿÙ;òÚ—ÈSgCïİ€   øıÅî­PÈÍl¹€1":›dMFªW›³iµ–ŠÒe§¢Ü? aèÓiy×s_¡“~·89>%èÛ*J¾¨Õ«Q§:
-Üåpâ××;ğ›˜2åuKÔ„2Ô‡éÌËTÅ,;R3ÆM½kûØÜ¦£OÜ°OÌ¥Ü™Áô)ìÍ~o³B¾pN&ÃÖ'<¥)NãdôX¬Êß(ÍÒs’!M&Ø§ä¦ÕçîMìÍV@ËaVÔR‘OÏ½ùN îCQàpğæUS¢\Aîù‡PdÆI@×”z¨I(Ñ±oTŸàÄK–ú‰£LÍ‘Œãö<s¤H†4ØG 0_tıŒ3ãõhU-A7¸ğ(Q²GKdîº‰?.íÁÀtÏ“µN3V¸jG Ëbš»Oœ‡¾Ä	×ÕğÒ†ğ¾èÌt½ÏÔš‰óDÚ‚ğˆÄ5PlÜ ZÑ¨¶8pD¶üÁÁä•úØ Òk½ÃvšêêË:jÀ%<9UïÑs×,'Ñ÷¾ ¦t>M¼”-s—òçbv~Åg³i—ã32Õjw	“ˆå`â!&E›Tîgƒ-ÈïÚh;Ÿ°d>¼„ )gº0˜­ƒgÖÍì(‘Ì½ ¤wI$ò5cÍW…Ì/7”†q–#x;"|è ¨)-«`1šfR`tªªˆ}¿B9iWèàv;,¸¿‘}vz]*bÿ,Gû[Ñõÿù?ÿóO¤iÿ*´_nì—1ü|Æ³’­ê&ÁŞå?Ûe¨üO=j?nÚ½Ãå·ıK€M,Ìëç²0ë\¿™_µS™ßÚŞıÃüoÔÿKW.ïUî†ù&½şùüéšë÷g?èQ3Ãñágéáx{Ú]9bN	Š¼^şÖ®]ıœPºß}òŸVÁ|°ıªù†!jfSøkDG×ú¦8ÚŒ^|Ğ¼d®³ Ë°"êzŠ÷š´½•º&Ïó¾›ä¸¼]FVÅƒ½ûÒ4º&?Ú)óô'¡ô@©Ypg§Ü˜z#8øEø4ä´[|M.›'^Áz{_"ÉÆwd£ç•Óg7""™®?G÷¼Õm©ü£æäò©ãH¿Y¯Ó:£€âE,İ`™ŞïÉ£g´9â:Áö*;~/x½;ÎÇ¦v1ÿÄÒÌî	H¾ 5a²;{Ü9ƒMwOˆíZØwUeƒzt •byDQõª¸÷<VLxÑE{÷v/KêÚF‘#gÀòŠ'nÚ×µ…4¥Áß°ÎßµêtëŠ¥ä-<nì¹n¾ZÁ 5Gf‹+^nõC~åæ¤@hÊºÒb¯šĞR­ãtçhÖ©V
-¿š
-VqZå*0|âóR‰Æíc¸›Ş ´’‰Ÿóı°ÑÃNìvÇGê\¼åa7o‘æJ›]†
-%
-ª÷Ãö$ƒğ~ä-cŸTóáoZ-€kUXï-ni!êÄHá@‹±û¡Ñœ`ZTn¡M¿&»ki
-ëİZ¡á§½†Æ‹/|~ÙÒ¼‹^§¸#ù«Â±+/=ñáä„z-l…w\)ÓÇ5-\'÷Íùâª“T“%ôƒè¨øÃMµÃFdZÃõãÅ“…Ñez|0¼Ñ«Ü€Şj³¿ô¨ı+ıº³ù?Œè8¯¦×ô¶O¤âÑ‰¶oôÄù·OŞïqH†uM˜üj‰Ìm~òĞS°w†,Íÿ“;~ihÓUóÅØ]ˆ4ùñë<§znÛ@]à–“,[ß]cµ¦O”?ÁŠWfCàôqp£kÇdt-ÿäyKO¯‡cM!e¹İv0êZOw=TSâ)
-Ä^HÑ Ù­ûÇ®¼äyÂ‘Gâ³ü|–eo^ÕHøşĞiØtÁ+¬i}¨eQUÛ>|±y[eQb‘yVŸÁöB¯§Ì?Ÿ\s`Ì!§+†öæ¡FÀÉœˆpçdÜjë‘]¡ùÙtşfŒJ^r·¹}6úKÆã±NG}6=Myntg>_Âòé®6Œkº×\>”N•Ô°Ó7ßH÷)‰@G·è¹×ê…Óå‰Âò½µÑ4½™dªÍ—Ÿ›Ü“	'«OP4 k¯D½’È¥[†=ß—•£âëMX×WXhßuÊŞĞ‡îm¢ıAv´MÖôR§ë…@ü¼‡#½x4ı¡ŠwÂI±ì-/®îşjİvª†µÂz¢İèÕl®"j&!¯`ÆÛ'.iï/Æ®ã—]„|@SæN)O­²ÙDß|åî>˜±6~ğÎöªñ6#(Å^e/-nbU|ûÜåKí}Væú<1‘šÖ˜ƒ ºò–¦R§"¯<ÜÙûZı±JüZ?b¬R_˜* >´|Çªì‘ï
-Ìåz/FÌƒåŞZ¶v8q—ÀËlÃNâÉ•ü+(`)®'|_½úÓ&dûé¯Àß–ÚÌo¥¶ùWõhà‘&|5g¥P½Od4üyœ^ÿÓâñßN6ÿ>Œ~÷àÎûZãíô7$ëïûMªŸ•-¿$kâï?ã£ÁYôÁùËn“o¥5!ÿ&Cp NÏŸ7®|eN“ÿéìkãŠûa/ü!yLô=C`ÂMõGT„äU„DûóòÓ·âıä—¾éæ}ÿÑìò!éò_2?Y0ş®„Ææ/°Òè…m.îåÈpÃb2UsP£ 9V-Ú³µ7Àk¾ŸùËB™¼] è!fı	~ó¬×¡»ím%¤õkó&’²o^Y}Àór¿nóŒ$ÜDß}‡_`hKÅ¸7¬÷ÈgÛÊóâª» ãVoaCûó¹Éw ƒ5xøÃ¶F•$‡h;^‚ÕCÀ?¯rã6õø½ñŸÊmÀ¯ÊW-cH1gÜ¹Ik˜6´g+ŠÎ'ƒ€“M±Ï0=±îÂğ†â÷ë‰_%cíöUÊäŞïH.‘Wğ×‹¸uJM‘¤ñq/zğX‚¥u07Ó–Ğ¤Q]0ò^Â|Ùf¾@$®I=Øj¤‰#ù¿Dİÿóg[û‚ßÿÂÖşA¹íc£¿J]i”$Ä}|ï°ÖÏ"<ÄO8ùáø»şÇtÿß2¸o«¿•×~`pÆ•¿Íî÷÷í,ø±Á_÷_1¸ ¾©VÿMí÷oó~Óvî‚^y¼$I·Öªt­x@lÙÆK·h=ÑB3I:–àaPÏû†æcí7‹ ¤~ 4“=#aÚÒd8â7nÀ‹}Ü[T¶5A.Œ4[)Ï®c*üšËZBZv2Æ^&hï	öŞÃ‚í«)hu(ö±(WÅ¿Úº…dázïï›ïu”6¢§3%’yi¾sÂ²¤ã¦­ÅÚ9[¬ôDqüQÉ)²_MóC·èWæ'?|úªª4k_Ä<l½š	÷U´€Éù4"w<Fu	Å÷’e B¥³Ä£Íš¢4aÆÚEUmÛ›+¹P¦Lsé;¼/Ùş«š”+À!¾‘qøÜÒ•J¼Ér›õ0ŠÖ]"³’¾ğRc„˜Hnä™KTo¥‚‹IÔ÷[‡©¾ºª†»94tZ$×²_­®ªÜdàËµzR!u¯ì÷™s¾Æ#Vû(½¡ÔÈÛ1¯=¦Ù‡‰Ö¥Ò/”Ç~˜=€~ğ
-JÑÑûÓãÊJã\ô„||`5jW,kçÓx˜Õ\„\Øî<²f‘ÈŒ¾İ¼–V§Å§:ò.]À.¥©¯h<'Ü>\ª8…óqWúûşôQ#X+)vj¬Xöl¶¢¼ òtCs¥f‹|W¸ÀqÑv"6À`#İ~Nî‚YVöªŞ·BØSt¯å.Ljí }±Ó–ş­‚(½, £¿VçNh2¾×+3ùşÃ2C]=î´P‚o¹ˆ¬™^wÒügË-¹™RA¬Í"†
-¦Üt7®­¯èÃ¾Ïº*T°íä›FQ$m­¸“š“ÆıJ³è hhIÙj$‚G–âv¯ËFúüÚØMªôûÌç¤~Œ`OåamÖòêíhÂU˜kÓêaqkã<²‹Ï:Œzñc7Ê%	eè[‹¦ƒ}¸Å²µ{òâ?Ö¿kÄMxäQoÖ€"Íö¬°)}İt·Ü}
-B<İ^‚ú‰²ĞQÖ@ÛMĞ’_>2(QÊn¯ö‰ÜˆêÙ–îƒbã*Ä\®»åÖ:İd`fØZ²D*Ó­W\ i¶™¾µV<ˆÚÂ—²TØ16>gCWræ,
-ŒE&tæP<'œÄÁØ—8PèsÒıÆÚ*DØà­‚%éLlæÌqŒÜ¶@|ªæ¼ş©8y%bâºğk,¨ÀåŠ"Úë$âjĞ3~Á(ŒgÚFMiBVÿ€ú5Ø‹úu1ÌªZ+ß~dÒºÕK9’yæj­ÛÕ}(ú:Ù‰›VÂa*½9T‡í›²é¡¸Épêc×>:ßõ(hW3#>„n"K‘™Wí´y¿öÈçåºè1#gÀd`únˆâ¶Nº¨=²¨ âl{1_ÂÄ¹£‡ª5T½=ZÒjßÈŠ÷º*9ÙZèŞíI7Gñ–óPFcƒ
-¬‚&tø_ÅøÿÕZûs›HşİÅlÊ·’v±”dïi'e„m®I’½©õ
-ÁHâ‚@5€l×mş÷ûzxò#w›ª£j×úİ=İßy÷a½\t~8`?°ñÒÙÜõ8Ãßµ%"Ì™¬ÖAÈEÇ¶f±ïx¼Z"oÚ-¦¦oÙ»e­ÃãNgáFËxÖ['c=M.Á¢%góØó wı ÜÅ2b–ï0Ïµ¹B±?ÄÊŠÜÀWØÚãm\~GìÄÚ×Um`j‰•ÑÒŠØ2Ç#áÎâˆ;ìúñ„A,lE4¹spà[+®-<Ìì¾U­séÔÉÁA]£PÜöƒı·àB÷#.æ ?‘/Í‡Õ<ğn%³Ïıèv$›‡áíh¹NoO(˜ÒÛ3+–ğX]
-c®È®w6ı8³Ã·ùk;‹Ó"áßá¸ìš]ËØ»µgéıYÈ=§=ã§ÒÛ³Âe†üû€á‚Rv¶±£Hø‹ß|Š1ˆéİZ¸+âx…ÀÚìĞ¶FV´<Ùå³„°Ş%Ü
-›wºŸÿá¿¶<×q£ö>ám¶à{*Rş…kbá‡2uáCñS»,)#TX´T·ä-‹I—¼u"œŠÉ¤Éú\qË‘i·kM)Ÿ‹`ÅÌĞ‹ÅºÑÖ”£¶±ü^!Q„¸$ê™hP±x`ïVüŒã§M¿HÀi‰ş+Ë9äğ‘{ÁİqIš‹ KŞ¾~ó“R°'£êB™¤
-™à¨àwÚ%AÏKƒbiL¶$èÉÌõ-xIö…J²jàıâˆ­Ç»vby&×H¨dŠúZ×Á\†2·P?ˆ†Ò o(™³²³u–†Ôo
-«–­â0‚—‘ÓI56¼j?@=r¥(“%kßƒØ¤{mñ’•Ğµä®¸(G°Ş:XQˆZfâàÄ6ÿ}diœÀWè<21»bÁŞA	†šãÂµ¼p›¦´1rVtªìøøJ7™9¼ßtá~d¯õÖcçŸğRcêpôÉĞ/¯ÆìjØïi†ÉºƒÆ†~>ñàU×ç+z‘íàÓ~ši²¡Áô£¾™Pbtc]3¦Ôş¤§.9l0£ÙÔÇ ©;eË„n¹Ùğ‚}Ôõ
-?»çz_’f]èã©¼€Î.u±®Nú]ƒ&Æhˆ1'3i=İTû]ı£ÖkÃègÚµ63óªÛï—\Ş4ƒÙñû\ƒÅİó¾FúŠ÷tCSÇäâöNEPal_aæHSuºÑ~Öà`×ø¤¤¢Míá%ëu?v/53oUODYS'†ö‘@lÌÉ¹9ÖÇ“±Æ.‡ÃÌ©×¦æI&³?4e '¦¦@ß¸+Í€$DÑ<¡ûó‰©Ëxêƒ±f“ÑXZ(„„
-wÁÚ“Šş#xCãÉ¦øÈô(ìæJÃsƒb-£Ø¥¸˜ˆ¦:.’A-‚;®:ÎÚe_¿ÔªFDCv£›ZIÕM"€dÒ~Ó…ê‰Œe6&·zÍ¬Ş™r¦_°nïZ'_RÔŠ©§u%Ã©^¥)¯Ÿ3À&kÅX	?°CO>`ÁšVå±ô7IqHPA÷½[ºö’&%ÁœİqôP/°°Šs=BNÖtÚ³üÊ©U˜³+Aã
-nGA>JÒáÏ0­²Ù>}[²à‘)¶jA%Xƒ`CóÃ>ßŞ3-)5%t¹sÖ|™§¸ƒ}÷>¥,PÑ•¹T$>É)¾äwxµ5'¬Àº:¦Ï™iö§ªfŒ§:%÷7@Çµf„=×Ç•‘Úa6Q2òx'	œ"§&M·vQp‚BÜ•k‡lÜ±ášûĞDÄ	ĞÙ¯¶½Ç‡_~…‰ßˆ»æo®S†fcGXãÑZşß]„;ÖHp}w
-şf#€Iaèµm‹Ê›Ø^ÆEeW™œı Á<Û²Ú)ÑF‡GvgıÙ¥İP$  :ü>–@ÔYóU'òÂ£íF	O
-ô‚;°f\ihô*øĞÊ³
-)¡-—ıÙZğ;Bs»Ù£:Ä6d¶ˆ¾ROğ…ÓS§F"µUU”°UØã3lP6%Q¬°K¨…uXßõãûıê÷i¬†Ï”3‰’GwÏ–‡b×‡r¸Ô‡pV‰-ºã¡¼N¸xíØ±ğäÿj$ ¼?lÙë *¶K–ÙUcÖ³ôøÜŠ½ˆÙ£ŸõôdëÄšX?:¢»‚ŞdÊÔ†Cj|4(·<ïC øÊŠ><RÛQ87{{}%®tù•9)†Ë`Åg‚ß%iÑ“Á+<{Ó~ó,¡D¸G0¥=£ß‘ıSI2²á¡‹©‰9YUñÓKTJÅ~/*]¢¡<¶°Ó®!8/¦nÎºâ[’oî¾TÊ=´(‡[è	%†m|ş¤:ä/Ù÷ß§ó#9~˜„rzäï•‡´ÊbèªÃp&ç>Ùáørğ<;z®ø}Í¨1hˆ¿ÉášˆrÔBœ(Ñé›Y*Ì³ä6D÷:(èÙs‚SwJ“Š*Á`İg6u<1¶¬~ƒéüHòÒĞ”b:6LP’³!EÒÛ–Ÿ¢7L1«÷P’_‚¿ûPï3nmÀJ06OÕâ=%´2¶v»ƒ¢“ækx¤ÉÎíS~1jß6`¯ßX£w:iXä¡3¢GT·m»ã†aío^ï î×ìı{ª	òæéÊVm¥B‘ƒµºë'=ò­U"5¥ßSd¥Ù‚¤´m'ÏQˆeÆÌ-é$ƒ*
-êÖH´€œ>¿c·@…»âÚ½ÍåDk6Ô Æ\¢@Úè'GÊI&@ÊÈCá ~£ÙÔUiÙºÒ:'’é:¦èº€LØ¬Wñ@©H)ª\ÊNv§r±EÒ%øÂÅRÓpGNpçO³Bmæ7-¹<šÏ
-æYì{®ÿ¹†¸‰²!åz¯8y¤9í0Ÿìé,òüXÂ7+Ë£å,ËÊ›Şÿéõß¦ØOÃÙÀ"A-¹}š­¹Ì3ÂP¿ı.ïŠI8ş—èöídÙÿjŸ^îWt¬şœ¦´Ic£ÊQ×ÌíWØwßÙ‘ı%|¬ƒ÷L.ÆB®i¢‡`s”O”âáş/¹ê_+í¢<‰öğÕÊa¶8È¤ê‚É˜[K§In›¹€–È‘ Cñá){]ioØõ,¦‚¯=„°ùªóÏæííÑÍÇçÚ¥>øMôZ­ÛÛğÇ±11ÇZn›´EÕ/tµ;Öˆ¸u{ØY½B<|ÃßHm•W[ ü#;àÖÂêbEã‡Yü¥{Jª„¹…P8Õ>ä†2ÔÛŒß~aœZnUC­IµØÊ ea±5÷9R€#uò÷›ôe7‰@*ó'N>‹hõKnŞönÖh£ã{4*õÑnãE3×ı5äÚi0<wıä¾Õz¬Y=U¿ÔüRñûZÙ˜ÓÔµ'9„FW£íÊ®‰w«rOÈÇ&÷C’š¾ *À›|‰Ù&ö|.äIt	¾
-¢ô«	¿çv\ü>°q-i¿_{lÌ>" ¸€ßêµvD›şüÇ·¯+ç™/l\n8L‘k&"QAR©D Á½£ÁàhHéWÃDĞÕ’‡e«6ë<Ç*úPU©M|ñ8±B˜bmZÍûLÏ€Ót¸3uvPëor•ìš¿û¡µˆQ‹'fRhİ9kÒÈ§t¶¯¿>Ú·›‰-V¢ß»nQÇS³;Òe#kØÛ ÖÛ<Ä"‹	"ÀJîoRëZò˜7~ J‰8úİš$É[µ…óT’@£õŸ_lwûÎê“Oçi7zzìIYi“šª~ñüÎÕíé•ïDİ0	[5YİGopË)›ö8O’Tù^ìŸ¿Q2Š;õDñ•ŠÜğjdñª ãeyxËÂf91k³Fç‡ÆKSğ—Bµ:_ùÃDŞ Îw„Ú4õ¨ï2Zê9ÏÂ!Ìö£yoü!ÜîÚù½ü\/Ò	O,IÕ–À/³åQœ‘Zö’}«õQ®Ú—ç‡Š1IST“"üúÜäŸ0ŸÎNNš§ˆz*C yéŠo—¦jÛ–Ú¿&c™¨4m¢^rMsÆ¯Ocå‹4¥3Í\fÈÎÊJly*y™eÏÍ ö—ÿMr—ôíTãËó%Oë	cÅ”’“e¸«ö8½>a$íU×g\ú—E¶Aÿ’h)ÚÄE›¹ëï|\åqIjä1r‹mrnóŞMe!—ïí ö£ÔÛ–t·²ÕÿJWÁö0g-ÎïçHÍ.èËÁ •TMsÓ0½÷Whrdj;)…–œJs‚¡7n„ÌÈòÆ•%¡•¡¦Íg­ÈÅrÚ>x­ÕÛ÷öCòã£g¡y‹5[ÓZƒà
-Á³²Ó•‚ÅùQ
-'­—FÀ/à‘õ¦c{©+Æ™å¾aŞ0ß Ã=´ló‘)Î'ŒÔBuÄBà=Wªäâ~¸3¤Rü_D>ªúŞ†¼”,wıèVR€Æ°s÷éëè½‡ş·q’û[ğ¯àI!Ñ'ÀùÄCk¹—‚ûˆ¨¦K¯pVß£$ï|c\ªøøü•´ö3¥&Ù­©kÉµ™°´\ªö#/#äAUy	shcZ°¼¤÷v]#òxH²ÄÎZCõ®'¹-¤" w¾w ÚTWãA˜V/;ÀQ)¬–¾éÊœÀÅéÉ)">b*~vÒAš
-<øÌXš(†¼™Š{V„ˆtÃ6vğí®òöôÄv×ùòE©¬‚_©EvZú"ÚÀr8>ÌĞs]D`«|µL0è
-eê¸·$Ñ¾Í(öíŞè¾°ÎÀĞÆİe„¾‹ö}´WóZèœex5+]v™¸‚{G±İnømÅv;È!M|vBæü/4ëÿ4< Ç×Th–§ôt­µh2®$ÇSÊ&£‹z¿ÊBv¯pÿN)GÈfˆ½¡²qÜ§#B†5ı¯¸ê1Ş§ÃÙáì/½UÛnã6}çW’ –Ç.ZìÃ:H¬l¤kÃq(’À¦¥±E”–\’Jâı÷=¤¤$¾lQô¡z¢8·3g.LŠÕº°lz‰<—yªYœï}BÜ®¤ÖT:¥•ÛVs#Í†\&iv–6EI•§$i-]F®€Én¬ãÅTùî	•'ºLÙBy·s™üÑüZ¼(­å›EWˆ¡QK•CqCOF9Ç9I‹0ÆQ± »ä5ƒúğeÎ­m¿×[*—•ó.½=­vGäÅñ³32qä@¶’)“|”JË¹fF’uœJ]äÜ$PbC ¨N¹8}÷½ŠBBP`ëè‘…"=Q_ˆÙl6—6'ÔÀ!Ã–Ê0%û6+…çÎîüF×#úĞı¹û)Û¸JA¡£Òª|y
-¸óVĞÏÔ2¹†îSN}‚Ÿ¤U	Ìå’ÅV´ããcšÅ5ÌûX~
-(_Àz
-yı×ï/Ùİ†6ˆå¸(\u=B“DíYŸÆìJ“ÛƒİZ©C…ÙéªJš’¯JÔôĞ^Øê˜6wcò Ş·ü=J­R0Ë+È¢¯‘Ë{‡_k™o—Ú¸æ½Xsn­>øñã-k¨ÁµZr{+ìã—v'²ÃÊvä­n¡°O|	Y‡|Ae¸Pà½ØQ{;†aË®¦Äú1Upèé„™dlE(÷1Mª¾}))-¼ÎÖâÄÿÑy¸œª\¹è¨™>~–«5&¸0ËŞQûL@Wúg6÷ßo¢l›3"e§©2Ñ–Óv›ş„/ÀAJÅÚEb‡âßÆ7ÃÑd_Œ.&×Ú6<k¤ø/ì_®†ì‘ -µkèàgN*kˆÃïq	
-A¸a¹²o”"¨…iŒÜDNËsÚ¢ó_Ş_ÁŠ]V¤Atôùrr$mñ?Ó ßµĞm­‡»V"ıTµsK}‡ã]#?6|*Eî°ª!¬ØšÖÓãè}é[¼·)²ª4±3£Öncbİµ:~}Xöå¬<~·TŸË—,…·Æ×
-n)ç'º¯¤×ˆpAt’|/ğã;\ûñ´ış×Ëñàêw_ºÿZñĞÀ½Q	¦ıuS±ÿø…¡+µ”pƒG'<¹ƒ	ÕÖ²\-’›A|ùåö²Zelà”^EÛß ]QK›0¾ûWŒrÚ•Ğöqè¡7œU‚‘q6Í‘€\aÓhÿ}gHvÛ­„„<3ßk&õ—×Ñºé#|ıüå¤ş|ñÁŒ•v<»œÀèìh¯pë!Ú6ãh-ø#4]=lÑC=¼ÂÅşk7¸á54(‚“,vHü1^ëÑâpu¾q5òAë›él‡XGÒ;ºŞxˆ…EuG,g‘ÖÖ=¸Qï­W;?Emˆ£kˆ#Á¡¦ŸZòğÖîİÙİ>'HÊ¦€	Èggßº#ıíë2zºZGÔ‡)b1P±±¡0Ç'?B°}OÎ†[ù×İ<CÖ/´Ğx_éÂµóç³´éã4(igLëYğ³â/ÛDªĞøÑ÷½¿R´Æ­£Dá;c[õÁÿ¶s–ÛaÑêÍàò÷ª÷Vèjô~°÷…¡® Kì(İtïp÷?Îzğ_Ì'Ô_¨ÔÊì¸ +(µz‘™È`Á+|/ØI³V[8¡yaö VÀ‹=üE–€øYjQU 4“›2—k²Hóm&‹gX"®Pr¹‘I¼SIQÙFètO¾”¹4û„­¤)ˆs¥4p(¹62İæ\C¹Õ¥ªÊgH[Èb¥QElDaPk ^ğÕšç9I1¾E÷šüAªÊ½–Ïkk•g‹KÎø27)•æ\nÈø†?‹¥E3»¹ƒİZP‰ô8~©‘ª ©*ŒÆg‚)µy‡îd%àZV´•V›„Ñ:¡fÄâÆB«†Ázo+ñN™à9rU¦ˆoÃOì]QKoâ0¾çWŒzj¥¨{ß›ILñn°#Ç”åhC¼
-1ŠÍ¢şû	´İ®)ò<¾×dE8¿MşØ'xlŸ@ú!ëÜt²ã˜Ã0uáxôvYVcÃÇèÃ>Bï&·ƒãdÇäº“sĞöv:ºR ;¾ÁÙMÂ>Y?úñZ$Íp2õÃ!]íäp¸ch½E<èB{9¹1ÙD|?¸©wğĞÜ7f’ÎÙ!ó#Pï½WŸúpI0¹˜&ßF~l‡KGŞÛƒ?ù;­ÏIÄA/ÎN¡óú»ÙÖù²|ìsè<Aï/	‹‘Š­i}|D7"xÔ={ıT7Ïô3šîEª\ûpúê#:\¦)]GÊº€‘ÍŒ¿]›h‡ÆaÂ•¬µaì<9Šß³Ì`ËîÃ7{¹z	¥Ş$ĞÎŸW½·bo‡öîãµÿØ™ˆ>&<¼·œÃ4óıoóùWµ4[¦9ˆj­^EÉKx`¾rØ
-³R8¡™4;PK`r?…,sà¿jÍ›”ÎÄº®ÇšEµ)…|îIe kaÔ( Â;”à­¹.VødQ	³Ë³¥0’0—Jƒši#ŠMÅ4Ô]«†#}‰°RÈ¥F¾æÒ<#+Ö€¿âš«*¢ÊØÕkÒ…ªwZ¼¬¬TUr,.8*c‹Šß¨ĞTQ1±Î¡dköÂç-…(:£±›:Ø®8•ˆáW¡$Ù(”4Ÿ9ºÔæcu+Ó¢¡@–Z­óŒâÄ5ƒàä7Š¾\Gè½iø ”œUˆ…ç‘_Î‡×üµÑİn‚0ğ{Ÿ‚;f²U
--…ìëf7»İÓr‰¬ o?@š6MšôüÛôüúò^-+Ç`³1…Æ@û0sºáš²l\çõÍŞ
-¬q(¸°B”°XejU7`÷ñ˜ªº+›6Ù¢©³²Øå#òó”âÖêñnŒ×ñ)ƒjÿÅ¤')×é8Ğ¾fTSÉb¡¤ÀØg‘ ,:òí+š¶ÚŸÎ3iÀ´v1+º~ò<© Y¡$ùøüJ‡8î‚~ÚqÈ3¨±¶´æVµ{_Ñ×¸Ûß—İ×gOtÏ„. ¾ûFä“ìWĞOó¾ 1ø½É®±hÆßa}‰-_‘û„ú'ø Şm TaªTFAìKÁYª…Ô½mQÏã^2òæ´Ç¶ï¬ÊuUÖh
-ä¦Hs¼HšNè	ã™È¤uRàÈ<¦©|ÄT\„à1Ê¤ODşimõ}Gên™?Ï~…ĞÁNÃ0à{"‡IZÒ%mVÁ ‰]¸ò•“8[D—TI‹´·'Õ@Œ>Úòç_~|O#!ŒQ˜§8D°½óæMiÓ—#L0¡¥úB_ãyŒ!«O6¦ƒOtO­OÎ¸îûÃÛ{ßß=•†Œ‡¿eNNs
-R‚ËšĞR•ª¥1Vj!¸õV(®“­Sµ‘¦YÑı½¹»¡ƒD,–“a0xÈ>—äÕıU5NFÙ(p[ÁKàhíN`«klÚîªşÄ]ÌEòÁ³ÅÌÜÌäcÈ·¦²]‹VòF8]˜N5;!‹Ï±• ş1Ï'L¹|`üVËG¾ eM
-Â0…÷sŠYRAšhU°›n]¸*„±´Ğ&a’
-½½ßö{Û}¸ ­‘æäGOÖô#Å8Q¨2ÁÃ•%¶xYğè§à#@qgg½4ƒ`vG—Æ4íÉ˜ÕŠEş…ŸDæ œfqH"´”€Yê]Şu­‹‰Æ‘í™%ŞE…õ¿&+TºÙõŸûy\­!Ï< }Ë
-Â0E÷ùŠY­ f¡;ß¸Óm L›AKÛ¤LR¡oÕŠ
-â,gÎ=Ã-«K%„”€up…C£+Ï“Q»…Õ™,124°ueå<±½+Yãx—1ÌÁdl±¤Xëİş¨u*z	zú>¾í]0…š- 36±€v¢—\©-njk
-R*‚ù¢ƒ>> ’iGË‡Éƒ–Ó¨?xÊÖ9Q‚JÆÿ$ø ¤ÿÌ²4÷9|+^Õî‚.Ö6º…RÑn›@|ç+¶Q¥#’1¶“4¶ÕZ5R¬Ú·¯§3,ø$zw] •Õäß{àà:Oİ$fwØÙŸÍÑ8Îh¢©u©EæY ¾¨DNğUÿ4ºBr™ƒ»{ÚñaœDÛo<ZÃfşïßÂlµ(2¤ŠW¨j÷¶oµuî¸ìi¿ßÆŞØ’}ˆT¤D		Ò3„DšØí¼c½vÏHK`½¼‰çCFÚ+²jŒÑTC®érˆThV.,fŞ•ÁI7 ¥Ú>ó®®ñØ L‰¢BhLAVhG¶Ÿl,tµ9€Í>g)à&íÑ
-Ë|Ø˜ÌzÃ¡¹ñ`u°šìï¼&Ünæÿ<’Jòk—e²2¥8ql¯®Ø;»z¿“Õ.‚åÒ–’ÁË¼GmfÙ¡`×Ô¶òß$kt“ı:ŒãAgâ›«³€e…ÿ	¬-Lº#_q¯²©IÒù ÷2Ò—·OÂ˜[Û¸­WÇ!üÕHB®UŠÀù:Š9Ø¨7vÔÇÉ	EÙşœlŞÒê†Ô%“ÕÛR¤dízÓ`:ó§‡ O§÷A:|Èï1‚ÉÄ|´¾oºq×ªø¥Y[oÛ6~N~á‡Ö)æxµÓ=4—VUÔ,‹c–²Cƒ–h›°B
-$•ÌÀşÍ~ÊşØ®¦.äöÅ±ÉÃï|ç*åâS¸‡ïŞ£wÈØ²Àèz©°PÉCÆoÆŸƒ¿A|„…·¦Ï‘¿•À¢œ!Åy ¢±ôç{¼"¡òÙãáVĞÕZ!³øÖ÷NF?>àã4¥ŞšX¢»St¨[ÉC\¢aÎk¢ü+ a2Öq3}D7„ô-`M²Íg"dLnüâX‡‡ÇÇl¦€ß
-C¿¹`Nòq~|ì“%eÄï¿w–õÅ˜Ï,Çµg†{kOß şA>% ÷éêøÂ§Ïˆú—=¼Èñ`Ñ’jËOeàíGÄ8#½«ã£DÖåeO*¾K«^ ²ï/†°šì®GWŸ.QÌìãÇyÿ­qçŒçî­;±æk=¼>Ÿ®.† VÁÂ‚àÇ™Â`‹HT]xA´äŒO±ç){
-Ó´'ÃN¥çeˆY®`IIàÃaÊÂH!µÁf(½Ä;xôŒƒözCÀŠ®.bØÄGOÕÄÇ±Ì™åÎ'„.ü‚S¦b§R„ù!§Lz‘Tü©×J ^Ï@ÒïG%JŞšx›ÿ» TU0ÌOÕ¼`M¯ìÛ©;7!ïw¤ÚtJ5{eZfìÍ×ı¾h
-QN®¤³¦ĞQÄ-@oğIJãK¼ r+O½Ä_µ´J§Öëåˆ8|Yi]`­rÁŒx 5“]DJqÖCœyĞT6—=Îb3ÍT¬ÒäÓN-3÷ ®+YSŸ$-¢¤-ÀÎL_ª15­‰š›Püİcc½åŒö¶œQç–3ú‘–³ˆ¼Ms‰y4ïº–¸$!Ï˜s˜®·–´¤+†U$Hc«¹½™îãÌêD%Kğ>«d&É,¡ŸÏ^Õ;ÿı,SÛ2j5€jo‚¬àX5šUO¦R§8RÜ'*®ŸöÒÏÌÑdK‡¬kA‰ñ3aâ]³¡mÎ¬xpÏG×¾¶Ü¼@3%¶U4›ÛäøTG·Ş—i.'M[Qv$K5€+Ã£ƒ,øŠúÓSô;+Ê(>ATˆTòfÔHƒ²×”ë£vŒRĞùƒdtLPpÕP*Ôl¤ÙàÎt”6Jx9<Rë˜“±ÔÃ¨oâ —¿$@;6¤°ğµ!)FØ£K¸Wöål…îà#»¹äv¼Jp÷ÑÓÓ«3µTpTã¶…‡#^`¿„×ê´pÀ¸Pëf{]¾ÙòO;³ÆÓ!p¥¯aÄs\Å´%Şàæ¸£/›mw([á¢ûó €ï±ë3²­vpÀN¸æ€ßÀ~¡põ œÕò“	VwÁY®· Â`:bÇš˜a?®Æt)FÓZ°H¤cY‘àPÓı¯³Í2*FÓEº£vhEĞ/Ö¨¶€hŞsœ[AÌü¨SóËå46Îü´÷›AÆ;,¨Ô1ÚräŠ>•ƒÜS0'éÖ 
-AÍ'„D	¥ƒ=Ië\Å½Ì OR&Ğ‚D={n¥Àğ4ï»ğa<ÓçJ—h{";İSßHöøü‚×"³q'Ó¦1+Á=VÕ•™ÄÅ#Ë‰µ#ã‰¤@ç¿9”t$¼k+à|Ôİw—ÒĞê5U¿b½:™é×ÍTcíÒyÀlª#teşİCjIÙAuwgûş	µpQ:?¦“Nêà×}ƒ+#fÀCÁ—&½êDû%Á4×˜­HóX;¹u\m]kê:åÙ6³âG&ÒñŞ‰tÜy"6‘FAáØö=1™†¶´ğjîÑ<ßñÕ›@£ç
-½Y©óÜ9ñhA37EA{¨“œ“Diá^&™PYz]“—Áû;FdE˜ßà§¯öäÚš/óR±ôŒFg§-eü§×Häu¯ì¬ææì7’ñ‡M»X­†ezšÌÊ¶¾Ã¨r>OıÊ«b¨Ç•HŞvy_œÅY¡­¥&Îôšh)‰
-3ú_à¬^´Ã/X0xôBĞ._Ÿ\Ûó©íÎÍ‰íäoP
-ÿ5;`w‘××´P6P¦'M}çê[Èğ\`•¤ÇïW"¼'
-¢ÈaüĞ5¾?påØ¯¾Òlz÷æNáù8±ëRÈ^·›ÁwîÏ~5¹à<ñÁz\VlÍföln›æãÌÊÕ‚H†U%÷¼"e]ù"sÏhÿˆáŠ;ñ?v^·>6üÆvmÇ5f®n{nóÿµıwÚFògóWlõz÷pœ¦×³Á)Æ²M‚rÓŞË{z‹´€b¡Õi;ôzÿûÍ®¾…e;Ékmfç{fgvÇ½wşÊotü±~Dƒ;Bæ}p¬;ÆqÀå3ŞşhûôÄF8°VÎ=Aä°Åê!N© úW[wxIBwY,¿ZÔßÎrÅÑ0ùÔ²ß¶áÇÏhâX+êb†>tĞ`İ2êÓKêÆ|¹-q¹E<&h\MnÑñH€]4İÌáG/ïIÀso^! sÀân£a“…ã»Õ4Tõ|`êêÌĞô1Ò&ÍCô÷ßÈvÈi£±$!áO‰B2Ÿn¹ã²Ór(”#ìy/Ö:|ûiŠù
-(}?'ŒB½ŠG¨$ö““%áçùw­ÃÓÆ÷Ç%®Ã8Šşeá#X6`š/¬ÃZEôƒ¿ÂÁ9fä6pw0L£w1¹Æ»³Fï»mhü9UÑŠ¯]ø.~V½e_é½ë#!¬\<ò@DÏ"­Ãö|Äü¡uˆŞ)bÁöYã ·&.î·É6Î}_R·­Od…ßú
-Ä]AìYÀ#¼k\¶Qîp—œ½	†"ÛNu½CÍi@„	Àn æ¤	,eaWõø <íuCÌ@‚ñ­KĞšØî+Øu·¯ÈÇlEŒ,Â(&ˆlF¼³–i^ŒtÓDÔìv:]‰¤k1Öå+²&øÔj‘ë!
-cX@FÑuI0ß¤Õ¤ü~ºÎfÍÃS¹ª×•\€R»¡V{sjoÏíÜ#Çî+l]BT±¾2w!4M
-qáâ­2TØ3µïÂ# ±€Bò. i¼'V'±¸¡VÇg©;˜­¦q=š\ÍÌkup¡êRZ`öX‚RWü:è¹Né’£×8¼¯„{Sî§špokÂı\îŸ5á~©	÷¯\¯ê±ÑE_ùŒï1³Çç'÷Ô±[G‡
-¢©ñ®¯XOÉX$ß9ı±­äIÇÚL5Ç£«kã\û#¢ƒ¥«…Î’zÄRd]HµA@ƒ*‡ ÏÙyÒÁz]xYŠ\¸³tÁƒğY„^¥j‡ùØ“°.]RÉW}e'È·@I€Ë…_?YH#H	J$AõZ©âSÅv,x‚¢*UŠŸÑÊŠ¸ş:RK¨—¼Q'ªz1ÓnÔku<ı0‹Œ*ÁPËE¡çˆlÌNºİ‡‡‡–jêXtİµ©µYi,b¿¾h'›{;ÿzÃo™¾íˆÌ­„Dà;dÇ¾bB"òî
-÷Ûíhøaft#ãu©Bó"3Nü×±Ä™ç–XÂC^Ç9(II3u¬s ¯G¿«¹œ”Ç†‚s	QŠQÏ3Áaœ¨wØtƒ4ÿ†o]<'.ZĞ ¯¤ÊƒÍnãwİña3.è,’@l2 ¦ÿ'+&+ã$¢»pˆkÇrôÏßpÄa¿·YEº[ytİ	7|aX°ºÃRRaˆÍ¾›Êò0ßp.¶A
-vRŠí¸`QÜÎúÊÅñÚœú'G§Ñ—9…eë“£‚
-tu¬.b[æœ;’?÷etëk\ìç{4~9«õ”-åLñ‹Ş¹“³@­ïÈÚçÛVRÜ$Ş#p—X¼ÂD!¿1¼,IÒB1ƒ¨bÊ3@\Fräâíäk$…;æÑ¨m`ÙŒpp •geZ˜h±i‡cH×ª®æòCÊ¿g;‹L´íš½ÂêŸ}ÖñÁh4°¼ŸÎÌé`6û¨é5Ã+W	Ú‚ár$ã¸‚É2Mb§¥ŒdKF™	!¤”r,wä,T1<£Pô±mCB?AG·dÉú…	ŠÕÃ¹11³)¼L’=	½˜‹Éş¸"Ù×Höê†>FŞó}©Ëø…6ôPLõ‘¡š†&sÄì‰¹4Æ³¤’ğ¤²·‹ÇvXWÊI¸9Œã½!\·Ïj;œb„x®ÿ<×Gµ°,¸_ŠâÒ˜ÖZÏö!˜íÃPÈiÏJúÎÒƒ2OÖ§¬@}t5ÑtÕ¼ÑfàIº®éuíšKÖŠXwPv—o³9òiÈ²¡ƒ~9¥^S*@vV”4h^ƒ%TyæãÅBB/¶¢K¡8’Oº3¥vÉ¦BŸeBL5ıÛ!éÅB¿®Ç}Ö>Œ¹m‘Úa·ËŞ+€—ˆÿ—9Yµ|µü-&ÚMqæ$Ë‹Ve™XÈ]ãÀ™ÖÖßB€˜6’@Ä ‰ı˜Xñ«Lñ]!â†ÉFµ(ßí,9ÌøºÎ'éeÊp±Ç6/â}_I“ĞüJüÃ¦VÂ>ìgµ¹Gÿj™C°•f/²çÈÇ¡Ş/—ÑPo¦O‘ó)SİÛË‰şMä IlÃsà|O·¿©“qRˆå;â‰qx­?ì¶j•"l’•8uu¦îÖ5<¯RÁY8´¸ÀB	mCğf˜—9’X®ö(ÿHƒ;¨¥‹¥v^ô5.{<:±Íu\5\ÃÁÄ¸R‘ahĞò|Øi¶2­T¦ê~iyÿ¦¢¼SUŞ_&PlßN²Ç8)&¹#CİÜæø±¢®8T|NµëÁrµã™ä±Lî¬‹ÛŞÍh]†:4ÑMÍ³Ú1¥äã N+”|Ù»{8SÁE/ ŸUuèÓÔiÉiÉ£µrÌ
-ş²_ƒ?¾¹&räcM¼ıVš(¶äbš}Œè¦c£{ü|ìòU‡xx¾sÖ|ÆÆ5t/ÑâŞ®#O»\s·N–MP,bcöoõñ×>–ÌĞŒMïˆ[G×³],\ˆé0ïUVÇ¸Y+ì³mr‚—^#dîªšÎ¿°?'ğ¦hü¦çê¥¦—–Ğµk€ê3¥]Y§ÔQSÂï2*JÏèïÆğË5lqVqƒÒÕÉàF}ÖéJ}Õd¨ïo0éQY–-"Ö›ù$X«ûpAYíf4·SßRC6^¬‘¾Ÿ¡˜¨Ú1Åqw@túgG¥U	HT
-ñë5õ(€[d§ı)áô‰}	YÔÄõE7Fù2¥ee*ºe?Ue?Ue1kÙ}Şyk|Dıø!v±ªşV'ÓÕ7½Çé•uòGÖ%Z|›¡¾G‰PSä5ø¨ê8ğÚĞw´å¥A#š9Ñ3¼ğhíxP:ıA—ğlS+•¼k;á½şŞœù§¥®˜®³6dY~^²­5G²$@ÒµïN’{
-Ûa¾‹·'È£ñ1y™Â®P¸ÈBƒáXLn§%*—mèÆ……F¦Øëpúíd4œãqrX”Ï`º{›½70±d¡`»½táüKÊéÌáä™Øg#C½T«lèJ ×˜Ó<Êy%•)e\—;¬ğŒ€næbüŠR.;êR:¡¿}Í{LØh)™Îú±¾zªÍŒÌœ¡¡k·ç¯5-âøÑ1³s±/—ùş©’×^¼à:¨)ñı}"º—‚ßï#FW¼ÇŞ¨ÓáüP•(«7…Ì(n`Lm8¼ÕÕøB
-`$¬Ÿ"½¤ùW•…0ïã1|¥ZvãØ`ÂƒmšCO²?-¨F2©‘E÷üµä(7©]Ò]=÷­:*š·do\@ –Ìs%3ÁÊY:üƒxzŠ~ùÁ³1[
-NlÌI«ê-[ªR”r–™'–ĞûgŠ… 4p]ä’%v‘äƒ!qèÜ»“¶ÁÆÊaHîxxàã" 1ºààöäméÆa¥-R¢>@Ãöì.ĞšBÿ³6#â+‚¸( ]ìâ{Îş‘TKoÓ¡Á²»ôİö›ĞŒg™Ág)]~øYH„@t_<e+b£ùV’»Ï"†Ñ%F¤«¼BÄ÷A:5<ÉÆW‚
-ÈĞÂ\ˆ ğòdÛ†ÃÕñÒN\Ãİ!ùN'f:ün:³¨È™b11œdŒÎòaËG¡‰Qı÷§ÂSÓ†°[FóÌ™Y½õüöJLöñ`CäDß»LôQ€u“¡êÑÀ×°ö(·JÜU›b8*ÅnŠeØ¶-Ş·JNÔ=¬1X#«gÏgêøRÜi¾BÍOŸ>5éáİæ_ø3şbnÄ´v	…¶óÁL¶˜9Œ„6YàËMq`ÚN°Ÿe1.ÏşËPAİÉÀˆöXxî’è¬t³÷Œz­Ã¬òöÒµ‹Qª<a¡È®!?3Œ¥•›_ï÷ûÈÛ¸î¡0±ø LÌüÀñø¢ÕTşÁ”æ+yÇÁ|b9Ø•sä9¯:1Ìßn5C¬rÀ¼)o<NE«?Üı™ÁŸãÉî§­F~îZ¶…¦mıÜÕ1ÏøÜÅ±ç"€„µ¹q‹ 7Ÿş\$/Ç 
-Ä—c‚šƒ›:á–ÆşJà}’:£TèyåWñ)ü+^7üKÆÿ¥VmoÛ6şlÿŠ«PÔvQKiŠ…-;u§Ë’&^â`+0À ¥³Å…5’Næ­ûï;R’%'İ0`ş`Qäñ¹»ç^táQäíàõë6¼†É=â’ÁîµaÊ¸½&?L~îçòÆÀT”ğüİ(.30R
-µÒsİ³5À}åc$ó­âëÄÀÉnÕz‡‡ïûô÷\ñ(‘‚i¸ğá”P·Zær#¤† ²ëÒÄKğ3mu|ººƒO˜¡bf›%Àeyø€J[ãŞ½©@0ƒŠ.ívŒ+aÜí,&Óéñdq3½_ßLæç×W|ı
-1Ça»½!Bñ/;B«;Ã…~[jNä¸?‚y¹Dm&i3f»:¬ÑïŸu{ÃöË(¸6Pşšò¥¬èëÜR¯»Oá-B0uÌ4Ş)ñaVíÔE2[ñõ)­ÔU¼ÜN/ÏÇ“›éÕäó|èø¿j™ù”/òëhÜ_œ^ŸÌ¿Ì¦˜TĞ»}ÕÙzä…G#°8¥çñ’EØíõÇôzIJ’nÆ½‡,·[aŠ†–ÉûøÛ†?Œ¼™ÌL¾ÍÑƒ¨xy†€«lù£ÑŒîægı1Ü?Me°•Ín®á:3%W¨m’0ÑtN¤Â™i³%bRŒ9yLŠ‘ç¶u‚h¬Ê–Å¶a[s‹ÒJİ],NÏoË\àû	"­“`Š>­:– Ò8<§/R<73–Ñ&%ŸÅñô—”6Õ»ÓëÏ%1—’ÅwŞÀFcø³ß€Œš
-´Ëãí9åı½Î™ÖRÅ¿")m¡Õú«çL)-ƒ"*áRÆÛq»Æüx<òV¤’bA¥ªGŞRP½/$›`[˜#©¦pNaî[FÕœrñ©,|±Uì•ˆz·Klä,s²B®¥îhä=­;%İVÜ]ü?Á·æ^TÏ†ÍqµÕ•“oûeÜ={aß¥E–>NëòXt;WÓééíõçé÷ÓËÙÅ­KŠÒ™»ÔJ®ˆJC‚àññÑgÎG?’iPEšÙ–ı]ûíïo4ÏÖõ©oËÈ+”Ğ;åÊÈ[PT³{oßÈïÎO.nç“›yi +bTqDË•T)ÕŠI¤%EjS¹Üà‚r8[îïD\E6ğ/*ö@rX®Z³’z*@êô%*%‚H)dûy÷\¡PuÂ–Çy%Øš	¤.	D*ØÊ‚*öô¹ƒM&dt&áÚ}ıü
- Ø!„9¸ª¦‚!3úšÿĞ)õ†=­ŸüIy[„ÇÌe¤€ÚpúÊ&+)„|¤ ºv3¨PÂHÆèÂÕlç6Hî i\µl‰‚ğÔÈ«ûAmWÅöîª“ß!¹Â,y\qõÍgùÆ€¡†İ(W&=±÷v‚*ˆuÛ·¥ªiñ"İpp-—cd¶02·!ß÷¥8+-Ö›eÊWÑĞªÚœ“ñªˆæÔ“)8ğßc
-‡˜!¥âámkïŠ4©ç©ŠÍï¹gõ2l5=ï%Í¬}Ş©­j%¥ùF{İÍaŞ¸Ä^Ùİ!|x•ÅL'C›K1ÍLİÎWîU#ú·>ä3œ“şç9Î¶&‚Æ\ÓğæìĞTÕÆ~x2·5–+¹V,µÕ°Rˆ åÊ<Rä®l"JFjô}Tœ˜EàX4÷¥2æ«­İØdôµqED´¤äÊ¢Û÷f[¥WëlãKµÖ¹è¿+zä¸1l:ïöNëë¹İ¥Ñ †åÖ©;³ß–Ã™$C\'~Èé\Õ“*Ùän”ˆo¬ò¡[5éf¾ù¶-Úêª_ÕÉÓ|¨ŸÅW<ŠI­ı7¥VmoÛ6şlıŠ›PTvKmŠEb9u¥ËâÆ^â +P@ ¥³ÄF5’Nf¬ûï;R’_šf_æÅ;>wÏ½ğ48­òÊ	8€ÑâœÁ5O”fRÛ½F¿şèWâ	%¦Àd’óGüKK–h.JĞB¤j´?T,y`ÀÃ.Ê‡DTkÉ³\ÃùfÕMzGo~îÓß/pÃ“\LÁµ„ºV¢«B(Z¿Æ:µXO°TÆÆÇ›{øˆ%JVÀt5'Œá#Jeœ{wBBÁ4J:8NŠ^bÚõâÑuâÛèn6¹Í®&7^¾}ƒ”ã‰ã¬¤6üeÕ½æ…:ù±ÖŒ‚cÿ^›³\¯¿L™ÎÉÒ«9*=ªãj¶ ‹~|œ¡>Û—u{'Î«/°àJCóÛÕotÕHM*“ÕıŞ T9“gLá½,!LÙÆ\"ÊÏ.Éhk®İ]4¾ŒÏF·ÑÍèS>xşW%JŸJÊ#^§CgğÓÅä|öyA®—½›e£ÌBwp‚	’5zURhÊ»½ş^Ç¤±¢:êöàtèšsÈÒ¡Ó,Q3ÂÒUÿ\ñÇĞ=¥ÆR÷gë
-]Hê·ĞÕc'…:¼Ÿ]öß»Ds]àğûjãPClz;Sğ¦R,P™:b…Çà‰¹4jSzMYbÊYè²¢pAbºv[åˆÚ˜ìl“¶˜ÈÅ—ªÇW·ql"ø~`A‚D©@ç¸DŸV	 Y	,µ—H^iƒ™Šdµ$Ÿ¥iôH‹1Õ„é†®w1ùÔf,XŠ©w1„CøÛß€œŠ
-4Ë³õµÆƒª˜ROB¦^Ï_–2…ĞéüÓ³®4‚:+ƒ¹H×CÇ¤üxº2I¹ nV¡;/èJˆõcÁÖ.E´v•+JsßD„Q[J›ŸVdàë­z¯A´¡·»Š•V·™pÁŠB÷Yj­”lu{ğÿ$ß¸S³hŸ;>·Ûzİ’|Ûoòîšû”r,ªeÃ©&5Ü¶GÜõn¢èânò)ú5O¯ïlQ4d`Àì¡N.qA@Ôê8|f9ú‰Xm¦™¹‚ZĞßÜĞı}ñJñ2ÛJ}ÓFnm„Ş©VB7¦¬–î¾“¿ß__ßÍF·³ÆAVç¨Ñ>e*ÕêmËxg?á21éåmŒ<?ª±È2šBb¥kAĞJv!˜D¶_RÏŒr[Šµ´jÔ:ŸÅ
-rF#nXšÊiúbĞhnı{á®‘ç%³S3!ôê|33İávh¾6»'pôæÍû×eÊT~brÒ|ëzŸmÜÛŠø¯‚p‡;óÖj¿<sM}tocFƒÖú¡è–S(1õsÔäg9WPI‘I¶Z.$"(±ĞO”‘cXS`jWúŒ ‹JòùJ#p¬LšÑK‘òÅÚl¬Jj{ ;(,KbaĞÍû€.ÿ­†UV®|!³ «Šş»ºX‡;–İşÇaD½2»tG§0_[s—Æá»Æa¸äˆm‰C@Nr¹ıª Ÿì‰ñĞX!]¦M	Âßq[×íÑ&\Ïëaû¬¯ÓAPLç_¥U]oÚ0}n~…i+­–²ÂºÊG3šUJ*H¥=TŠŒã×¶C‡Ô¿›4¤¦¥Ó^\ß{Ï=ç˜vOÅÊª[è¹JgY$k“År¹¿%©¦ÂšÄlEıc4&†IŒ”RÓì…ÉÏ)BhQîrA¤Zk6êßjä¨ñµqæÀÇw4f$–'hx‚.¡ë:‘J.¹LP}3×ÈDY/ÎIŠq5¾EWTP9ºYÎà òÃÕI:\ó’ql¨†âºeEô	ÕCwèy?ÜpâMâ|x„PÄè¹e-¡É3ğ]!È] ´³Hèu­vÄVˆE/œ¥æÎ|Él”˜5§;b‰âxİBB
-jw­ƒ,™ Å¤c'†ªÓ4¸%L¹§í:D³Ó¸Ñm÷:(…lµÂÚ¡;¼ŒÂ`Œ¼px7§0r¯Û®CŞN3¬)vˆ]a´9Qî¥îØ0ïÉ=ãTà€¬ ù9yc÷ÚË²Òç.‰ÂbsÏ( 	µ4È¬P7Ğ¨Ğá‘E&n¡ogŸìLª-\´Â|	IvÒ¶]+C(‹ÂaøBƒ6.ü% –'Ï–ÆHa#)˜aÑ±¥ÈÈ”Ô¦vTItp}ãO‚œ&®@‰YD³Õn¡ ŒVµí»ã¾7*·İ°(oĞÌ¯ì¥´œkš$óØÆMnŸ™e3íñÒîl,S˜‰yî´Rõ#ÖÂÒ8^çj¯]úáØÂşÈŸnüV,üfX)Ç²¢÷ª&RµùI÷³˜%ê¼4ÂŞa2Ç¿½³è·öIäƒâÔĞÛgóÃûlşÇ>5åG»/VŞ`wèÈw/·6·‡;ÕZ¾,!ÿU%Ãy¦CÜÜ†ö&úışíÄÛàBdªW(×° øOÚÛ¡NmÔ)ßäÒÈizå¿¯@ÊıÊüià7H™ö_ÑğïÍÙ¢í¨œÅ7ĞR;>WøÂzVJëà»¯Â3AçÇ   GBMB
+	/**
+	 * Translation strings for es-ES
+	 *
+	 * @var  array
+	 */
+	private $translation_es_es = array (
+  'AUTOMODEON' => 'Modo automÃ¡tico activado',
+  'ERR_NOT_A_JPA_FILE' => 'El archivo no es un archivo JPA',
+  'ERR_CORRUPT_ARCHIVE' => 'El archivo de archivo estÃ¡ corrupto, truncado o faltan partes del archivo',
+  'ERR_INVALID_ARCHIVE_LONG' => 'El archivo de archivo parece estar corrupto o faltan partes del archivo. Si sus copias de seguridad consisten en varios archivos, asegÃºrese de haber descargado todos los archivos de parte del archivo (archivos con el mismo nombre y extensiones .%s, .%s01, .%2$s02â€¦). AsegÃºrese de descargar <em>y</em> cargar archivos usando SFTP, o FTP en modo de transferencia binaria y compruebe que su tamaÃ±o coincide con los tamaÃ±os reportados en la pÃ¡gina Gestionar copias de seguridad de Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'Inicio de sesiÃ³n no vÃ¡lido',
+  'COULDNT_CREATE_DIR' => 'No se pudo crear la carpeta %s',
+  'COULDNT_WRITE_FILE' => 'No se pudo abrir %s para escritura.',
+  'WRONG_FTP_HOST' => 'Host o puerto FTP incorrecto',
+  'WRONG_FTP_USER' => 'Nombre de usuario o contraseÃ±a FTP incorrectos',
+  'WRONG_FTP_PATH1' => 'Directorio inicial FTP incorrecto: el directorio no existe',
+  'FTP_CANT_CREATE_DIR' => 'No se pudo crear el directorio %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'No se pudo encontrar o crear un directorio temporal con permiso de escritura',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'No se pudo encontrar o crear un directorio temporal con permiso de escritura',
+  'FTP_COULDNT_UPLOAD' => 'No se pudo cargar %s',
+  'THINGS_HEADER' => 'Aspectos que debe conocer sobre Akeeba Kickstart',
+  'THINGS_01' => 'Kickstart no es un instalador. Es una herramienta de extracciÃ³n de archivos. El instalador real se incluyÃ³ dentro del archivo en el momento de la copia de seguridad.',
+  'THINGS_03' => 'Kickstart estÃ¡ limitado por la configuraciÃ³n de su servidor. Como tal, es posible que no funcione en absoluto.',
+  'THINGS_04' => 'Debe descargar y cargar sus archivos de archivo usando FTP en modo de transferencia binaria. Cualquier otro mÃ©todo podrÃ­a provocar un archivo de copia de seguridad corrupto y un fallo en la restauraciÃ³n.',
+  'THINGS_05' => 'Los errores de carga del sitio despuÃ©s de la restauraciÃ³n suelen ser causados por directivas de .htaccess o php.ini. Debe comprender que las pÃ¡ginas en blanco, los errores 404 y 500 suelen poder resolverse editando los archivos mencionados anteriormente. No podemos cambiar los archivos de configuraciÃ³n de su servidor por usted. Estos cambios pueden ser especÃ­ficos de su servidor o proveedor y, por lo tanto, peligrosos si se realizan de forma no supervisada y no solicitada.',
+  'THINGS_06' => 'Kickstart sobrescribe archivos sin previo aviso. Si no estÃ¡ seguro de que esto sea aceptable para su caso de uso, deberÃ­a cerrar esta ventana.',
+  'THINGS_07' => 'Intentar restaurar en la URL temporal de un host de cPanel (por ejemplo, http://1.2.3.4/~usuario) provocarÃ¡ un fallo en la restauraciÃ³n y su sitio parecerÃ¡ no funcionar. Esto es normal y se debe a cÃ³mo funcionan su servidor y el software del CMS.',
+  'THINGS_08' => 'Le pedimos amablemente que lea la documentaciÃ³n. Hacerlo probablemente le ahorrarÃ¡ tiempo y frustraciÃ³n.',
+  'THINGS_09' => 'Este texto no implica que se haya detectado un problema. Es un texto estÃ¡ndar que se muestra cada vez que inicia Kickstart.',
+  'CLOSE_LIGHTBOX' => 'Haga clic aquÃ­ o pulse ESC para cerrar este mensaje',
+  'SELECT_ARCHIVE' => 'Seleccionar un archivo de copia de seguridad',
+  'ARCHIVE_FILE' => 'Archivo de archivo:',
+  'SELECT_EXTRACTION' => 'Seleccionar un mÃ©todo de extracciÃ³n',
+  'WRITE_TO_FILES' => 'Escribir en archivos:',
+  'WRITE_HYBRID' => 'HÃ­brido (usar FTP solo si es necesario)',
+  'WRITE_DIRECTLY' => 'Directamente',
+  'WRITE_FTP' => 'Usar FTP para todos los archivos',
+  'WRITE_SFTP' => 'Usar SFTP para todos los archivos',
+  'FTP_HOST' => 'Nombre de host (S)FTP:',
+  'FTP_PORT' => 'Puerto (S)FTP:',
+  'FTP_FTPS' => 'Usar FTP sobre SSL (FTPS)',
+  'FTP_PASSIVE' => 'Usar el modo pasivo de FTP',
+  'FTP_USER' => 'Nombre de usuario (S)FTP:',
+  'FTP_PASS' => 'ContraseÃ±a (S)FTP:',
+  'FTP_DIR' => 'Directorio (S)FTP:',
+  'FTP_TEMPDIR' => 'Directorio temporal:',
+  'FTP_CONNECTION_OK' => 'ConexiÃ³n FTP establecida',
+  'SFTP_CONNECTION_OK' => 'ConexiÃ³n SFTP establecida',
+  'FTP_CONNECTION_FAILURE' => 'La conexiÃ³n FTP fallÃ³',
+  'SFTP_CONNECTION_FAILURE' => 'La conexiÃ³n SFTP fallÃ³',
+  'FTP_TEMPDIR_WRITABLE' => 'El directorio temporal tiene permiso de escritura.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'El directorio temporal no tiene permiso de escritura. Compruebe los permisos.',
+  'FTP_BROWSE' => 'Examinar',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Haga clic en un directorio para navegar en Ã©l. Haga clic en Aceptar para seleccionar ese directorio, o Cancelar para abortar el procedimiento.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'Host o puerto FTP no vÃ¡lido',
+  'FTPBROWSER_ERROR_USERPASS' => 'Nombre de usuario o contraseÃ±a FTP no vÃ¡lidos',
+  'FTPBROWSER_ERROR_NOACCESS' => 'El directorio no existe o no tiene suficientes permisos para acceder a Ã©l',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Lo sentimos, su servidor FTP no admite nuestro explorador de directorios FTP.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;subir un nivel&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Se produjo un error',
+  'SFTP_NO_SSH2' => 'Su servidor web no tiene el mÃ³dulo PHP SSH2, por lo tanto no puede conectarse a servidores SFTP.',
+  'SFTP_NO_FTP_SUPPORT' => 'Su servidor SSH no permite conexiones SFTP',
+  'SFTP_WRONG_USER' => 'Nombre de usuario o contraseÃ±a SFTP incorrectos',
+  'SFTP_WRONG_STARTING_DIR' => 'Debe proporcionar una ruta absoluta vÃ¡lida',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'El directorio no existe o no tiene suficientes permisos para acceder a Ã©l',
+  'SFTP_COULDNT_UPLOAD' => 'No se pudo cargar %s',
+  'SFTP_CANT_CREATE_DIR' => 'No se pudo crear el directorio %s',
+  'UI-ROOT' => '&lt;raÃ­z&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'Explorador de directorios FTP',
+  'BTN_CHECK' => 'Comprobar',
+  'BTN_RESET' => 'Restablecer',
+  'BTN_TESTFTPCON' => 'Probar conexiÃ³n FTP',
+  'BTN_TESTSFTPCON' => 'Probar conexiÃ³n SFTP',
+  'BTN_GOTOSTART' => 'Empezar de nuevo',
+  'BTN_RETRY' => 'Reintentar',
+  'FINE_TUNE' => 'Ajuste fino',
+  'MIN_EXEC_TIME' => 'Tiempo mÃ­nimo de ejecuciÃ³n:',
+  'MAX_EXEC_TIME' => 'Tiempo mÃ¡ximo de ejecuciÃ³n:',
+  'SECONDS_PER_STEP' => 'segundos por paso',
+  'EXTRACT_FILES' => 'Extraer archivos',
+  'BTN_START' => 'Iniciar',
+  'EXTRACTING' => 'Extrayendo',
+  'DO_NOT_CLOSE_EXTRACT' => 'No cierre esta ventana mientras la extracciÃ³n estÃ© en curso',
+  'RESTACLEANUP' => 'RestauraciÃ³n y limpieza',
+  'BTN_RUNINSTALLER' => 'Ejecutar el instalador',
+  'BTN_CLEANUP' => 'Limpiar',
+  'BTN_SITEFE' => 'Visitar la parte frontal de su sitio',
+  'BTN_SITEBE' => 'Visitar la parte trasera de su sitio',
+  'WARNINGS' => 'Advertencias de extracciÃ³n',
+  'ERROR_OCCURED' => 'Se produjo un error',
+  'STEALTH_MODE' => 'Modo sigiloso',
+  'STEALTH_URL' => 'Archivo HTML que se mostrarÃ¡ a los visitantes web',
+  'ERR_NOT_A_JPS_FILE' => 'El archivo no es un archivo JPS',
+  'ERR_INVALID_JPS_PASSWORD' => 'La contraseÃ±a que proporcionÃ³ es incorrecta o el archivo estÃ¡ corrupto',
+  'JPS_PASSWORD' => 'ContraseÃ±a del archivo (para archivos JPS)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'No se puede abrir el archivo %s para lectura. Esta es la parte nÂº %d de su archivo de copia de seguridad, que consiste en varios archivos (archivos con el mismo nombre y extensiones .%s, .%s01, .%4$s02â€¦). AsegÃºrese de tener todos estos archivos en la misma carpeta que Kickstart.',
+  'INVALID_FILE_HEADER' => 'Encabezado no vÃ¡lido en el archivo de archivo, parte %s, desplazamiento %s. AsegÃºrese de descargar <em>y</em> cargar archivos de copia de seguridad usando SFTP, o FTP en modo de transferencia binaria y compruebe que su tamaÃ±o coincide con los tamaÃ±os reportados en la pÃ¡gina Gestionar copias de seguridad de Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'Encabezado no vÃ¡lido en el archivo de archivo, parte %s, desplazamiento %s. Su archivo de copia de seguridad consiste en varios archivos (archivos con el mismo nombre y extensiones .%s, .%s01, .%4$s02â€¦). Algunos archivos pueden faltar, o estar corruptos o truncados. NecesitarÃ¡ que todos estos archivos estÃ©n presentes en el mismo directorio. AsegÃºrese de descargar <em>y</em> cargar archivos de copia de seguridad usando SFTP, o FTP en modo de transferencia binaria y compruebe que su tamaÃ±o coincide con los tamaÃ±os reportados en la pÃ¡gina Gestionar copias de seguridad de Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'Â¡Hay una versiÃ³n actualizada de Akeeba Kickstart (<span id=update-version>desconocida</span>) disponible!',
+  'UPDATE_NOTICE' => 'Se le recomienda utilizar siempre la Ãºltima versiÃ³n disponible de Akeeba Kickstart. Las versiones anteriores pueden tener errores y no recibirÃ¡n soporte.',
+  'UPDATE_DLNOW' => 'Descargar ahora',
+  'UPDATE_MOREINFO' => 'MÃ¡s informaciÃ³n',
+  'NEEDSOMEHELPKS' => 'Â¿Necesita ayuda para usar esta herramienta? Lea esto primero:',
+  'QUICKSTART' => 'GuÃ­a de inicio rÃ¡pido',
+  'CANTGETITTOWORK' => 'Â¿No consigue que funcione? Â¡Haga clic aquÃ­!',
+  'NOARCHIVESCLICKHERE' => 'No se han detectado archivos. Haga clic aquÃ­ para obtener instrucciones de soluciÃ³n de problemas.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Â¿Algo no funciona despuÃ©s de la restauraciÃ³n? Haga clic aquÃ­ para obtener instrucciones de soluciÃ³n de problemas.',
+  'IGNORE_MOST_ERRORS' => 'Ignorar la mayorÃ­a de los errores',
+  'TIME_SETTINGS_HELP' => 'Aumente el mÃ­nimo a 3 si obtiene errores de AJAX. Aumente el mÃ¡ximo a 10 para una extracciÃ³n mÃ¡s rÃ¡pida, disminÃºyalo a 5 si obtiene errores de AJAX. Pruebe con mÃ­nimo 5, mÃ¡ximo 1 (no es un error tipogrÃ¡fico) si sigue obteniendo errores de AJAX.',
+  'STEALTH_MODE_HELP' => 'Cuando estÃ¡ activado, solo los visitantes desde su direcciÃ³n IP podrÃ¡n ver el sitio hasta que se complete la restauraciÃ³n. Todos los demÃ¡s serÃ¡n redirigidos a la URL anterior y solo verÃ¡n esa pÃ¡gina. Su servidor debe ver la IP real del visitante (esto estÃ¡ controlado por su proveedor de alojamiento, no por usted ni por nosotros).',
+  'RENAME_FILES_HELP' => 'Renombra los archivos .htaccess, web.config, php.ini y .user.ini contenidos en el archivo durante la extracciÃ³n. Los archivos se renombran con una extensiÃ³n .bak. Los nombres de archivo se restauran cuando hace clic en Limpiar.',
+  'RESTORE_PERMISSIONS_HELP' => 'Aplica los permisos de archivo (pero NO la propiedad del archivo) que se almacenaron en el momento de la copia de seguridad. Solo funciona con archivos JPA y JPS. No funciona en Windows (PHP no ofrece esta funcionalidad).',
+  'EXTRACT_LIST' => 'Archivos a extraer',
+  'EXTRACT_LIST_HELP' => 'Introduzca una ruta de archivo como <code>images/cat.png</code> o un patrÃ³n de shell como <code>images/*.png</code> en cada lÃ­nea. Solo los archivos que coincidan con esta lista se escribirÃ¡n en el disco. DÃ©jelo vacÃ­o para extraer todo (predeterminado).',
+  'AKS3_IMPORT' => 'Importar desde Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Conectar a Amazon S3',
+  'AKS3_ACCESS' => 'Clave de acceso',
+  'AKS3_SECRET' => 'Clave secreta',
+  'AKS3_CONNECT' => 'Conectar a Amazon S3',
+  'AKS3_CANCEL' => 'Cancelar importaciÃ³n',
+  'AKS3_TITLE_STEP2' => 'Seleccionar su bucket de Amazon S3',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'Mostrar contenido',
+  'AKS3_TITLE_STEP3' => 'Seleccionar archivo para importar',
+  'AKS3_FOLDERS' => 'Carpetas',
+  'AKS3_FILES' => 'Archivos de archivo',
+  'AKS3_TITLE_STEP4' => 'Importando...',
+  'AKS3_DO_NOT_CLOSE' => 'Por favor, no cierre esta ventana mientras se estÃ¡n importando sus archivos de copia de seguridad',
+  'AKS3_TITLE_STEP5' => 'La importaciÃ³n se ha completado',
+  'AKS3_BTN_RELOAD' => 'Recargar Kickstart',
+  'WRONG_FTP_PATH2' => 'Directorio inicial FTP incorrecto: el directorio no corresponde con la raÃ­z web de su sitio',
+  'ARCHIVE_DIRECTORY' => 'Directorio de archivos:',
+  'RELOAD_ARCHIVES' => 'Recargar',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'Explorador de directorios SFTP',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'No se pudo abrir el archivo de parte del archivo %s para lectura. Compruebe que el archivo existe, es legible por el servidor web y no se encuentra en un directorio inaccesible debido a chroot, restricciones open_basedir o cualquier otra restricciÃ³n impuesta por su proveedor de alojamiento.',
+  'RENAME_FILES' => 'Renombrar archivos de configuraciÃ³n del servidor antes de la extracciÃ³n',
+  'BTN_SHOW_FINE_TUNE' => 'Mostrar opciones avanzadas (para expertos)',
+  'RESTORE_PERMISSIONS' => 'Restaurar permisos de archivo',
+  'ZAPBEFORE' => 'Eliminar todo antes de la extracciÃ³n',
+  'ZAPBEFORE_HELP' => 'Intenta eliminar todos los archivos y carpetas existentes bajo el directorio donde se almacena Kickstart antes de extraer el archivo de copia de seguridad. NO tiene en cuenta quÃ© archivos y carpetas existen en el archivo de copia de seguridad. Los archivos y carpetas eliminados por esta funciÃ³n NO SE PUEDEN recuperar. <strong>Â¡ADVERTENCIA! ESTO PUEDE ELIMINAR ARCHIVOS Y CARPETAS QUE NO PERTENECEN A SU SITIO. USE CON EXTREMA PRECAUCIÃ“N. AL ACTIVAR ESTA FUNCIÃ“N USTED Asume TODA LA RESPONSABILIDAD.</strong>',
+);
+
+	/**
+	 * Translation strings for it-IT
+	 *
+	 * @var  array
+	 */
+	private $translation_it_it = array (
+  'AUTOMODEON' => 'ModalitÃ  automatica attivata',
+  'ERR_NOT_A_JPA_FILE' => 'Il file non Ã¨ un archivio JPA',
+  'ERR_CORRUPT_ARCHIVE' => 'Il file di archivio Ã¨ corrotto, troncato o mancano parti dell\'archivio',
+  'ERR_INVALID_ARCHIVE_LONG' => 'Il file di archivio sembra essere corrotto, o mancano parti dell\'archivio. Se i tuoi backup sono composti da piÃ¹ file, assicurati di aver scaricato tutti i file delle parti dell\'archivio (file con lo stesso nome ed estensioni .%s, .%s01, .%2$s02â€¦). Assicurati di scaricare <em>e</em> caricare i file usando SFTP, o FTP in modalitÃ  di trasferimento Binario e verifica che le loro dimensioni corrispondano a quelle riportate nella pagina Gestione Backup di Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'Accesso non valido',
+  'COULDNT_CREATE_DIR' => 'Impossibile creare la cartella %s',
+  'COULDNT_WRITE_FILE' => 'Impossibile aprire %s per la scrittura.',
+  'WRONG_FTP_HOST' => 'Host o porta FTP errati',
+  'WRONG_FTP_USER' => 'Nome utente o password FTP errati',
+  'WRONG_FTP_PATH1' => 'Directory iniziale FTP errata - la directory non esiste',
+  'FTP_CANT_CREATE_DIR' => 'Impossibile creare la directory %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'Impossibile trovare o creare una directory temporanea scrivibile',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'Impossibile trovare o creare una directory temporanea scrivibile',
+  'FTP_COULDNT_UPLOAD' => 'Impossibile caricare %s',
+  'THINGS_HEADER' => 'Cose che dovresti sapere su Akeeba Kickstart',
+  'THINGS_01' => 'Kickstart non Ã¨ un programma di installazione. Ãˆ uno strumento di estrazione degli archivi. Il programma di installazione effettivo Ã¨ stato inserito nel file di archivio al momento del backup.',
+  'THINGS_03' => 'Kickstart Ã¨ limitato dalla configurazione del tuo server. Come tale, potrebbe non funzionare affatto.',
+  'THINGS_04' => 'Dovresti scaricare e caricare i file di archivio usando FTP in modalitÃ  di trasferimento Binario. Qualsiasi altro metodo potrebbe portare a un archivio di backup corrotto e al fallimento del ripristino.',
+  'THINGS_05' => 'Gli errori di caricamento del sito dopo il ripristino sono generalmente causati da direttive .htaccess o php.ini. Dovresti capire che le pagine bianche, gli errori 404 e 500 possono di solito essere risolti modificando i suddetti file. Non siamo in grado di modificare i file di configurazione del tuo server per te. Queste modifiche possono essere specifiche del tuo server o host e quindi pericolose se eseguite in modo non supervisionato e non richiesto.',
+  'THINGS_06' => 'Kickstart sovrascrive i file senza preavviso. Se non sei sicuro che questo sia accettabile per il tuo caso d\'uso, dovresti chiudere questa finestra.',
+  'THINGS_07' => 'Tentare di ripristinare sull\'URL temporaneo di un host cPanel (es. http://1.2.3.4/~username) porterÃ  al fallimento del ripristino e il tuo sito sembrerÃ  non funzionare. Questo Ã¨ normale ed Ã¨ semplicemente il modo in cui il tuo server e il software CMS funzionano.',
+  'THINGS_08' => 'Ti chiediamo gentilmente di leggere la documentazione. Farlo probabilmente ti farÃ  risparmiare tempo e frustrazione.',
+  'THINGS_09' => 'Questo testo non implica che sia stato rilevato un problema. Ãˆ un testo standard visualizzato ogni volta che avvii Kickstart.',
+  'CLOSE_LIGHTBOX' => 'Clicca qui o premi ESC per chiudere questo messaggio',
+  'SELECT_ARCHIVE' => 'Seleziona un archivio di backup',
+  'ARCHIVE_FILE' => 'File di archivio:',
+  'SELECT_EXTRACTION' => 'Seleziona un metodo di estrazione',
+  'WRITE_TO_FILES' => 'Scrittura su file:',
+  'WRITE_HYBRID' => 'Ibrido (usa FTP solo se necessario)',
+  'WRITE_DIRECTLY' => 'Direttamente',
+  'WRITE_FTP' => 'Usa FTP per tutti i file',
+  'WRITE_SFTP' => 'Usa SFTP per tutti i file',
+  'FTP_HOST' => 'Nome host (S)FTP:',
+  'FTP_PORT' => 'Porta (S)FTP:',
+  'FTP_FTPS' => 'Usa FTP su SSL (FTPS)',
+  'FTP_PASSIVE' => 'Usa la modalitÃ  passiva FTP',
+  'FTP_USER' => 'Nome utente (S)FTP:',
+  'FTP_PASS' => 'Password (S)FTP:',
+  'FTP_DIR' => 'Directory (S)FTP:',
+  'FTP_TEMPDIR' => 'Directory temporanea:',
+  'FTP_CONNECTION_OK' => 'Connessione FTP stabilita',
+  'SFTP_CONNECTION_OK' => 'Connessione SFTP stabilita',
+  'FTP_CONNECTION_FAILURE' => 'La connessione FTP Ã¨ fallita',
+  'SFTP_CONNECTION_FAILURE' => 'La connessione SFTP Ã¨ fallita',
+  'FTP_TEMPDIR_WRITABLE' => 'La directory temporanea Ã¨ scrivibile.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'La directory temporanea non Ã¨ scrivibile. Verifica le autorizzazioni.',
+  'FTP_BROWSE' => 'Sfoglia',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Clicca su una directory per navigare al suo interno. Clicca su OK per selezionare quella directory, Annulla per interrompere la procedura.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'Host o porta FTP non validi',
+  'FTPBROWSER_ERROR_USERPASS' => 'Nome utente o password FTP non validi',
+  'FTPBROWSER_ERROR_NOACCESS' => 'La directory non esiste o non hai autorizzazioni sufficienti per accedervi',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Spiacenti, il tuo server FTP non supporta il nostro browser di directory FTP.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;su di un livello&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Si Ã¨ verificato un errore',
+  'SFTP_NO_SSH2' => 'Il tuo server web non dispone del modulo PHP SSH2, quindi non puÃ² connettersi ai server SFTP.',
+  'SFTP_NO_FTP_SUPPORT' => 'Il tuo server SSH non consente connessioni SFTP',
+  'SFTP_WRONG_USER' => 'Nome utente o password SFTP errati',
+  'SFTP_WRONG_STARTING_DIR' => 'Devi fornire un percorso assoluto valido',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'La directory non esiste o non hai autorizzazioni sufficienti per accedervi',
+  'SFTP_COULDNT_UPLOAD' => 'Impossibile caricare %s',
+  'SFTP_CANT_CREATE_DIR' => 'Impossibile creare la directory %s',
+  'UI-ROOT' => '&lt;root&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'Browser di directory FTP',
+  'BTN_CHECK' => 'Verifica',
+  'BTN_RESET' => 'Reimposta',
+  'BTN_TESTFTPCON' => 'Testa la connessione FTP',
+  'BTN_TESTSFTPCON' => 'Testa la connessione SFTP',
+  'BTN_GOTOSTART' => 'Ricomincia',
+  'BTN_RETRY' => 'Riprova',
+  'FINE_TUNE' => 'Regola in dettaglio',
+  'MIN_EXEC_TIME' => 'Tempo minimo di esecuzione:',
+  'MAX_EXEC_TIME' => 'Tempo massimo di esecuzione:',
+  'SECONDS_PER_STEP' => 'secondi per passaggio',
+  'EXTRACT_FILES' => 'Estrai file',
+  'BTN_START' => 'Avvia',
+  'EXTRACTING' => 'Estrazione in corso',
+  'DO_NOT_CLOSE_EXTRACT' => 'Non chiudere questa finestra mentre l\'estrazione Ã¨ in corso',
+  'RESTACLEANUP' => 'Ripristino e pulizia',
+  'BTN_RUNINSTALLER' => 'Esegui il programma di installazione',
+  'BTN_CLEANUP' => 'Pulisci',
+  'BTN_SITEFE' => 'Visita il frontend del tuo sito',
+  'BTN_SITEBE' => 'Visita il backend del tuo sito',
+  'WARNINGS' => 'Avvisi di estrazione',
+  'ERROR_OCCURED' => 'Si Ã¨ verificato un errore',
+  'STEALTH_MODE' => 'ModalitÃ  stealth',
+  'STEALTH_URL' => 'File HTML da mostrare ai visitatori web',
+  'ERR_NOT_A_JPS_FILE' => 'Il file non Ã¨ un archivio JPS',
+  'ERR_INVALID_JPS_PASSWORD' => 'La password inserita Ã¨ errata o l\'archivio Ã¨ corrotto',
+  'JPS_PASSWORD' => 'Password dell\'archivio (per file JPS)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'Impossibile aprire il file %s per la lettura. Questa Ã¨ la parte #%d del tuo archivio di backup che Ã¨ composto da piÃ¹ file (file con lo stesso nome ed estensioni .%s, .%s01, .%4$s02â€¦). Assicurati di avere tutti questi file nella stessa cartella di Kickstart.',
+  'INVALID_FILE_HEADER' => 'Intestazione non valida nel file di archivio, parte %s, offset %s. Assicurati di scaricare <em>e</em> caricare i file di archivio di backup usando SFTP, o FTP in modalitÃ  di trasferimento Binario e verifica che le loro dimensioni corrispondano a quelle riportate nella pagina Gestione Backup di Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'Intestazione non valida nel file di archivio, parte %s, offset %s. Il tuo archivio di backup Ã¨ composto da piÃ¹ file (file con lo stesso nome ed estensioni .%s, .%s01, .%4$s02â€¦). Alcuni file potrebbero mancare, oppure sono corrotti o troncati. Avrai bisogno di tutti questi file presenti nella stessa directory. Assicurati di scaricare <em>e</em> caricare i file di archivio di backup usando SFTP, o FTP in modalitÃ  di trasferimento Binario e verifica che le loro dimensioni corrispondano a quelle riportate nella pagina Gestione Backup di Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'Ãˆ disponibile una versione aggiornata di Akeeba Kickstart (<span id=update-version>unknown</span>)!',
+  'UPDATE_NOTICE' => 'Si consiglia di utilizzare sempre l\'ultima versione disponibile di Akeeba Kickstart. Le versioni precedenti potrebbero essere soggette a bug e non saranno supportate.',
+  'UPDATE_DLNOW' => 'Scarica ora',
+  'UPDATE_MOREINFO' => 'Maggiori informazioni',
+  'NEEDSOMEHELPKS' => 'Hai bisogno di aiuto per usare questo strumento? Leggi prima questo:',
+  'QUICKSTART' => 'Guida rapida',
+  'CANTGETITTOWORK' => 'Non riesci a farlo funzionare? Clicca qui!',
+  'NOARCHIVESCLICKHERE' => 'Nessun archivio rilevato. Clicca qui per le istruzioni di risoluzione dei problemi.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Qualcosa non funziona dopo il ripristino? Clicca qui per le istruzioni di risoluzione dei problemi.',
+  'IGNORE_MOST_ERRORS' => 'Ignora la maggior parte degli errori',
+  'TIME_SETTINGS_HELP' => 'Aumenta il minimo a 3 se ricevi errori AJAX. Aumenta il massimo a 10 per un\'estrazione piÃ¹ veloce, riduci a 5 se ricevi errori AJAX. Prova minimo 5, massimo 1 (non Ã¨ un errore di battitura!) se continui a ricevere errori AJAX.',
+  'STEALTH_MODE_HELP' => 'Quando attivata, solo i visitatori dal tuo indirizzo IP potranno vedere il sito fino al completamento del ripristino. Tutti gli altri saranno reindirizzati e vedranno solo la URL sopra. Il tuo server deve vedere l\'IP reale del visitatore (questo Ã¨ controllato dal tuo host, non da te o da noi).',
+  'RENAME_FILES_HELP' => 'Rinomina .htaccess, web.config, php.ini e .user.ini contenuti nell\'archivio durante l\'estrazione. I file vengono rinominati con un\'estensione .bak. I nomi dei file vengono ripristinati quando clicchi su Pulisci.',
+  'RESTORE_PERMISSIONS_HELP' => 'Applica le autorizzazioni dei file (ma NON la proprietÃ  dei file) che sono state memorizzate al momento del backup. Funziona solo con archivi JPA e JPS. Non funziona su Windows (PHP non offre questa funzionalitÃ ).',
+  'EXTRACT_LIST' => 'File da estrarre',
+  'EXTRACT_LIST_HELP' => 'Inserisci un percorso di file come <code>images/cat.png</code> o un modello shell come <code>images/*.png</code> su ogni riga. Solo i file corrispondenti a questo elenco verranno scritti su disco. Lasciare vuoto per estrarre tutto (predefinito).',
+  'AKS3_IMPORT' => 'Importa da Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Connetti ad Amazon S3',
+  'AKS3_ACCESS' => 'Chiave di accesso',
+  'AKS3_SECRET' => 'Chiave segreta',
+  'AKS3_CONNECT' => 'Connetti ad Amazon S3',
+  'AKS3_CANCEL' => 'Annulla importazione',
+  'AKS3_TITLE_STEP2' => 'Seleziona il tuo bucket Amazon S3',
+  'AKS3_BUCKET' => 'Bucket',
+  'AKS3_LISTCONTENTS' => 'Elenca contenuti',
+  'AKS3_TITLE_STEP3' => 'Seleziona l\'archivio da importare',
+  'AKS3_FOLDERS' => 'Cartelle',
+  'AKS3_FILES' => 'File di archivio',
+  'AKS3_TITLE_STEP4' => 'Importazione in corso...',
+  'AKS3_DO_NOT_CLOSE' => 'Non chiudere questa finestra mentre i tuoi archivi di backup vengono importati',
+  'AKS3_TITLE_STEP5' => 'L\'importazione Ã¨ completata',
+  'AKS3_BTN_RELOAD' => 'Ricarica Kickstart',
+  'WRONG_FTP_PATH2' => 'Directory iniziale FTP errata - la directory non corrisponde alla radice web del tuo sito',
+  'ARCHIVE_DIRECTORY' => 'Directory degli archivi:',
+  'RELOAD_ARCHIVES' => 'Ricarica',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'Browser di directory SFTP',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'Impossibile aprire il file della parte dell\'archivio %s per la lettura. Verifica che il file esista, sia leggibile dal server web e non si trovi in una directory resa irraggiungibile da chroot, restrizioni open_basedir o qualsiasi altra restrizione impostata dal tuo host.',
+  'RENAME_FILES' => 'Rinomina i file di configurazione del server prima dell\'estrazione',
+  'BTN_SHOW_FINE_TUNE' => 'Mostra opzioni avanzate (per esperti)',
+  'RESTORE_PERMISSIONS' => 'Ripristina le autorizzazioni dei file',
+  'ZAPBEFORE' => 'Cancella tutto prima dell\'estrazione',
+  'ZAPBEFORE_HELP' => 'Tenta di eliminare tutti i file e le cartelle esistenti sotto la directory dove Ã¨ memorizzato Kickstart prima di estrarre l\'archivio di backup. NON tiene conto di quali file e cartelle esistono nell\'archivio di backup. I file e le cartelle eliminati da questa funzionalitÃ  NON possono essere recuperati. <strong>ATTENZIONE! QUESTO POTREBBE ELIMINARE FILE E CARTELLE CHE NON APPARTENGONO AL TUO SITO. USARE CON ESTREMA CAUTELA. ATTIVANDO QUESTA FUNZIONALITÃ€ SI ASSUME OGNI RESPONSABILITÃ€ E OBBLIGAZIONE.</strong>',
+);
+
+	/**
+	 * Translation strings for pt-PT
+	 *
+	 * @var  array
+	 */
+	private $translation_pt_pt = array (
+  'AUTOMODEON' => 'Modo automÃ¡tico ativado',
+  'ERR_NOT_A_JPA_FILE' => 'O ficheiro nÃ£o Ã© um arquivo JPA',
+  'ERR_CORRUPT_ARCHIVE' => 'O ficheiro de arquivo estÃ¡ corrompido, truncado ou estÃ£o faltando partes do arquivo',
+  'ERR_INVALID_ARCHIVE_LONG' => 'O ficheiro de arquivo parece estar corrompido, ou estÃ£o faltando partes do arquivo. Se as suas cÃ³pias de seguranÃ§a consistem em mÃºltiplos ficheiros, por favor certifique-se de que descarregou todos os ficheiros de partes do arquivo (ficheiros com o mesmo nome e extensÃµes .%s, .%s01, .%2$s02â€¦). Por favor certifique-se de descarregar <em>e</em> enviar ficheiros usando SFTP, ou FTP no modo de transferÃªncia BinÃ¡ria e verifique que o tamanho dos ficheiros corresponde aos tamanhos reportados na pÃ¡gina Gerir CÃ³pias de SeguranÃ§a do Akeeba Backup / Akeeba Solo.',
+  'ERR_INVALID_LOGIN' => 'Login invÃ¡lido',
+  'COULDNT_CREATE_DIR' => 'NÃ£o foi possÃ­vel criar a pasta %s',
+  'COULDNT_WRITE_FILE' => 'NÃ£o foi possÃ­vel abrir %s para escrita.',
+  'WRONG_FTP_HOST' => 'Nome ou porta do servidor FTP incorretos',
+  'WRONG_FTP_USER' => 'Nome de utilizador ou palavra-passe FTP incorretos',
+  'WRONG_FTP_PATH1' => 'DiretÃ³rio inicial FTP incorreto â€” o diretÃ³rio nÃ£o existe',
+  'FTP_CANT_CREATE_DIR' => 'NÃ£o foi possÃ­vel criar o diretÃ³rio %s',
+  'FTP_TEMPDIR_NOT_WRITABLE' => 'NÃ£o foi possÃ­vel encontrar ou criar um diretÃ³rio temporÃ¡rio com permissÃ£o de escrita',
+  'SFTP_TEMPDIR_NOT_WRITABLE' => 'NÃ£o foi possÃ­vel encontrar ou criar um diretÃ³rio temporÃ¡rio com permissÃ£o de escrita',
+  'FTP_COULDNT_UPLOAD' => 'NÃ£o foi possÃ­vel enviar %s',
+  'THINGS_HEADER' => 'Coisas que deve saber sobre o Akeeba Kickstart',
+  'THINGS_01' => 'O Kickstart nÃ£o Ã© um instalador. Ã‰ uma ferramenta de extraÃ§Ã£o de arquivos. O instalador propriamente dito foi colocado dentro do ficheiro de arquivo no momento da cÃ³pia de seguranÃ§a.',
+  'THINGS_03' => 'O Kickstart estÃ¡ limitado pela configuraÃ§Ã£o do seu servidor. Como tal, pode nÃ£o funcionar de todo.',
+  'THINGS_04' => 'Deve descarregar e enviar os seus ficheiros de arquivo usando FTP no modo de transferÃªncia BinÃ¡ria. Qualquer outro mÃ©todo poderÃ¡ levar a um arquivo de cÃ³pia de seguranÃ§a corrompido e falha na restauraÃ§Ã£o.',
+  'THINGS_05' => 'Erros ao carregar o site apÃ³s a restauraÃ§Ã£o sÃ£o geralmente causados por diretivas do .htaccess ou php.ini. Deve entender que pÃ¡ginas em branco, erros 404 e 500 podem geralmente ser contornados editando os ficheiros acima mencionados. NÃ£o podemos alterar os ficheiros de configuraÃ§Ã£o do seu servidor por si. Estas alteraÃ§Ãµes podem ser especÃ­ficas do seu servidor ou anfitriÃ£o e, portanto, perigosas se realizadas de forma nÃ£o supervisionada e nÃ£o solicitada.',
+  'THINGS_06' => 'O Kickstart substitui ficheiros sem aviso. Se nÃ£o tiver a certeza de que isto Ã© aceitÃ¡vel para o seu caso de utilizaÃ§Ã£o, deverÃ¡ fechar esta janela.',
+  'THINGS_07' => 'Tentar restaurar para a URL temporÃ¡ria de um alojamento cPanel (por exemplo, http://1.2.3.4/~username) irÃ¡ levar a uma falha na restauraÃ§Ã£o e o seu site parecerÃ¡ nÃ£o estar a funcionar. Isto Ã© normal e Ã© assim que o seu servidor e o software CMS funcionam.',
+  'THINGS_08' => 'Pedimos-lhe gentilmente que leia a documentaÃ§Ã£o. FazÃª-lo provavelmente pouparÃ¡ tempo e frustraÃ§Ã£o.',
+  'THINGS_09' => 'Este texto nÃ£o implica que exista um problema detetado. Ã‰ um texto padrÃ£o exibido sempre que lanÃ§a o Kickstart.',
+  'CLOSE_LIGHTBOX' => 'Clique aqui ou prima ESC para fechar esta mensagem',
+  'SELECT_ARCHIVE' => 'Selecionar um arquivo de cÃ³pia de seguranÃ§a',
+  'ARCHIVE_FILE' => 'Ficheiro de arquivo:',
+  'SELECT_EXTRACTION' => 'Selecionar um mÃ©todo de extraÃ§Ã£o',
+  'WRITE_TO_FILES' => 'Escrever em ficheiros:',
+  'WRITE_HYBRID' => 'HÃ­brido (usar FTP apenas se necessÃ¡rio)',
+  'WRITE_DIRECTLY' => 'Diretamente',
+  'WRITE_FTP' => 'Usar FTP para todos os ficheiros',
+  'WRITE_SFTP' => 'Usar SFTP para todos os ficheiros',
+  'FTP_HOST' => 'Nome do servidor (S)FTP:',
+  'FTP_PORT' => 'Porta (S)FTP:',
+  'FTP_FTPS' => 'Usar FTP sobre SSL (FTPS)',
+  'FTP_PASSIVE' => 'Usar Modo Passivo do FTP',
+  'FTP_USER' => 'Nome de utilizador (S)FTP:',
+  'FTP_PASS' => 'Palavra-passe (S)FTP:',
+  'FTP_DIR' => 'DiretÃ³rio (S)FTP:',
+  'FTP_TEMPDIR' => 'DiretÃ³rio temporÃ¡rio:',
+  'FTP_CONNECTION_OK' => 'LigaÃ§Ã£o FTP estabelecida',
+  'SFTP_CONNECTION_OK' => 'LigaÃ§Ã£o SFTP estabelecida',
+  'FTP_CONNECTION_FAILURE' => 'A ligaÃ§Ã£o FTP falhou',
+  'SFTP_CONNECTION_FAILURE' => 'A ligaÃ§Ã£o SFTP falhou',
+  'FTP_TEMPDIR_WRITABLE' => 'O diretÃ³rio temporÃ¡rio tem permissÃ£o de escrita.',
+  'FTP_TEMPDIR_UNWRITABLE' => 'O diretÃ³rio temporÃ¡rio nÃ£o tem permissÃ£o de escrita. Por favor verifique as permissÃµes.',
+  'FTP_BROWSE' => 'Navegar',
+  'FTPBROWSER_LBL_INSTRUCTIONS' => 'Clique num diretÃ³rio para navegar nele. Clique em OK para selecionar esse diretÃ³rio, Cancelar para abortar o procedimento.',
+  'FTPBROWSER_ERROR_HOSTNAME' => 'Nome ou porta do servidor FTP invÃ¡lidos',
+  'FTPBROWSER_ERROR_USERPASS' => 'Nome de utilizador ou palavra-passe FTP invÃ¡lidos',
+  'FTPBROWSER_ERROR_NOACCESS' => 'O diretÃ³rio nÃ£o existe ou nÃ£o tem permissÃµes suficientes para aceder a ele',
+  'FTPBROWSER_ERROR_UNSUPPORTED' => 'Lamentamos, mas o seu servidor FTP nÃ£o suporta o nosso navegador de diretÃ³rios FTP.',
+  'FTPBROWSER_LBL_GOPARENT' => '&lt;subir um nÃ­vel&gt;',
+  'FTPBROWSER_LBL_ERROR' => 'Ocorreu um erro',
+  'SFTP_NO_SSH2' => 'O seu servidor web nÃ£o tem o mÃ³dulo PHP SSH2, por conseguinte nÃ£o consegue ligar a servidores SFTP.',
+  'SFTP_NO_FTP_SUPPORT' => 'O seu servidor SSH nÃ£o permite ligaÃ§Ãµes SFTP',
+  'SFTP_WRONG_USER' => 'Nome de utilizador ou palavra-passe SFTP incorretos',
+  'SFTP_WRONG_STARTING_DIR' => 'Deve fornecer um caminho absoluto vÃ¡lido',
+  'SFTPBROWSER_ERROR_NOACCESS' => 'O diretÃ³rio nÃ£o existe ou nÃ£o tem permissÃµes suficientes para aceder a ele',
+  'SFTP_COULDNT_UPLOAD' => 'NÃ£o foi possÃ­vel enviar %s',
+  'SFTP_CANT_CREATE_DIR' => 'NÃ£o foi possÃ­vel criar o diretÃ³rio %s',
+  'UI-ROOT' => '&lt;raiz&gt;',
+  'CONFIG_UI_FTPBROWSER_TITLE' => 'Navegador de DiretÃ³rios FTP',
+  'BTN_CHECK' => 'Verificar',
+  'BTN_RESET' => 'Repor',
+  'BTN_TESTFTPCON' => 'Testar LigaÃ§Ã£o FTP',
+  'BTN_TESTSFTPCON' => 'Testar LigaÃ§Ã£o SFTP',
+  'BTN_GOTOSTART' => 'RecomeÃ§ar',
+  'BTN_RETRY' => 'Tentar novamente',
+  'FINE_TUNE' => 'Ajuste fino',
+  'MIN_EXEC_TIME' => 'Tempo mÃ­nimo de execuÃ§Ã£o:',
+  'MAX_EXEC_TIME' => 'Tempo mÃ¡ximo de execuÃ§Ã£o:',
+  'SECONDS_PER_STEP' => 'segundos por passo',
+  'EXTRACT_FILES' => 'Extrair ficheiros',
+  'BTN_START' => 'Iniciar',
+  'EXTRACTING' => 'A extrair',
+  'DO_NOT_CLOSE_EXTRACT' => 'NÃ£o feche esta janela enquanto a extraÃ§Ã£o estiver em curso',
+  'RESTACLEANUP' => 'RestauraÃ§Ã£o e Limpeza',
+  'BTN_RUNINSTALLER' => 'Executar o Instalador',
+  'BTN_CLEANUP' => 'Limpar',
+  'BTN_SITEFE' => 'Visitar a parte frontal do seu site',
+  'BTN_SITEBE' => 'Visitar a parte administrativa do seu site',
+  'WARNINGS' => 'Avisos de ExtraÃ§Ã£o',
+  'ERROR_OCCURED' => 'Ocorreu um erro',
+  'STEALTH_MODE' => 'Modo furtivo',
+  'STEALTH_URL' => 'Ficheiro HTML a mostrar aos visitantes do site',
+  'ERR_NOT_A_JPS_FILE' => 'O ficheiro nÃ£o Ã© um arquivo JPS',
+  'ERR_INVALID_JPS_PASSWORD' => 'A palavra-passe que forneceu estÃ¡ incorreta ou o arquivo estÃ¡ corrompido',
+  'JPS_PASSWORD' => 'Palavra-passe do Arquivo (para ficheiros JPS)',
+  'INVALID_FILE_HEADER_OFFSET_ZERO' => 'NÃ£o Ã© possÃ­vel abrir o ficheiro %s para leitura. Esta Ã© a parte nÂº %d do seu arquivo de cÃ³pia de seguranÃ§a que consiste em mÃºltiplos ficheiros (ficheiros com o mesmo nome e extensÃµes .%s, .%s01, .%4$s02â€¦). Por favor certifique-se de que tem todos estes ficheiros na mesma pasta que o Kickstart.',
+  'INVALID_FILE_HEADER' => 'CabeÃ§alho invÃ¡lido no ficheiro de arquivo, parte %s, deslocamento %s. Por favor certifique-se de descarregar <em>e</em> enviar ficheiros de arquivo de cÃ³pia de seguranÃ§a usando SFTP, ou FTP no modo de transferÃªncia BinÃ¡ria e verifique que o tamanho dos ficheiros corresponde aos tamanhos reportados na pÃ¡gina Gerir CÃ³pias de SeguranÃ§a do Akeeba Backup / Akeeba Solo.',
+  'INVALID_FILE_HEADER_MULTIPART' => 'CabeÃ§alho invÃ¡lido no ficheiro de arquivo, parte %s, deslocamento %s. O seu arquivo de cÃ³pia de seguranÃ§a consiste em mÃºltiplos ficheiros (ficheiros com o mesmo nome e extensÃµes .%s, .%s01, .%4$s02â€¦). Ou alguns ficheiros estÃ£o em falta, ou estÃ£o corrompidos ou truncados. Vai precisar de todos estes ficheiros presentes no mesmo diretÃ³rio. Por favor certifique-se de descarregar <em>e</em> enviar ficheiros de arquivo de cÃ³pia de seguranÃ§a usando SFTP, ou FTP no modo de transferÃªncia BinÃ¡ria e verifique que o tamanho dos ficheiros corresponde aos tamanhos reportados na pÃ¡gina Gerir CÃ³pias de SeguranÃ§a do Akeeba Backup / Akeeba Solo.',
+  'UPDATE_HEADER' => 'Uma versÃ£o atualizada do Akeeba Kickstart (<span id=update-version>unknown</span>) estÃ¡ disponÃ­vel!',
+  'UPDATE_NOTICE' => 'Recomenda-se que utilize sempre a versÃ£o mais recente do Akeeba Kickstart disponÃ­vel. VersÃµes mais antigas podem estar sujeitas a erros e nÃ£o serÃ£o suportadas.',
+  'UPDATE_DLNOW' => 'Descarregar agora',
+  'UPDATE_MOREINFO' => 'Mais informaÃ§Ãµes',
+  'NEEDSOMEHELPKS' => 'Precisa de ajuda para utilizar esta ferramenta? Leia isto primeiro:',
+  'QUICKSTART' => 'Guia de InÃ­cio RÃ¡pido',
+  'CANTGETITTOWORK' => 'NÃ£o consegue fazer funcionar? Clique em mim!',
+  'NOARCHIVESCLICKHERE' => 'Nenhum arquivo detetado. Clique aqui para instruÃ§Ãµes de resoluÃ§Ã£o de problemas.',
+  'POSTRESTORATIONTROUBLESHOOTING' => 'Algo nÃ£o estÃ¡ a funcionar apÃ³s a restauraÃ§Ã£o? Clique aqui para instruÃ§Ãµes de resoluÃ§Ã£o de problemas.',
+  'IGNORE_MOST_ERRORS' => 'Ignorar a maioria dos erros',
+  'TIME_SETTINGS_HELP' => 'Aumente o mÃ­nimo para 3 se obtiver erros AJAX. Aumente o mÃ¡ximo para 10 para uma extraÃ§Ã£o mais rÃ¡pida, diminua para 5 se obtiver erros AJAX. Tente mÃ­nimo 5, mÃ¡ximo 1 (nÃ£o Ã© um erro!) se continuar a obter erros AJAX.',
+  'STEALTH_MODE_HELP' => 'Quando ativado, apenas os visitantes do seu endereÃ§o IP poderÃ£o ver o site atÃ© a restauraÃ§Ã£o ser concluÃ­da. Todos os outros serÃ£o redirecionados para a URL acima e apenas verÃ£o essa pÃ¡gina. O seu servidor deve ver o IP real do visitante (isto Ã© controlado pelo seu alojamento, nÃ£o por si ou por nÃ³s).',
+  'RENAME_FILES_HELP' => 'Alterar a designaÃ§Ã£o do .htaccess, web.config, php.ini e .user.ini contidos no arquivo durante a extraÃ§Ã£o. Os ficheiros sÃ£o renomeados com uma extensÃ£o .bak. As designaÃ§Ãµes dos ficheiros sÃ£o restauradas quando clica em Limpar.',
+  'RESTORE_PERMISSIONS_HELP' => 'Aplica as permissÃµes dos ficheiros (mas NÃƒO a propriedade dos ficheiros) que foram guardadas no momento da cÃ³pia de seguranÃ§a. Apenas funciona com arquivos JPA e JPS. NÃ£o funciona no Windows (o PHP nÃ£o oferece tal funcionalidade).',
+  'EXTRACT_LIST' => 'Ficheiros a extrair',
+  'EXTRACT_LIST_HELP' => 'Introduza um caminho de ficheiro tal como <code>images/cat.png</code> ou um padrÃ£o de shell tal como <code>images/*.png</code> em cada linha. Apenas os ficheiros que correspondam a esta lista serÃ£o escritos no disco. Deixe vazio para extrair tudo (predefiniÃ§Ã£o).',
+  'AKS3_IMPORT' => 'Importar do Amazon S3',
+  'AKS3_TITLE_STEP1' => 'Ligar ao Amazon S3',
+  'AKS3_ACCESS' => 'Chave de Acesso',
+  'AKS3_SECRET' => 'Chave Secreta',
+  'AKS3_CONNECT' => 'Ligar ao Amazon S3',
+  'AKS3_CANCEL' => 'Cancelar importaÃ§Ã£o',
+  'AKS3_TITLE_STEP2' => 'Selecionar o seu contentor do Amazon S3',
+  'AKS3_BUCKET' => 'Contentor',
+  'AKS3_LISTCONTENTS' => 'Listar conteÃºdos',
+  'AKS3_TITLE_STEP3' => 'Selecionar arquivo para importar',
+  'AKS3_FOLDERS' => 'Pastas',
+  'AKS3_FILES' => 'Ficheiros de Arquivo',
+  'AKS3_TITLE_STEP4' => 'A importarâ€¦',
+  'AKS3_DO_NOT_CLOSE' => 'Por favor nÃ£o feche esta janela enquanto os seus arquivos de cÃ³pia de seguranÃ§a estÃ£o a ser importados',
+  'AKS3_TITLE_STEP5' => 'A importaÃ§Ã£o estÃ¡ concluÃ­da',
+  'AKS3_BTN_RELOAD' => 'Recarregar o Kickstart',
+  'WRONG_FTP_PATH2' => 'DiretÃ³rio inicial FTP incorreto â€” o diretÃ³rio nÃ£o corresponde Ã  raiz web do seu site',
+  'ARCHIVE_DIRECTORY' => 'DiretÃ³rio de arquivos:',
+  'RELOAD_ARCHIVES' => 'Recarregar',
+  'CONFIG_UI_SFTPBROWSER_TITLE' => 'Navegador de DiretÃ³rios SFTP',
+  'ERR_COULD_NOT_OPEN_ARCHIVE_PART' => 'NÃ£o foi possÃ­vel abrir o ficheiro de parte do arquivo %s para leitura. Verifique que o ficheiro existe, Ã© legÃ­vel pelo servidor web e nÃ£o se encontra num diretÃ³rio inacessÃ­vel devido a restriÃ§Ãµes de chroot, open_basedir ou qualquer outra restriÃ§Ã£o implementada pelo seu alojamento.',
+  'RENAME_FILES' => 'Renomear ficheiros de configuraÃ§Ã£o do servidor antes da extraÃ§Ã£o',
+  'BTN_SHOW_FINE_TUNE' => 'Mostrar opÃ§Ãµes avanÃ§adas (para especialistas)',
+  'RESTORE_PERMISSIONS' => 'Restaurar permissÃµes dos ficheiros',
+  'ZAPBEFORE' => 'Eliminar tudo antes da extraÃ§Ã£o',
+  'ZAPBEFORE_HELP' => 'Tenta eliminar todos os ficheiros e pastas existentes sob o diretÃ³rio onde o Kickstart se encontra antes de extrair o arquivo de cÃ³pia de seguranÃ§a. NÃƒO tem em conta quais ficheiros e pastas existem no arquivo de cÃ³pia de seguranÃ§a. Ficheiros e pastas eliminados por esta funcionalidade NÃƒO podem ser recuperados. <strong>AVISO! ISTO PODE ELIMINAR FICHEIROS E PASTAS QUE NÃƒO PERTENCEM AO SEU SITE. UTILIZAR COM EXTREMA CAUTELA. AO ATIVAR ESTA FUNCIONALIDADE ASSUME TODA A RESPONSABILIDADE.</strong>',
+);
+
+
+	/** END OF ARRAY â€” DO NOT EDIT OR REMOVE **/
+	private $strings;
+
+	/**
+	 * The currently detected language (ISO code)
+	 *
+	 * @var string
+	 */
+	private $language;
+
+	/*
+	 * Initializes the translation engine
+	 *
+	 * Loading order:
+	 * 1. Built-in en-GB default strings
+	 * 2. Built-in translation matching the browser's preferred language (if any)
+	 * 3. External INI translation files via loadTranslationFile()
+	 *
+	 * @return AKText
+	 */
+	public function __construct()
+	{
+		// Step 1: Start with the default en-GB translation
+		$this->strings = $this->default_translation;
+
+		// Step 2: Try loading the en-GB INI file, if it exists
+		$this->loadTranslationFile('en-GB');
+
+		// Step 3: Get browser language preferences and match against built-in translations
+		$browserLanguages = $this->getBrowserLanguage();
+
+		foreach ($browserLanguages as $langStruct)
+		{
+			$fullLang = $langStruct[0];
+			$baseLang = $langStruct[1];
+
+			if (empty($fullLang))
+			{
+				continue;
+			}
+
+			$varName = 'translation_' . strtolower(str_replace('-', '_', $fullLang));
+
+			// Try exact match first (e.g. fr-FR)
+			if (isset($this->$varName))
+			{
+				$this->strings = array_merge($this->strings, $this->$varName);
+				$this->language = $fullLang;
+				break;
+			}
+
+			// Try base language match (e.g. fr from fr-CH)
+			$baseVarName = 'translation_' . strtolower($baseLang);
+			if (isset($this->$baseVarName))
+			{
+				$this->strings = array_merge($this->strings, $this->$baseVarName);
+				$this->language = $baseLang;
+				break;
+			}
+
+			// Try base language prefix scan (e.g. bare 'el' matches translation_el_gr)
+			$prefix = 'translation_' . strtolower($baseLang) . '_';
+			$found  = null;
+			foreach (get_object_vars($this) as $propName => $propValue)
+			{
+				if (strpos($propName, $prefix) === 0 && is_array($propValue))
+				{
+					$found = [$propName, $propValue];
+					break;
+				}
+			}
+
+			if ($found !== null)
+			{
+				[$propName, $propValue] = $found;
+				$this->strings  = array_merge($this->strings, $propValue);
+				$localeSuffix   = substr($propName, strlen('translation_'));
+				$underscorePos  = strpos($localeSuffix, '_');
+				$this->language = substr($localeSuffix, 0, $underscorePos) . '-' . strtoupper(substr($localeSuffix, $underscorePos + 1));
+				break;
+			}
+		}
+
+		// Step 4: Load external INI translation files
+		$this->loadTranslationFile();
+	}
+
+	/**
+	 * A PHP based INI file parser.
+	 *
+	 * Thanks to asohn ~at~ aircanopy ~dot~ net for posting this handy function on
+	 * the parse_ini_file page on http://gr.php.net/parse_ini_file
+	 *
+	 * @param   string  $file              Filename to process
+	 * @param   bool    $process_sections  True to also process INI sections
+	 * @param   bool    $rawdata           If true, the $file contains raw INI data, not a filename
+	 *
+	 * @return array An associative array of sections, keys and values
+	 * @access private
+	 */
+	public static function parse_ini_file($file, $process_sections = false, $rawdata = false)
+	{
+		$process_sections = ($process_sections !== true) ? false : true;
+
+		if (!$rawdata)
+		{
+			$ini = file($file);
+		}
+		else
+		{
+			$file = str_replace("\r", "", $file);
+			$ini  = explode("\n", $file);
+		}
+
+		if (!is_array($ini))
+		{
+			return [];
+		}
+
+		if (count($ini) == 0)
+		{
+			return [];
+		}
+
+		$sections = [];
+		$values   = [];
+		$result   = [];
+		$globals  = [];
+		$i        = 0;
+		foreach ($ini as $line)
+		{
+			$line = trim($line);
+			$line = str_replace("\t", " ", $line);
+
+			// Comments
+			if (!preg_match('/^[a-zA-Z0-9[]/', $line))
+			{
+				continue;
+			}
+
+			// Sections
+			if ($line[0] == '[')
+			{
+				$tmp        = explode(']', $line);
+				$sections[] = trim(substr($tmp[0], 1));
+				$i++;
+				continue;
+			}
+
+			// Key-value pair
+			$lineParts = explode('=', $line, 2);
+			if (count($lineParts) != 2)
+			{
+				continue;
+			}
+			$key   = trim($lineParts[0]);
+			$value = trim($lineParts[1]);
+			unset($lineParts);
+
+			if (strstr($value, ";"))
+			{
+				$tmp = explode(';', $value);
+				if (count($tmp) == 2)
+				{
+					if ((($value[0] != '"') && ($value[0] != "'")) ||
+						preg_match('/^".*"\s*;/', $value) || preg_match('/^".*;[^"]*$/', $value) ||
+						preg_match("/^'.*'\s*;/", $value) || preg_match("/^'.*;[^']*$/", $value)
+					)
+					{
+						$value = $tmp[0];
+					}
+				}
+				else
+				{
+					if ($value[0] == '"')
+					{
+						$value = preg_replace('/^"(.*)".*/', '$1', $value);
+					}
+					elseif ($value[0] == "'")
+					{
+						$value = preg_replace("/^'(.*)'.*/", '$1', $value);
+					}
+					else
+					{
+						$value = $tmp[0];
+					}
+				}
+			}
+			$value = trim($value);
+			$value = trim($value, "'\"");
+
+			if ($i == 0)
+			{
+				if (substr($line, -1, 2) == '[]')
+				{
+					$globals[$key][] = $value;
+				}
+				else
+				{
+					$globals[$key] = $value;
+				}
+			}
+			else
+			{
+				if (substr($line, -1, 2) == '[]')
+				{
+					$values[$i - 1][$key][] = $value;
+				}
+				else
+				{
+					$values[$i - 1][$key] = $value;
+				}
+			}
+		}
+
+		for ($j = 0; $j < $i; $j++)
+		{
+			if ($process_sections === true)
+			{
+				if (isset($sections[$j]) && isset($values[$j]))
+				{
+					$result[$sections[$j]] = $values[$j];
+				}
+			}
+			else
+			{
+				if (isset($values[$j]))
+				{
+					$result[] = $values[$j];
+				}
+			}
+		}
+
+		return $result + $globals;
+	}
+
+	public static function sprintf($key)
+	{
+		$text = self::getInstance();
+		$args = func_get_args();
+		if (count($args) > 0)
+		{
+			$args[0] = $text->_($args[0]);
+
+			return @call_user_func_array('sprintf', $args);
+		}
+
+		return '';
+	}
+
+	/**
+	 * Singleton pattern for Language
+	 *
+	 * @return AKText The global AKText instance
+	 */
+	public static function &getInstance()
+	{
+		static $instance;
+
+		if (!is_object($instance))
+		{
+			$instance = new AKText();
+		}
+
+		return $instance;
+	}
+
+	public static function _($string)
+	{
+		$text = self::getInstance();
+
+		$key = strtoupper($string);
+		$key = substr($key, 0, 1) == '_' ? substr($key, 1) : $key;
+
+		if (isset ($text->strings[$key]))
+		{
+			$string = $text->strings[$key];
+		}
+		else
+		{
+			if (defined($string))
+			{
+				$string = constant($string);
+			}
+		}
+
+		return $string;
+	}
+
+	/**
+	 * Returns an array of the browser's preferred languages.
+	 *
+	 * Each entry is an array with two elements:
+	 * [0] Full language tag (e.g. "fr-fr", "de-de")
+	 * [1] Base language code (e.g. "fr", "de")
+	 *
+	 * Detection code derived from Full Operating System Language Detection by Harald Hope
+	 * Retrieved from http://techpatterns.com/downloads/php_language_detection.php
+	 *
+	 * @return  array  List of language preference structs
+	 */
+	public function getBrowserLanguage()
+	{
+		$user_languages = [];
+
+		if (isset($_SERVER["HTTP_ACCEPT_LANGUAGE"]))
+		{
+			$languages = strtolower($_SERVER["HTTP_ACCEPT_LANGUAGE"]);
+			$languages = str_replace(' ', '', $languages);
+			$languages = explode(",", $languages);
+
+			foreach ($languages as $language_list)
+			{
+				$temp_array = [];
+				$temp_array[0] = substr($language_list, 0, strcspn($language_list, ';'));
+				$temp_array[1] = substr($language_list, 0, 2);
+
+				if ((strlen($temp_array[0]) == 5) && ((substr($temp_array[0], 2, 1) == '-') || (substr($temp_array[0], 2, 1) == '_')))
+				{
+					$langLocation  = strtoupper(substr($temp_array[0], 3, 2));
+					$temp_array[0] = $temp_array[1] . '-' . $langLocation;
+				}
+
+				$user_languages[] = $temp_array;
+			}
+		}
+
+		if (empty($user_languages))
+		{
+			$user_languages[0] = ['', ''];
+		}
+
+		return $user_languages;
+	}
+
+	/**
+	 * Loads an external INI translation file for the given language.
+	 *
+	 * If $lang is null, loads the INI file for the currently detected language ($this->language).
+	 * The INI file is searched for in KSLANGDIR (if defined) or KSROOTDIR.
+	 *
+	 * @param   string  $lang  Language tag (e.g. "en-GB", "fr-FR"). Null to use $this->language.
+	 *
+	 * @return  void
+	 */
+	public function loadTranslationFile($lang = null)
+	{
+		if (defined('KSLANGDIR'))
+		{
+			$dirname = KSLANGDIR;
+		}
+		else
+		{
+			$dirname = KSROOTDIR;
+		}
+
+		$myName   = defined('KSSELFNAME') ? KSSELFNAME : basename(__FILE__);
+		$basename = basename($myName, '.php') . '.ini';
+
+		if (empty($lang))
+		{
+			$lang = $this->language;
+		}
+
+		if (empty($lang))
+		{
+			return;
+		}
+
+		$translationFilename = $dirname . DIRECTORY_SEPARATOR . $lang . '.' . $basename;
+
+		if (!@file_exists($translationFilename) && ($basename != 'kickstart.ini'))
+		{
+			$basename            = 'kickstart.ini';
+			$translationFilename = $dirname . DIRECTORY_SEPARATOR . $lang . '.' . $basename;
+		}
+
+		if (!@file_exists($translationFilename))
+		{
+			return;
+		}
+
+		$temp = self::parse_ini_file($translationFilename, false);
+
+		if (!is_array($this->strings))
+		{
+			$this->strings = [];
+		}
+
+		if (empty($temp))
+		{
+			$this->strings = array_merge($this->default_translation, $this->strings);
+		}
+		else
+		{
+			$this->strings = array_merge($this->strings, $temp);
+		}
+	}
+
+	/**
+	 * @deprecated  Use loadTranslationFile() instead. Kept for backward compatibility.
+	 *
+	 * @param   string  $lang  Language tag. Null to use $this->language.
+	 *
+	 * @return  void
+	 */
+	private function loadTranslation($lang = null)
+	{
+		$this->loadTranslationFile($lang);
+	}
+
+	public function dumpLanguage()
+	{
+		$out = '';
+		foreach ($this->strings as $key => $value)
+		{
+			$out .= "$key=$value\n";
+		}
+
+		return $out;
+	}
+
+	public function asJavascript()
+	{
+		$out = '';
+		foreach ($this->strings as $key => $value)
+		{
+			$key   = addcslashes($key, '\\\'"');
+			$value = addcslashes($value, '\\\'"');
+			if (!empty($out))
+			{
+				$out .= ",\n";
+			}
+			$out .= "'$key':\t'$value'";
+		}
+
+		return $out;
+	}
+
+	public function resetTranslation()
+	{
+		$this->strings = $this->default_translation;
+	}
+
+	public function addDefaultLanguageStrings($stringList = [])
+	{
+		if (!is_array($stringList))
+		{
+			return;
+		}
+		if (empty($stringList))
+		{
+			return;
+		}
+
+		$this->strings = array_merge($stringList, $this->strings);
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * The Akeeba Kickstart Factory class
+ *
+ * This class is reponssible for instantiating all Akeeba Kickstart classes
+ */
+class AKFactory
+{
+	/** @var   array  A list of instantiated objects */
+	private $objectlist = [];
+
+	/** @var   array  Simple hash data storage */
+	private $varlist = [];
+
+	/** @var   self   Static instance */
+	private static $instance = null;
+
+	/**
+	 * AKFactory constructor.
+	 *
+	 * This is a private constructor makes sure we can't instantiate the class unless we go through the static
+	 * getInstance singleton method. This is different than making the class abstract (preventing any kind of object
+	 * instantiation).
+	 */
+	private function __construct()
+	{
+	}
+
+	/**
+	 * Gets a serialized snapshot of the Factory for safekeeping (hibernate)
+	 *
+	 * @return string The serialized snapshot of the Factory
+	 */
+	public static function serialize()
+	{
+		$engine = self::getUnarchiver();
+		$engine->shutdown();
+		$serialized = serialize(self::getInstance());
+
+		if (function_exists('base64_encode') && function_exists('base64_decode'))
+		{
+			$serialized = base64_encode($serialized);
+		}
+
+		return $serialized;
+	}
+
+	/**
+	 * Gets the unarchiver engine
+	 *
+	 * @return AKAbstractUnarchiver
+	 */
+	public static function &getUnarchiver($configOverride = null)
+	{
+		static $class_name;
+
+		if (!empty($configOverride) && isset($configOverride['reset']) && $configOverride['reset'])
+		{
+			$class_name = null;
+		}
+
+		if (empty($class_name))
+		{
+			$filetype = self::get('kickstart.setup.filetype', null);
+
+			if (empty($filetype))
+			{
+				$filename      = self::get('kickstart.setup.sourcefile', null);
+				$basename      = basename($filename);
+				$baseextension = strtoupper(substr($basename, -3));
+
+				switch ($baseextension)
+				{
+					case 'JPA':
+						$filetype = 'JPA';
+						break;
+
+					case 'JPS':
+						$filetype = 'JPS';
+						break;
+
+					case 'ZIP':
+						$filetype = 'ZIP';
+						break;
+
+					default:
+						die('Invalid archive type or extension in file ' . $filename);
+						break;
+				}
+			}
+
+			$class_name = 'AKUnarchiver' . ucfirst($filetype);
+		}
+
+		$destdir = self::get('kickstart.setup.destdir', null);
+
+		if (empty($destdir))
+		{
+			$destdir = KSROOTDIR;
+		}
+
+		/** @var AKAbstractUnarchiver $object */
+		$object = self::getClassInstance($class_name);
+
+		if ($object->getState() == 'init')
+		{
+			$sourcePath = self::get('kickstart.setup.sourcepath', '');
+			$sourceFile = self::get('kickstart.setup.sourcefile', '');
+
+			if (!empty($sourcePath))
+			{
+				$sourceFile = rtrim($sourcePath, '/\\') . '/' . $sourceFile;
+			}
+
+			// Initialize the object â€“â€“ Any change here MUST be reflected to echoHeadJavascript (default values)
+			$config = [
+				'filename'            => $sourceFile,
+				'restore_permissions' => self::get('kickstart.setup.restoreperms', 0),
+				'post_proc'           => self::get('kickstart.procengine', 'direct'),
+				'add_path'            => self::get('kickstart.setup.targetpath', $destdir),
+				'remove_path'         => self::get('kickstart.setup.removepath', ''),
+				'rename_files'        => self::get('kickstart.setup.renamefiles', [
+					'.htaccess' => 'htaccess.bak', 'php.ini' => 'php.ini.bak', 'web.config' => 'web.config.bak',
+					'.user.ini' => '.user.ini.bak',
+				]),
+				'skip_files'          => self::get('kickstart.setup.skipfiles', [
+					basename(__FILE__), 'kickstart.php', 'htaccess.bak', 'php.ini.bak',
+				]),
+				'ignoredirectories'   => self::get('kickstart.setup.ignoredirectories', [
+					'tmp', 'log', 'logs',
+				]),
+			];
+
+			if (!defined('KICKSTART'))
+			{
+				// In restore.php mode we have to exclude the restoration.php files
+				$moreSkippedFiles     = [
+					// Akeeba Backup for Joomla!
+					'administrator/components/com_akeeba/restoration.php',
+					'administrator/components/com_akeebabackup/restoration.php',
+					// Joomla! Update
+					'administrator/components/com_joomlaupdate/restoration.php',
+					// Akeeba Backup for WordPress
+					'wp-content/plugins/akeebabackupwp/app/restoration.php',
+					'wp-content/plugins/akeebabackupcorewp/app/restoration.php',
+					'wp-content/plugins/akeebabackup/app/restoration.php',
+					'wp-content/plugins/akeebabackupwpcore/app/restoration.php',
+					// Akeeba Solo
+					'app/restoration.php',
+				];
+
+				$config['skip_files'] = array_merge($config['skip_files'], $moreSkippedFiles);
+			}
+
+			if (!empty($configOverride))
+			{
+				$config = array_merge($config, $configOverride);
+			}
+
+			$object->setup($config);
+		}
+
+		return $object;
+	}
+
+	// ========================================================================
+	// Public factory interface
+	// ========================================================================
+
+	public static function get($key, $default = null)
+	{
+		$self = self::getInstance();
+
+		if (array_key_exists($key, $self->varlist))
+		{
+			return $self->varlist[$key];
+		}
+
+		return $default;
+	}
+
+	/**
+	 * Gets a single, internally used instance of the Factory
+	 *
+	 * @param string $serialized_data [optional] Serialized data to spawn the instance from
+	 *
+	 * @return AKFactory A reference to the unique Factory object instance
+	 */
+	protected static function &getInstance($serialized_data = null)
+	{
+		if (!is_object(self::$instance) || !is_null($serialized_data))
+		{
+			if (!is_null($serialized_data))
+			{
+				self::$instance = unserialize($serialized_data, ['allowed_classes' => self::getAllowedClasses()]);
+
+				return self::$instance;
+			}
+
+			self::$instance = new self();
+		}
+
+		return self::$instance;
+	}
+
+	/**
+	 * The classes which may be instantiated when resuming from a serialised snapshot.
+	 *
+	 * The snapshot arrives in the request â€” as the `factory` variable, or as the AJAX step's payload â€” so it is
+	 * untrusted input. Left unrestricted, unserialize() would instantiate any class the request names and run its
+	 * magic methods. That is harmless when this file runs on its own, because the only classes in existence are the
+	 * ones below it. It is not harmless when Akeeba Backup Professional includes this file as a library: the whole of
+	 * Joomla! and its vendor tree is then loaded, which is a large supply of destructor and __wakeup() gadgets.
+	 *
+	 * The list is computed rather than written out because a stale list fails in the worst possible way. A class which
+	 * belongs in the snapshot but is missing here does not raise an error: it is silently replaced with
+	 * __PHP_Incomplete_Class, and the restoration breaks midway with nothing to point at. Since every class that can
+	 * legitimately appear is declared in this very file, the file itself is the authoritative list, and it cannot go
+	 * out of date when a class is added or renamed.
+	 *
+	 * stdClass is added explicitly. It is an internal class, so it has no file to match on, and it does appear in the
+	 * graph â€” the unarchivers hold their archive and file headers in it.
+	 *
+	 * @return array The class names unserialize() may instantiate
+	 */
+	private static function getAllowedClasses()
+	{
+		static $allowedClasses = null;
+
+		if (!is_null($allowedClasses))
+		{
+			return $allowedClasses;
+		}
+
+		$allowedClasses = ['stdClass'];
+
+		foreach (get_declared_classes() as $className)
+		{
+			try
+			{
+				$refClass = new ReflectionClass($className);
+			}
+			catch (Exception $e)
+			{
+				continue;
+			}
+
+			if ($refClass->getFileName() === __FILE__)
+			{
+				$allowedClasses[] = $className;
+			}
+		}
+
+		return $allowedClasses;
+	}
+
+	/**
+	 * Internal function which instantiates a class named $class_name.
+	 * The autoloader
+	 *
+	 * @param string $class_name
+	 *
+	 * @return object
+	 */
+	protected static function &getClassInstance($class_name)
+	{
+		$self = self::getInstance();
+
+		if (!isset($self->objectlist[$class_name]))
+		{
+			$self->objectlist[$class_name] = new $class_name;
+		}
+
+		return $self->objectlist[$class_name];
+	}
+
+	// ========================================================================
+	// Public hash data storage interface
+	// ========================================================================
+
+	/**
+	 * Regenerates the full Factory state from a serialized snapshot (resume)
+	 *
+	 * @param string $serialized_data The serialized snapshot to resume from
+	 */
+	public static function unserialize($serialized_data)
+	{
+		if (function_exists('base64_encode') && function_exists('base64_decode'))
+		{
+			$serialized_data = base64_decode($serialized_data);
+		}
+
+		self::getInstance($serialized_data);
+	}
+
+	/**
+	 * Reset the internal factory state, freeing all previously created objects
+	 */
+	public static function nuke()
+	{
+		self::$instance = null;
+	}
+
+	// ========================================================================
+	// Akeeba Kickstart classes
+	// ========================================================================
+
+	public static function set($key, $value)
+	{
+		$self                = self::getInstance();
+		$self->varlist[$key] = $value;
+	}
+
+	/**
+	 * Gets the post processing engine
+	 *
+	 * @param string $proc_engine
+	 *
+	 * @return AKAbstractPostproc
+	 */
+	public static function &getPostProc($proc_engine = null)
+	{
+		static $class_name;
+
+		if (empty($class_name))
+		{
+			if (empty($proc_engine))
+			{
+				$proc_engine = self::get('kickstart.procengine', 'direct');
+			}
+
+			$class_name = 'AKPostproc' . ucfirst($proc_engine);
+		}
+
+		return self::getClassInstance($class_name);
+	}
+
+	/**
+	 * Get the a reference to the Akeeba Engine's timer
+	 *
+	 * @return AKCoreTimer
+	 */
+	public static function &getTimer()
+	{
+		return self::getClassInstance('AKCoreTimer');
+	}
+
+	/**
+	 * Get an instance of the filesystem zapper
+	 *
+	 * @return AKUtilsZapper
+	 */
+	public static function &getZapper()
+	{
+		return self::getClassInstance('AKUtilsZapper');
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Interface for AES encryption adapters
+ */
+interface AKEncryptionAESAdapterInterface
+{
+	/**
+	 * Decrypts a string. Returns the raw binary ciphertext, zero-padded.
+	 *
+	 * @param   string       $plainText  The plaintext to encrypt
+	 * @param   string       $key        The raw binary key (will be zero-padded or chopped if its size is different than the block size)
+	 *
+	 * @return  string  The raw encrypted binary string.
+	 */
+	public function decrypt($plainText, $key);
+
+	/**
+	 * Returns the encryption block size in bytes
+	 *
+	 * @return  int
+	 */
+	public function getBlockSize();
+
+	/**
+	 * Is this adapter supported?
+	 *
+	 * @return  bool
+	 */
+	public function isSupported();
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * Abstract AES encryption class
+ */
+abstract class AKEncryptionAESAdapterAbstract
+{
+	/**
+	 * Trims or zero-pads a key / IV
+	 *
+	 * @param   string $key  The key or IV to treat
+	 * @param   int    $size The block size of the currently used algorithm
+	 *
+	 * @return  null|string  Null if $key is null, treated string of $size byte length otherwise
+	 */
+	public function resizeKey($key, $size)
+	{
+		if (empty($key))
+		{
+			return null;
+		}
+
+		$keyLength = strlen($key);
+
+		if (function_exists('mb_strlen'))
+		{
+			$keyLength = mb_strlen($key, 'ASCII');
+		}
+
+		if ($keyLength == $size)
+		{
+			return $key;
+		}
+
+		if ($keyLength > $size)
+		{
+			if (function_exists('mb_substr'))
+			{
+				return mb_substr($key, 0, $size, 'ASCII');
+			}
+
+			return substr($key, 0, $size);
+		}
+
+		return $key . str_repeat("\0", ($size - $keyLength));
+	}
+
+	/**
+	 * Returns null bytes to append to the string so that it's zero padded to the specified block size
+	 *
+	 * @param   string $string    The binary string which will be zero padded
+	 * @param   int    $blockSize The block size
+	 *
+	 * @return  string  The zero bytes to append to the string to zero pad it to $blockSize
+	 */
+	protected function getZeroPadding($string, $blockSize)
+	{
+		$stringSize = strlen($string);
+
+		if (function_exists('mb_strlen'))
+		{
+			$stringSize = mb_strlen($string, 'ASCII');
+		}
+
+		if ($stringSize == $blockSize)
+		{
+			return '';
+		}
+
+		if ($stringSize < $blockSize)
+		{
+			return str_repeat("\0", $blockSize - $stringSize);
+		}
+
+		$paddingBytes = $stringSize % $blockSize;
+
+		return str_repeat("\0", $blockSize - $paddingBytes);
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+class Mcrypt extends AKEncryptionAESAdapterAbstract implements AKEncryptionAESAdapterInterface
+{
+	protected $cipherType = MCRYPT_RIJNDAEL_128;
+
+	protected $cipherMode = MCRYPT_MODE_CBC;
+
+	public function decrypt($cipherText, $key)
+	{
+		$iv_size    = $this->getBlockSize();
+		$key        = $this->resizeKey($key, $iv_size);
+		$iv         = substr($cipherText, 0, $iv_size);
+		$cipherText = substr($cipherText, $iv_size);
+		$plainText  = mcrypt_decrypt($this->cipherType, $key, $cipherText, $this->cipherMode, $iv);
+
+		return $plainText;
+	}
+
+	public function isSupported()
+	{
+		if (!function_exists('mcrypt_get_key_size'))
+		{
+			return false;
+		}
+
+		if (!function_exists('mcrypt_get_iv_size'))
+		{
+			return false;
+		}
+
+		if (!function_exists('mcrypt_create_iv'))
+		{
+			return false;
+		}
+
+		if (!function_exists('mcrypt_encrypt'))
+		{
+			return false;
+		}
+
+		if (!function_exists('mcrypt_decrypt'))
+		{
+			return false;
+		}
+
+		if (!function_exists('mcrypt_list_algorithms'))
+		{
+			return false;
+		}
+
+		if (!function_exists('hash'))
+		{
+			return false;
+		}
+
+		if (!function_exists('hash_algos'))
+		{
+			return false;
+		}
+
+		$algorightms = mcrypt_list_algorithms();
+
+		if (!in_array('rijndael-128', $algorightms))
+		{
+			return false;
+		}
+
+		if (!in_array('rijndael-192', $algorightms))
+		{
+			return false;
+		}
+
+		if (!in_array('rijndael-256', $algorightms))
+		{
+			return false;
+		}
+
+		$algorightms = hash_algos();
+
+		if (!in_array('sha256', $algorightms))
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	public function getBlockSize()
+	{
+		return mcrypt_get_iv_size($this->cipherType, $this->cipherMode);
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+class OpenSSL extends AKEncryptionAESAdapterAbstract implements AKEncryptionAESAdapterInterface
+{
+	/**
+	 * The OpenSSL options for encryption / decryption
+	 *
+	 * @var  int
+	 */
+	protected $openSSLOptions = 0;
+
+	/**
+	 * The encryption method to use
+	 *
+	 * @var  string
+	 */
+	protected $method = 'aes-128-cbc';
+
+	public function __construct()
+	{
+		$this->openSSLOptions = OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING;
+	}
+
+	public function decrypt($cipherText, $key)
+	{
+		$iv_size    = $this->getBlockSize();
+		$key        = $this->resizeKey($key, $iv_size);
+		$iv         = substr($cipherText, 0, $iv_size);
+		$cipherText = substr($cipherText, $iv_size);
+		$plainText  = openssl_decrypt($cipherText, $this->method, $key, $this->openSSLOptions, $iv);
+
+		return $plainText;
+	}
+
+	public function isSupported()
+	{
+		if (!function_exists('openssl_get_cipher_methods'))
+		{
+			return false;
+		}
+
+		if (!function_exists('openssl_random_pseudo_bytes'))
+		{
+			return false;
+		}
+
+		if (!function_exists('openssl_cipher_iv_length'))
+		{
+			return false;
+		}
+
+		if (!function_exists('openssl_encrypt'))
+		{
+			return false;
+		}
+
+		if (!function_exists('openssl_decrypt'))
+		{
+			return false;
+		}
+
+		if (!function_exists('hash'))
+		{
+			return false;
+		}
+
+		if (!function_exists('hash_algos'))
+		{
+			return false;
+		}
+
+		$algorightms = openssl_get_cipher_methods();
+
+		if (!in_array('aes-128-cbc', $algorightms))
+		{
+			return false;
+		}
+
+		$algorightms = hash_algos();
+
+		if (!in_array('sha256', $algorightms))
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * @return int
+	 */
+	public function getBlockSize()
+	{
+		return openssl_cipher_iv_length($this->method);
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * AES implementation in PHP (c) Chris Veness 2005-2016.
+ * Right to use and adapt is granted for under a simple creative commons attribution
+ * licence. No warranty of any form is offered.
+ *
+ * Heavily modified for Akeeba Backup by Nicholas K. Dionysopoulos
+ * Also added AES-128 CBC mode (with mcrypt and OpenSSL) on top of AES CTR
+ * Removed CTR encrypt / decrypt (no longer used)
+ */
+class AKEncryptionAES
+{
+	// Sbox is pre-computed multiplicative inverse in GF(2^8) used in SubBytes and KeyExpansion [ï¿½5.1.1]
+	protected static $Sbox =
+		[0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+			0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+			0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+			0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+			0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+			0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+			0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+			0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+			0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+			0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+			0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+			0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+			0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+			0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+			0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+			0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16];
+
+	// Rcon is Round Constant used for the Key Expansion [1st col is 2^(r-1) in GF(2^8)] [ï¿½5.2]
+	protected static $Rcon = [
+		[0x00, 0x00, 0x00, 0x00],
+		[0x01, 0x00, 0x00, 0x00],
+		[0x02, 0x00, 0x00, 0x00],
+		[0x04, 0x00, 0x00, 0x00],
+		[0x08, 0x00, 0x00, 0x00],
+		[0x10, 0x00, 0x00, 0x00],
+		[0x20, 0x00, 0x00, 0x00],
+		[0x40, 0x00, 0x00, 0x00],
+		[0x80, 0x00, 0x00, 0x00],
+		[0x1b, 0x00, 0x00, 0x00],
+		[0x36, 0x00, 0x00, 0x00]];
+
+	protected static $passwords = [];
+
+	/**
+	 * The algorithm to use for PBKDF2. Must be a supported hash_hmac algorithm. Default: sha1
+	 *
+	 * @var  string
+	 */
+	private static $pbkdf2Algorithm = 'sha1';
+
+	/**
+	 * Number of iterations to use for PBKDF2
+	 *
+	 * @var  int
+	 */
+	private static $pbkdf2Iterations = 1000;
+
+	/**
+	 * Should we use a static salt for PBKDF2?
+	 *
+	 * @var  int
+	 */
+	private static $pbkdf2UseStaticSalt = 0;
+
+	/**
+	 * The static salt to use for PBKDF2
+	 *
+	 * @var  string
+	 */
+	private static $pbkdf2StaticSalt = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
+	/**
+	 * AES Cipher function: encrypt 'input' with Rijndael algorithm
+	 *
+	 * @param   array $input    Message as byte-array (16 bytes)
+	 * @param   array $w        key schedule as 2D byte-array (Nr+1 x Nb bytes) -
+	 *                          generated from the cipher key by KeyExpansion()
+	 *
+	 * @return  string  Ciphertext as byte-array (16 bytes)
+	 */
+	protected static function Cipher($input, $w)
+	{
+		// main Cipher function [ï¿½5.1]
+		$Nb = 4;                 // block size (in words): no of columns in state (fixed at 4 for AES)
+		$Nr = count($w) / $Nb - 1; // no of rounds: 10/12/14 for 128/192/256-bit keys
+
+		$state = [];  // initialise 4xNb byte-array 'state' with input [ï¿½3.4]
+
+		for ($i = 0; $i < 4 * $Nb; $i++)
+		{
+			$state[$i % 4][floor($i / 4)] = $input[$i];
+		}
+
+		$state = self::AddRoundKey($state, $w, 0, $Nb);
+
+		for ($round = 1; $round < $Nr; $round++)
+		{  // apply Nr rounds
+			$state = self::SubBytes($state, $Nb);
+			$state = self::ShiftRows($state, $Nb);
+			$state = self::MixColumns($state);
+			$state = self::AddRoundKey($state, $w, $round, $Nb);
+		}
+
+		$state = self::SubBytes($state, $Nb);
+		$state = self::ShiftRows($state, $Nb);
+		$state = self::AddRoundKey($state, $w, $Nr, $Nb);
+
+		$output = [4 * $Nb];  // convert state to 1-d array before returning [ï¿½3.4]
+
+		for ($i = 0; $i < 4 * $Nb; $i++)
+		{
+			$output[$i] = $state[$i % 4][floor($i / 4)];
+		}
+
+		return $output;
+	}
+
+	protected static function AddRoundKey($state, $w, $rnd, $Nb)
+	{
+		// xor Round Key into state S [ï¿½5.1.4]
+		for ($r = 0; $r < 4; $r++)
+		{
+			for ($c = 0; $c < $Nb; $c++)
+			{
+				$state[$r][$c] ^= $w[$rnd * 4 + $c][$r];
+			}
+		}
+
+		return $state;
+	}
+
+	protected static function SubBytes($s, $Nb)
+	{
+		// apply SBox to state S [ï¿½5.1.1]
+		for ($r = 0; $r < 4; $r++)
+		{
+			for ($c = 0; $c < $Nb; $c++)
+			{
+				$s[$r][$c] = self::$Sbox[$s[$r][$c]];
+			}
+		}
+
+		return $s;
+	}
+
+	protected static function ShiftRows($s, $Nb)
+	{
+		// shift row r of state S left by r bytes [ï¿½5.1.2]
+		$t = [4];
+
+		for ($r = 1; $r < 4; $r++)
+		{
+			for ($c = 0; $c < 4; $c++)
+			{
+				$t[$c] = $s[$r][($c + $r) % $Nb];
+			}  // shift into temp copy
+
+			for ($c = 0; $c < 4; $c++)
+			{
+				$s[$r][$c] = $t[$c];
+			}         // and copy back
+		}          // note that this will work for Nb=4,5,6, but not 7,8 (always 4 for AES):
+
+		return $s;  // see fp.gladman.plus.com/cryptography_technology/rijndael/aes.spec.311.pdf
+	}
+
+	protected static function MixColumns($s)
+	{
+		// combine bytes of each col of state S [ï¿½5.1.3]
+		for ($c = 0; $c < 4; $c++)
+		{
+			$a = [4];  // 'a' is a copy of the current column from 's'
+			$b = [4];  // 'b' is aï¿½{02} in GF(2^8)
+
+			for ($i = 0; $i < 4; $i++)
+			{
+				$a[$i] = $s[$i][$c];
+				$b[$i] = $s[$i][$c] & 0x80 ? $s[$i][$c] << 1 ^ 0x011b : $s[$i][$c] << 1;
+			}
+
+			// a[n] ^ b[n] is aï¿½{03} in GF(2^8)
+			$s[0][$c] = $b[0] ^ $a[1] ^ $b[1] ^ $a[2] ^ $a[3]; // 2*a0 + 3*a1 + a2 + a3
+			$s[1][$c] = $a[0] ^ $b[1] ^ $a[2] ^ $b[2] ^ $a[3]; // a0 * 2*a1 + 3*a2 + a3
+			$s[2][$c] = $a[0] ^ $a[1] ^ $b[2] ^ $a[3] ^ $b[3]; // a0 + a1 + 2*a2 + 3*a3
+			$s[3][$c] = $a[0] ^ $b[0] ^ $a[1] ^ $a[2] ^ $b[3]; // 3*a0 + a1 + a2 + 2*a3
+		}
+
+		return $s;
+	}
+
+	/**
+	 * Key expansion for Rijndael Cipher(): performs key expansion on cipher key
+	 * to generate a key schedule
+	 *
+	 * @param   array $key Cipher key byte-array (16 bytes)
+	 *
+	 * @return  array  Key schedule as 2D byte-array (Nr+1 x Nb bytes)
+	 */
+	protected static function KeyExpansion($key)
+	{
+		// generate Key Schedule from Cipher Key [ï¿½5.2]
+
+		// block size (in words): no of columns in state (fixed at 4 for AES)
+		$Nb = 4;
+		// key length (in words): 4/6/8 for 128/192/256-bit keys
+		$Nk = (int) (count($key) / 4);
+		// no of rounds: 10/12/14 for 128/192/256-bit keys
+		$Nr = $Nk + 6;
+
+		$w    = [];
+		$temp = [];
+
+		for ($i = 0; $i < $Nk; $i++)
+		{
+			$r     = [$key[4 * $i], $key[4 * $i + 1], $key[4 * $i + 2], $key[4 * $i + 3]];
+			$w[$i] = $r;
+		}
+
+		for ($i = $Nk; $i < ($Nb * ($Nr + 1)); $i++)
+		{
+			$w[$i] = [];
+			for ($t = 0; $t < 4; $t++)
+			{
+				$temp[$t] = $w[$i - 1][$t];
+			}
+			if ($i % $Nk == 0)
+			{
+				$temp = self::SubWord(self::RotWord($temp));
+				for ($t = 0; $t < 4; $t++)
+				{
+					$rConIndex = (int) ($i / $Nk);
+					$temp[$t] ^= self::$Rcon[$rConIndex][$t];
+				}
+			}
+			else if ($Nk > 6 && $i % $Nk == 4)
+			{
+				$temp = self::SubWord($temp);
+			}
+			for ($t = 0; $t < 4; $t++)
+			{
+				$w[$i][$t] = $w[$i - $Nk][$t] ^ $temp[$t];
+			}
+		}
+
+		return $w;
+	}
+
+	protected static function SubWord($w)
+	{
+		// apply SBox to 4-byte word w
+		for ($i = 0; $i < 4; $i++)
+		{
+			$w[$i] = self::$Sbox[$w[$i]];
+		}
+
+		return $w;
+	}
+
+	/*
+	 * Unsigned right shift function, since PHP has neither >>> operator nor unsigned ints
+	 *
+	 * @param a  number to be shifted (32-bit integer)
+	 * @param b  number of bits to shift a to the right (0..31)
+	 * @return   a right-shifted and zero-filled by b bits
+	 */
+
+	protected static function RotWord($w)
+	{
+		// rotate 4-byte word w left by one byte
+		$tmp = $w[0];
+		for ($i = 0; $i < 3; $i++)
+		{
+			$w[$i] = $w[$i + 1];
+		}
+		$w[3] = $tmp;
+
+		return $w;
+	}
+
+	protected static function urs($a, $b)
+	{
+		$a &= 0xffffffff;
+		$b &= 0x1f;  // (bounds check)
+		if ($a & 0x80000000 && $b > 0)
+		{   // if left-most bit set
+			$a = ($a >> 1) & 0x7fffffff;   //   right-shift one bit & clear left-most bit
+			$a = $a >> ($b - 1);           //   remaining right-shifts
+		}
+		else
+		{                       // otherwise
+			$a = ($a >> $b);               //   use normal right-shift
+		}
+
+		return $a;
+	}
+
+	/**
+	 * AES decryption in CBC mode. This is the standard mode (the CTR methods
+	 * actually use Rijndael-128 in CTR mode, which - technically - isn't AES).
+	 *
+	 * It supports AES-128 only. It assumes that the last 4 bytes
+	 * contain a little-endian unsigned long integer representing the unpadded
+	 * data length.
+	 *
+	 * @since  3.0.1
+	 * @author Nicholas K. Dionysopoulos
+	 *
+	 * @param   string $ciphertext The data to encrypt
+	 * @param   string $password   Encryption password
+	 *
+	 * @return  string  The plaintext
+	 */
+	public static function AESDecryptCBC($ciphertext, $password)
+	{
+		$adapter = self::getAdapter();
+
+		if (!$adapter->isSupported())
+		{
+			return false;
+		}
+
+		// Read the data size
+		$data_size = unpack('V', substr($ciphertext, -4));
+
+		// Do I have a PBKDF2 salt?
+		$salt             = substr($ciphertext, -92, 68);
+		$rightStringLimit = -4;
+
+		$params        = self::getKeyDerivationParameters();
+		$keySizeBytes  = $params['keySize'];
+		$algorithm     = $params['algorithm'];
+		$iterations    = $params['iterations'];
+		$useStaticSalt = $params['useStaticSalt'];
+
+		if (substr($salt, 0, 4) == 'JPST')
+		{
+			// We have a stored salt. Retrieve it and tell decrypt to process the string minus the last 44 bytes
+			// (4 bytes for JPST, 16 bytes for the salt, 4 bytes for JPIV, 16 bytes for the IV, 4 bytes for the
+			// uncompressed string length - note that using PBKDF2 means we're also using a randomized IV per the
+			// format specification).
+			$salt             = substr($salt, 4);
+			$rightStringLimit -= 68;
+
+			$key          = self::pbkdf2($password, $salt, $algorithm, $iterations, $keySizeBytes);
+		}
+		elseif ($useStaticSalt)
+		{
+			// We have a static salt. Use it for PBKDF2.
+			$key = self::getStaticSaltExpandedKey($password);
+		}
+		else
+		{
+			// Get the expanded key from the password. THIS USES THE OLD, INSECURE METHOD.
+			$key = self::expandKey($password);
+		}
+
+		// Try to get the IV from the data
+		$iv               = substr($ciphertext, -24, 20);
+
+		if (substr($iv, 0, 4) == 'JPIV')
+		{
+			// We have a stored IV. Retrieve it and tell mdecrypt to process the string minus the last 24 bytes
+			// (4 bytes for JPIV, 16 bytes for the IV, 4 bytes for the uncompressed string length)
+			$iv               = substr($iv, 4);
+			$rightStringLimit -= 20;
+		}
+		else
+		{
+			// No stored IV. Do it the dumb way.
+			$iv = self::createTheWrongIV($password);
+		}
+
+		// Decrypt
+		$plaintext = $adapter->decrypt($iv . substr($ciphertext, 0, $rightStringLimit), $key);
+
+		// Trim padding, if necessary
+		if (strlen($plaintext) > $data_size)
+		{
+			$plaintext = substr($plaintext, 0, $data_size);
+		}
+
+		return $plaintext;
+	}
+
+	/**
+	 * That's the old way of creating an IV that's definitely not cryptographically sound.
+	 *
+	 * DO NOT USE, EVER, UNLESS YOU WANT TO DECRYPT LEGACY DATA
+	 *
+	 * @param   string $password The raw password from which we create an IV in a super bozo way
+	 *
+	 * @return  string  A 16-byte IV string
+	 */
+	public static function createTheWrongIV($password)
+	{
+		static $ivs = [];
+
+		$key = AKUtilsHash::md5($password);
+
+		if (!isset($ivs[$key]))
+		{
+			$nBytes  = 16;  // AES uses a 128 -bit (16 byte) block size, hence the IV size is always 16 bytes
+			$pwBytes = [];
+			for ($i = 0; $i < $nBytes; $i++)
+			{
+				$pwBytes[$i] = ord(substr($password, $i, 1)) & 0xff;
+			}
+			$iv    = self::Cipher($pwBytes, self::KeyExpansion($pwBytes));
+			$newIV = '';
+			foreach ($iv as $int)
+			{
+				$newIV .= chr($int);
+			}
+
+			$ivs[$key] = $newIV;
+		}
+
+		return $ivs[$key];
+	}
+
+	/**
+	 * Expand the password to an appropriate 128-bit encryption key
+	 *
+	 * @param   string $password
+	 *
+	 * @return  string
+	 *
+	 * @since   5.2.0
+	 * @author  Nicholas K. Dionysopoulos
+	 */
+	public static function expandKey($password)
+	{
+		// Try to fetch cached key or create it if it doesn't exist
+		$nBits     = 128;
+		$lookupKey = AKUtilsHash::md5($password . '-' . $nBits);
+
+		if (array_key_exists($lookupKey, self::$passwords))
+		{
+			$key = self::$passwords[$lookupKey];
+
+			return $key;
+		}
+
+		// use AES itself to encrypt password to get cipher key (using plain password as source for
+		// key expansion) - gives us well encrypted key.
+		$nBytes  = $nBits / 8; // Number of bytes in key
+		$pwBytes = [];
+
+		for ($i = 0; $i < $nBytes; $i++)
+		{
+			$pwBytes[$i] = ord(substr($password, $i, 1)) & 0xff;
+		}
+
+		$key    = self::Cipher($pwBytes, self::KeyExpansion($pwBytes));
+		$key    = array_merge($key, array_slice($key, 0, $nBytes - 16)); // expand key to 16/24/32 bytes long
+		$newKey = '';
+
+		foreach ($key as $int)
+		{
+			$newKey .= chr($int);
+		}
+
+		$key = $newKey;
+
+		self::$passwords[$lookupKey] = $key;
+
+		return $key;
+	}
+
+	/**
+	 * Returns the correct AES-128 CBC encryption adapter
+	 *
+	 * @return  AKEncryptionAESAdapterInterface
+	 *
+	 * @since   5.2.0
+	 * @author  Nicholas K. Dionysopoulos
+	 */
+	public static function getAdapter()
+	{
+		static $adapter = null;
+
+		if (is_object($adapter) && ($adapter instanceof AKEncryptionAESAdapterInterface))
+		{
+			return $adapter;
+		}
+
+		$adapter = new OpenSSL();
+
+		if (!$adapter->isSupported())
+		{
+			$adapter = new Mcrypt();
+		}
+
+		return $adapter;
+	}
+
+	/**
+	 * @return string
+	 */
+	public static function getPbkdf2Algorithm()
+	{
+		return self::$pbkdf2Algorithm;
+	}
+
+	/**
+	 * @param string $pbkdf2Algorithm
+	 * @return void
+	 */
+	public static function setPbkdf2Algorithm($pbkdf2Algorithm)
+	{
+		self::$pbkdf2Algorithm = $pbkdf2Algorithm;
+	}
+
+	/**
+	 * @return int
+	 */
+	public static function getPbkdf2Iterations()
+	{
+		return self::$pbkdf2Iterations;
+	}
+
+	/**
+	 * @param int $pbkdf2Iterations
+	 * @return void
+	 */
+	public static function setPbkdf2Iterations($pbkdf2Iterations)
+	{
+		self::$pbkdf2Iterations = $pbkdf2Iterations;
+	}
+
+	/**
+	 * @return int
+	 */
+	public static function getPbkdf2UseStaticSalt()
+	{
+		return self::$pbkdf2UseStaticSalt;
+	}
+
+	/**
+	 * @param int $pbkdf2UseStaticSalt
+	 * @return void
+	 */
+	public static function setPbkdf2UseStaticSalt($pbkdf2UseStaticSalt)
+	{
+		self::$pbkdf2UseStaticSalt = $pbkdf2UseStaticSalt;
+	}
+
+	/**
+	 * @return string
+	 */
+	public static function getPbkdf2StaticSalt()
+	{
+		return self::$pbkdf2StaticSalt;
+	}
+
+	/**
+	 * @param string $pbkdf2StaticSalt
+	 * @return void
+	 */
+	public static function setPbkdf2StaticSalt($pbkdf2StaticSalt)
+	{
+		self::$pbkdf2StaticSalt = $pbkdf2StaticSalt;
+	}
+
+	/**
+	 * Get the parameters fed into PBKDF2 to expand the user password into an encryption key. These are the static
+	 * parameters (key size, hashing algorithm and number of iterations). A new salt is used for each encryption block
+	 * to minimize the risk of attacks against the password.
+	 *
+	 * @return  array
+	 */
+	public static function getKeyDerivationParameters()
+	{
+		return [
+			'keySize'       => 16,
+			'algorithm'     => self::$pbkdf2Algorithm,
+			'iterations'    => self::$pbkdf2Iterations,
+			'useStaticSalt' => self::$pbkdf2UseStaticSalt,
+			'staticSalt'    => self::$pbkdf2StaticSalt,
+		];
+	}
+
+	/**
+	 * PBKDF2 key derivation function as defined by RSA's PKCS #5: https://www.ietf.org/rfc/rfc2898.txt
+	 *
+	 * Test vectors can be found here: https://www.ietf.org/rfc/rfc6070.txt
+	 *
+	 * This implementation of PBKDF2 was originally created by https://defuse.ca
+	 * With improvements by http://www.variations-of-shadow.com
+	 * Modified for Akeeba Engine by Akeeba Ltd (removed unnecessary checks to make it faster)
+	 *
+	 * @param   string  $password    The password.
+	 * @param   string  $salt        A salt that is unique to the password.
+	 * @param   string  $algorithm   The hash algorithm to use. Default is sha1.
+	 * @param   int     $count       Iteration count. Higher is better, but slower. Default: 1000.
+	 * @param   int     $key_length  The length of the derived key in bytes.
+	 *
+	 * @return  string  A string of $key_length bytes
+	 */
+	public static function pbkdf2($password, $salt, $algorithm = 'sha1', $count = 1000, $key_length = 16)
+	{
+		if (function_exists("hash_pbkdf2"))
+		{
+			return hash_pbkdf2($algorithm, $password, $salt, $count, $key_length, true);
+		}
+
+		$hash_length = akstringlen(hash($algorithm, "", true));
+		$block_count = ceil($key_length / $hash_length);
+
+		$output = "";
+
+		for ($i = 1; $i <= $block_count; $i++)
+		{
+			// $i encoded as 4 bytes, big endian.
+			$last = $salt . pack("N", $i);
+
+			// First iteration
+			$xorResult = hash_hmac($algorithm, $last, $password, true);
+			$last      = $xorResult;
+
+			// Perform the other $count - 1 iterations
+			for ($j = 1; $j < $count; $j++)
+			{
+				$last = hash_hmac($algorithm, $last, $password, true);
+				$xorResult ^= $last;
+			}
+
+			$output .= $xorResult;
+		}
+
+		return aksubstr($output, 0, $key_length);
+	}
+
+	/**
+	 * Get the expanded key from the user supplied password using a static salt. The results are cached for performance
+	 * reasons.
+	 *
+	 * @param   string  $password  The user-supplied password, UTF-8 encoded.
+	 *
+	 * @return  string  The expanded key
+	 */
+	private static function getStaticSaltExpandedKey($password)
+	{
+		$params        = self::getKeyDerivationParameters();
+		$keySizeBytes  = $params['keySize'];
+		$algorithm     = $params['algorithm'];
+		$iterations    = $params['iterations'];
+		$staticSalt    = $params['staticSalt'];
+
+		$lookupKey = "PBKDF2-$algorithm-$iterations-" . AKUtilsHash::md5($password . $staticSalt);
+
+		if (!array_key_exists($lookupKey, self::$passwords))
+		{
+			self::$passwords[$lookupKey] = self::pbkdf2($password, $staticSalt, $algorithm, $iterations, $keySizeBytes);
+		}
+
+		return self::$passwords[$lookupKey];
+	}
+
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+/**
+ * A timing safe equals comparison
+ *
+ * @param   string  $safe  The internal (safe) value to be checked
+ * @param   string  $user  The user submitted (unsafe) value
+ *
+ * @return  boolean  True if the two strings are identical.
+ *
+ * @see     http://blog.ircmaxell.com/2014/11/its-all-about-time.html
+ */
+function timingSafeEquals($safe, $user)
+{
+	$safeLen = strlen($safe);
+	$userLen = strlen($user);
+
+	if ($userLen != $safeLen)
+	{
+		return false;
+	}
+
+	$result = 0;
+
+	for ($i = 0; $i < $userLen; $i++)
+	{
+		$result |= (ord($safe[$i]) ^ ord($user[$i]));
+	}
+
+	// They are only identical strings if $result is exactly 0...
+	return $result === 0;
+}
+
+/**
+ * The Master Setup will read the configuration parameters from restoration.php or
+ * the JSON-encoded "configuration" input variable and return the status.
+ *
+ * @return bool True if the master configuration was applied to the Factory object
+ */
+function masterSetup()
+{
+	// ------------------------------------------------------------
+	// 1. Import basic setup parameters
+	// ------------------------------------------------------------
+
+	$ini_data = null;
+
+	// In restore.php mode, require restoration.php or fail
+	if (!defined('KICKSTART'))
+	{
+		// On Joomla 5 we need to look for a defines.php file, in case we are in a custom public folder
+		$definesFile = '../../../defines.php';
+
+		if (file_exists($definesFile))
+		{
+			$fileContents = @file_get_contents($definesFile) ?: '';
+
+			if (strpos($fileContents, "define('JPATH_PUBLIC'") !== false)
+			{
+				defined('_JEXEC') || define('_JEXEC', 1);
+			}
+
+			require_once $definesFile;
+		}
+
+		// This is the standalone mode, used by Akeeba Backup Professional. It looks for a restoration.php
+		// file to perform its magic. If the file is not there, we will abort.
+		$alternateFiles = [
+			__DIR__ . '/restoration.php',
+			'restoration.php',
+		];
+
+		if (defined('JPATH_PUBLIC'))
+		{
+			$alternateFiles[] = JPATH_PUBLIC . 'administrator/components/com_akeebabackup/restoration.php';
+		}
+
+		$foundSetupFile = false;
+
+		foreach ($alternateFiles as $setupFile)
+		{
+			if (file_exists($setupFile))
+			{
+				$foundSetupFile = true;
+
+				break;
+			}
+		}
+
+		if (!$foundSetupFile)
+		{
+			AKFactory::set('kickstart.enabled', false);
+
+			return false;
+		}
+
+		/**
+		 * If the setup file was created more than 1.5 hours ago we can assume that it's stale and someone forgot to
+		 * remove it from the server. This hinders brute force attacks against the Kickstart password. Even a simple
+		 * 8 character simple alphanum (a-z, 0-9) password yields over 2.8e12. Assuming a very fast server which can
+		 * serve 100 requests to restore.php per second and an easy to attack password requiring going over just 1% of
+		 * the search space it'd still take over 282 million seconds to brute force it. Our limit is more than 4 orders
+		 * of magnitude lower than this best practical case scenario, giving us adequate protection against all but the
+		 * luckiest attacker (spoiler alert: the mathematics of probabilities say you're not gonna get lucky).
+		 *
+		 * It is still advisable to remove the restoration.php file once you are done with the extraction. This check
+		 * here is only meant as a failsafe in case of a server error during the extraction and subsequent lack of user
+		 * action to remove the restoration.php file from their server.
+		 */
+		$setupFieCreationTime = filectime($setupFile);
+
+		if (abs(time() - $setupFieCreationTime) > 5400)
+		{
+			AKFactory::set('kickstart.enabled', false);
+
+			return false;
+		}
+
+		// Load restoration.php. It creates a global variable named $restoration_setup
+		require_once $setupFile;
+
+		$ini_data = $restoration_setup;
+
+		if (empty($ini_data))
+		{
+			// No parameters fetched. Darn, how am I supposed to work like that?!
+			AKFactory::set('kickstart.enabled', false);
+
+			return false;
+		}
+
+		AKFactory::set('kickstart.enabled', true);
+	}
+	else
+	{
+		// Maybe we have $restoration_setup defined in the head of kickstart.php
+		global $restoration_setup;
+
+		if (!empty($restoration_setup) && !is_array($restoration_setup))
+		{
+			$ini_data = AKText::parse_ini_file($restoration_setup, false, true);
+		}
+		elseif (is_array($restoration_setup))
+		{
+			$ini_data = $restoration_setup;
+		}
+	}
+
+	// Import any data from $restoration_setup
+	if (!empty($ini_data))
+	{
+		foreach ($ini_data as $key => $value)
+		{
+			AKFactory::set($key, $value);
+		}
+		AKFactory::set('kickstart.enabled', true);
+	}
+
+	// Reinitialize $ini_data
+	$ini_data = null;
+
+	/**
+	 * August 2018. Some third party developer with a dubious skill level (or complete lack thereof) wrote a piece of
+	 * code which uses restore.php with an empty password (and never deleted the restoration.php file he created).
+	 * According to his code comments he did this because he couldn't figure out how to make encrypted requests work,
+	 * DESPITE THE FACT that com_joomlaupdate (part of Joomla! itself) has working code which does EXACTLY THAT. >:-o
+	 *
+	 * As a result of his actions all sites running his software have a massive vulnerability inflicted upon them. An
+	 * attacker can absuse the (unlocked) restore.php to upload and install any arbitrary code in a ZIP archive,
+	 * possibly overwriting core code. Discovering this problem takes a few seconds and there is code which is doing
+	 * exactly that published years ago (during the active maintenance period of Joomla! 3.4, that long ago).
+	 *
+	 * This bit of code here detects an empty password and disables restore.php. His badly written software fails to
+	 * execute and, most importantly, the unlucky users of his software will no longer have a remote code upload /
+	 * remote code execution vulnerability on their sites.
+	 *
+	 * Remember, people, if you can't be bothered to take web application security seriously DO NOT SELL WEB SOFTWARE
+	 * FOR A LIVING. There are other honest jobs you can do which don't involve using a computer in a dangerous and
+	 * irresponsible manner.
+	 */
+	$password = AKFactory::get('kickstart.security.password', null);
+
+	if (empty($password) || (trim($password) == '') || (strlen(trim($password)) < 10))
+	{
+		AKFactory::set('kickstart.enabled', false);
+
+		return false;
+	}
+
+
+	// ------------------------------------------------------------
+	// 2. Explode JSON parameters into $_REQUEST scope
+	// ------------------------------------------------------------
+
+	// Detect a JSON string in the request variable and store it.
+	$json = getQueryParam('json', null);
+
+	// Detect a password in the request variable and store it.
+	$userPassword = getQueryParam('password', '');
+
+	// Remove everything from the request, post and get arrays
+	if (!empty($_REQUEST))
+	{
+		foreach ($_REQUEST as $key => $value)
+		{
+			unset($_REQUEST[$key]);
+		}
+	}
+
+	if (!empty($_POST))
+	{
+		foreach ($_POST as $key => $value)
+		{
+			unset($_POST[$key]);
+		}
+	}
+
+	if (!empty($_GET))
+	{
+		foreach ($_GET as $key => $value)
+		{
+			unset($_GET[$key]);
+		}
+	}
+
+	// Authentication - Akeeba Restore 5.4.0 or later
+	$password = AKFactory::get('kickstart.security.password', null);
+	$isAuthenticated = false;
+
+	/**
+	 * Akeeba Restore 5.3.1 and earlier use a custom implementation of AES-128 in CTR mode to encrypt the JSON data
+	 * between client and server. This is not used as a means to maintain secrecy (it's symmetrical encryption and the
+	 * key is, by necessity, transmitted with the HTML page to the client). It's meant as a form of authentication, so
+	 * that the server part can ensure that it only receives commands by an authorized client.
+	 *
+	 * The downside is that encryption in CTR mode (like CBC) is an all-or-nothing affair. This opens the possibility
+	 * for a padding oracle attack (https://en.wikipedia.org/wiki/Padding_oracle_attack). While Akeeba Restore was
+	 * hardened in 2014 to prevent the bulk of suck attacks it is still possible to attack the encryption using a very
+	 * large number of requests (several dozens of thousands).
+	 *
+	 * Since Akeeba Restore 5.4.0 we have removed this authentication method and replaced it with the transmission of a
+	 * very large length password. On the server side we use a timing safe password comparison. By its very nature, it
+	 * will only leak the (well known, constant and large) length of the password but no more information about the
+	 * password itself. See http://blog.ircmaxell.com/2014/11/its-all-about-time.html  As a result this form of
+	 * authentication is many orders of magnitude harder to crack than regular encryption.
+	 *
+	 * Now you may wonder "how is sending a password in the clear hardier than encryption?". If you ask that question
+	 * you were not paying attention. The password needs to be known by BOTH the server AND the client (browser). Since
+	 * this password is generated programmatically by the server, it MUST be sent to the client by the server. If an
+	 * attacker is able to intercept this transmission (man in the middle attack) using encryption is irrelevant: the
+	 * attacker already knows your password. This situation also applies when the user sends their own password to the
+	 * server, e.g. when logging into their site. The ONLY way to avoid security issues regarding information being
+	 * stolen in transit is using HTTPS with a commercially signed SSL certificate. Unlike 2008, when Kickstart was
+	 * originally written, obtaining such a certificate nowadays is trivial and costs absolutely nothing thanks to Let's
+	 * Encrypt (https://letsencrypt.org/).
+	 *
+	 * TL;DR: Use HTTPS with a commercially signed SSL certificate, e.g. a free certificate from Let's Encrypt. Client-
+	 * side cryptography does NOT protect you against an attacker (see
+	 * https://www.nccgroup.trust/us/about-us/newsroom-and-events/blog/2011/august/javascript-cryptography-considered-harmful/).
+	 * Moreover, sending a plaintext password is safer than relying on client-side encryption for authentication as it
+	 * removes the possibility of an attacker inferring the contents of the authentication key (password) in a relatively
+	 * easy and automated manner.
+	 */
+	if (!empty($password))
+	{
+		// Timing-safe password comparison. See http://blog.ircmaxell.com/2014/11/its-all-about-time.html
+		if (!timingSafeEquals($password, $userPassword))
+		{
+			die('###{"status":false,"message":"Invalid login"}###');
+		}
+	}
+
+	// No JSON data? Die.
+	if (empty($json))
+	{
+		die('###{"status":false,"message":"Invalid JSON data"}###');
+	}
+
+	// Handle the JSON string
+	$raw = json_decode($json, true);
+
+	// Invalid JSON data?
+	if (empty($raw))
+	{
+		die('###{"status":false,"message":"Invalid JSON data"}###');
+	}
+
+	// Pass all JSON data to the request array
+	if (!empty($raw))
+	{
+		foreach ($raw as $key => $value)
+		{
+			$_REQUEST[$key] = $value;
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 3. Try the "factory" variable
+	// ------------------------------------------------------------
+	// A "factory" variable will override all other settings.
+	$serialized = getQueryParam('factory', null);
+
+	if (!is_null($serialized))
+	{
+		// Get the serialized factory
+		AKFactory::unserialize($serialized);
+		AKFactory::set('kickstart.enabled', true);
+
+		return true;
+	}
+
+	// ------------------------------------------------------------
+	// 4. Try the configuration variable for Kickstart
+	// ------------------------------------------------------------
+	if (defined('KICKSTART'))
+	{
+		$configuration = getQueryParam('configuration');
+
+		if (!is_null($configuration))
+		{
+			// Let's decode the configuration from JSON to array
+			$ini_data = json_decode($configuration, true);
+		}
+		else
+		{
+			// Neither exists. Enable Kickstart's interface anyway.
+			$ini_data = ['kickstart.enabled' => true];
+		}
+
+		// Import any INI data we might have from other sources
+		if (!empty($ini_data))
+		{
+			foreach ($ini_data as $key => $value)
+			{
+				AKFactory::set($key, $value);
+			}
+
+			AKFactory::set('kickstart.enabled', true);
+
+			return true;
+		}
+	}
+}
+
+/**
+ * Akeeba Restore
+ * An AJAX-powered archive extraction library for JPA, JPS and ZIP archives
+ *
+ * @package   restore
+ * @copyright Copyright (c)2008-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @license   GNU General Public License version 3, or later
+ */
+
+// Mini-controller for restore.php
+if (!defined('KICKSTART'))
+{
+	// The observer class, used to report number of files and bytes processed
+	class RestorationObserver extends AKAbstractPartObserver
+	{
+		public $compressedTotal = 0;
+		public $uncompressedTotal = 0;
+		public $filesProcessed = 0;
+
+		public function update($object, $message)
+		{
+			if (!is_object($message))
+			{
+				return;
+			}
+
+			if (!array_key_exists('type', get_object_vars($message)))
+			{
+				return;
+			}
+
+			if ($message->type == 'startfile')
+			{
+				$this->filesProcessed++;
+				$this->compressedTotal += $message->content->compressed;
+				$this->uncompressedTotal += $message->content->uncompressed;
+			}
+		}
+
+		public function __toString()
+		{
+			return self::class;
+		}
+
+	}
+
+	// Import configuration
+	masterSetup();
+
+	$retArray = [
+		'status'  => true,
+		'message' => null
+	];
+
+	$enabled = AKFactory::get('kickstart.enabled', false);
+
+	if ($enabled)
+	{
+		$task = getQueryParam('task');
+
+		switch ($task)
+		{
+			case 'ping':
+				// ping task - really does nothing!
+				$timer = AKFactory::getTimer();
+				$timer->enforce_min_exec_time();
+				break;
+
+			/**
+			 * There are two separate steps here since we were using an inefficient restoration initialization method in
+			 * the past. Now both startRestore and stepRestore are identical. The difference in behavior depends
+			 * exclusively on the calling Javascript. If no serialized factory was passed in the request then we start a
+			 * new restoration. If a serialized factory was passed in the request then the restoration is resumed. For
+			 * this reason we should NEVER call AKFactory::nuke() in startRestore anymore: that would simply reset the
+			 * extraction engine configuration which was done in masterSetup() leading to an error about the file being
+			 * invalid (since no file is found).
+			 */
+			case 'startRestore':
+			case 'stepRestore':
+				if ($task == 'startRestore')
+				{
+					// Fetch path to the site root from the restoration.php file, so we can tell the engine where it should operate
+					$siteRoot = AKFactory::get('kickstart.setup.destdir', '');
+
+					// Before starting, read and save any custom AddHandler directive
+					$phpHandlers = getPhpHandlers($siteRoot);
+					AKFactory::set('kickstart.setup.phphandlers', $phpHandlers);
+
+					// If the Stealth Mode is enabled, create the .htaccess file
+					if (AKFactory::get('kickstart.stealth.enable', false))
+					{
+						createStealthURL($siteRoot);
+					}
+					// No stealth mode, but we have custom handler directives, must write our own file
+					elseif ($phpHandlers)
+					{
+						writePhpHandlers($siteRoot);
+					}
+				}
+
+				/**
+				 * First try to run the filesystem zapper (remove all existing files and folders). If the Zapper is
+				 * disabled or has already finished running we will get a FALSE result. Otherwise it's a status array
+				 * which we can pass directly back to the caller.
+				 */
+				$nullObserver = new AKPartNullObserver();
+				$ret          = runZapper($nullObserver);
+
+				// If the Zapper had a step to run we stop here and return its status array to the caller.
+				if ($ret !== false)
+				{
+					$retArray = array_merge($retArray, $ret);
+
+					break;
+				}
+
+				$engine   = AKFactory::getUnarchiver(); // Get the engine
+				$observer = new RestorationObserver(); // Create a new observer
+				$engine->attach($observer); // Attach the observer
+				$engine->tick();
+				$ret = $engine->getStatusArray();
+
+				if ($ret['Error'] != '')
+				{
+					$retArray['status']  = false;
+					$retArray['done']    = true;
+					$retArray['message'] = $ret['Error'];
+				}
+				elseif (!$ret['HasRun'])
+				{
+					$retArray['files']    = $observer->filesProcessed;
+					$retArray['bytesIn']  = $observer->compressedTotal;
+					$retArray['bytesOut'] = $observer->uncompressedTotal;
+					$retArray['status']   = true;
+					$retArray['done']     = true;
+				}
+				else
+				{
+					$retArray['files']    = $observer->filesProcessed;
+					$retArray['bytesIn']  = $observer->compressedTotal;
+					$retArray['bytesOut'] = $observer->uncompressedTotal;
+					$retArray['status']   = true;
+					$retArray['done']     = false;
+					$retArray['factory']  = AKFactory::serialize();
+				}
+
+				$timer = AKFactory::getTimer();
+				$timer->enforce_min_exec_time();
+
+				break;
+
+			case 'finalizeRestore':
+				$root = AKFactory::get('kickstart.setup.destdir');
+				// Remove the installation directory
+				recursive_remove_directory($root . '/installation');
+
+				$postproc = AKFactory::getPostProc();
+
+				/**
+				 * Should I rename the htaccess.bak and web.config.bak files back to their live filenames...?
+				 */
+				$renameFiles = AKFactory::get('kickstart.setup.postrenamefiles', true);
+
+				if ($renameFiles)
+				{
+					// Rename htaccess.bak to .htaccess
+					if (file_exists($root . '/htaccess.bak'))
+					{
+						if (file_exists($root . '/.htaccess'))
+						{
+							$postproc->unlink($root . '/.htaccess');
+						}
+
+						$postproc->rename($root . '/htaccess.bak', $root . '/.htaccess');
+					}
+
+					// Rename htaccess.bak to .htaccess
+					if (file_exists($root . '/web.config.bak'))
+					{
+						if (file_exists($root . '/web.config'))
+						{
+							$postproc->unlink($root . '/web.config');
+						}
+
+						$postproc->rename($root . '/web.config.bak', $root . '/web.config');
+					}
+				}
+
+				// Remove restoration.php
+				$basepath = KSROOTDIR;
+				$basepath = rtrim(str_replace('\\', '/', $basepath), '/');
+
+				if (!empty($basepath))
+				{
+					$basepath .= '/';
+				}
+
+				$postproc->unlink($basepath . 'restoration.php');
+				clearFileInOPCache($basepath . 'restoration.php');
+
+				// Import a custom finalisation file
+				$filename = __DIR__ . '/restore_finalisation.php';
+
+				if (file_exists($filename))
+				{
+					// opcode cache busting before including the filename
+					if (function_exists('opcache_invalidate'))
+					{
+						opcache_invalidate($filename, true);
+					}
+
+					if (function_exists('apc_compile_file'))
+					{
+						apc_compile_file($filename);
+					}
+
+					if (function_exists('wincache_refresh_if_changed'))
+					{
+						wincache_refresh_if_changed([$filename]);
+					}
+
+					if (function_exists('xcache_asm'))
+					{
+						xcache_asm($filename);
+					}
+
+					include_once $filename;
+				}
+
+				// Run a custom finalisation script
+				if (function_exists('finalizeRestore'))
+				{
+					finalizeRestore($root, $basepath);
+				}
+
+				break;
+
+			default:
+				// Invalid task!
+				$enabled = false;
+				break;
+		}
+	}
+
+	// Maybe we weren't authorized or the task was invalid?
+	if (!$enabled)
+	{
+		// Maybe the user failed to enter any information
+		$retArray['status']  = false;
+		$retArray['message'] = AKText::_('ERR_INVALID_LOGIN');
+	}
+
+	// JSON encode the message
+	$json = json_encode($retArray);
+
+	// Return the message
+	echo "###$json###";
+
+}
+
+// ------------ lixlpixel recursive PHP functions -------------
+// recursive_remove_directory( directory to delete, empty )
+// expects path to directory and optional TRUE / FALSE to empty
+// of course PHP has to have the rights to delete the directory
+// you specify and all files and folders inside the directory
+// ------------------------------------------------------------
+function recursive_remove_directory($directory)
+{
+	// if the path has a slash at the end we remove it here
+	if (substr($directory, -1) == '/')
+	{
+		$directory = substr($directory, 0, -1);
+	}
+
+	// if the path is not valid or is not a directory ...
+	if (!file_exists($directory) || !is_dir($directory))
+	{
+		// ... we return false and exit the function
+		return false;
+		// ... if the path is not readable
+	}
+	elseif (!is_readable($directory))
+	{
+		// ... we return false and exit the function
+		return false;
+		// ... else if the path is readable
+	}
+	else
+	{
+		// we open the directory
+		$handle   = opendir($directory);
+		$postproc = AKFactory::getPostProc();
+
+		// and scan through the items inside
+		while (false !== ($item = readdir($handle)))
+		{
+			// if the filepointer is not the current directory
+			// or the parent directory
+
+			if ($item != '.' && $item != '..')
+			{
+				// we build the new path to delete
+				$path = $directory . '/' . $item;
+
+				// if the new path is a directory
+				if (is_dir($path))
+				{
+					// we call this function with the new path
+					recursive_remove_directory($path);
+					// if the new path is a file
+				}
+				else
+				{
+					// we remove the file
+					$postproc->unlink($path);
+					clearFileInOPCache($path);
+				}
+			}
+		}
+
+		// close the directory
+		closedir($handle);
+
+		// try to delete the now empty directory
+		if (!$postproc->rmdir($directory))
+		{
+			// return false if not possible
+			return false;
+		}
+
+		// return success
+		return true;
+	}
+}
+
+function createStealthURL($siteRoot = '')
+{
+	$filename = AKFactory::get('kickstart.stealth.url', '');
+
+	// We need an HTML file!
+	if (empty($filename))
+	{
+		return;
+	}
+
+	// Make sure it ends in .html or .htm
+	$filename = basename($filename);
+
+	if ((strtolower(substr($filename, -5)) != '.html') && (strtolower(substr($filename, -4)) != '.htm'))
+	{
+		return;
+	}
+
+	if ($siteRoot)
+	{
+		$siteRoot = rtrim($siteRoot, '/').'/';
+	}
+
+	$filename_quoted = str_replace('.', '\\.', $filename);
+	$rewrite_base    = trim(dirname(AKFactory::get('kickstart.stealth.url', '')), '/');
+
+	// Get the IP
+	$userIP = $_SERVER['REMOTE_ADDR'];
+	$userIP = str_replace('.', '\.', $userIP);
+
+	// Get the .htaccess contents
+	$stealthHtaccess = <<<ENDHTACCESS
+RewriteEngine On
+RewriteBase /$rewrite_base
+RewriteCond %{REMOTE_ADDR}		!$userIP
+RewriteCond %{REQUEST_URI}		!$filename_quoted
+RewriteCond %{REQUEST_URI}		!(\.png|\.jpg|\.gif|\.jpeg|\.bmp|\.swf|\.css|\.js)$
+RewriteRule (.*)				$filename	[R=307,L]
+
+ENDHTACCESS;
+
+	$customHandlers = portPhpHandlers();
+
+	// Port any custom handlers in the stealth file
+	if ($customHandlers)
+	{
+		$stealthHtaccess .= "\n".$customHandlers."\n";
+	}
+
+	// Write the new .htaccess, removing the old one first
+	$postproc = AKFactory::getpostProc();
+	$postproc->unlink($siteRoot.'.htaccess');
+	$tempfile = $postproc->processFilename($siteRoot.'.htaccess');
+	@file_put_contents($tempfile, $stealthHtaccess);
+	$postproc->process();
+}
+
+/**
+ * Checks if there is an .htaccess file and has any AddHandler directive in it.
+ * In that case, we return the affected lines so they could be stored for later use
+ *
+ * @return  array
+ */
+function getPhpHandlers($root = null)
+{
+	if (!$root)
+	{
+		$root = AKKickstartUtils::getPath();
+	}
+
+	$htaccess   = $root.'/.htaccess';
+	$directives = [];
+
+	if (!file_exists($htaccess))
+	{
+		return $directives;
+	}
+
+	$contents   = file_get_contents($htaccess);
+	$directives = AKUtilsHtaccess::extractHandler($contents);
+	$directives = empty($directives) ? [] : explode("\n", $directives);
+
+	return $directives;
+}
+
+/**
+ * Fetches any stored php handler directive stored inside the factory and creates a string with the correct markers
+ *
+ * @return string
+ */
+function portPhpHandlers()
+{
+	$phpHandlers = AKFactory::get('kickstart.setup.phphandlers', []);
+
+	if (!$phpHandlers)
+	{
+		return '';
+	}
+
+	$customHandler  = "### AKEEBA_KICKSTART_PHP_HANDLER_BEGIN ###\n";
+	$customHandler .= implode("\n", $phpHandlers)."\n";
+	$customHandler .= "### AKEEBA_KICKSTART_PHP_HANDLER_END ###\n";
+
+	return $customHandler;
+}
+
+function writePhpHandlers($siteRoot = '')
+{
+	$contents = portPhpHandlers();
+
+	if (!$contents)
+	{
+		return;
+	}
+
+	if ($siteRoot)
+	{
+		$siteRoot = rtrim($siteRoot, '/').'/';
+	}
+
+	// Write the new .htaccess, removing the old one first
+	$postproc = AKFactory::getpostProc();
+	$postproc->unlink($siteRoot.'.htaccess');
+	$tempfile = $postproc->processFilename($siteRoot.'.htaccess');
+	@file_put_contents($tempfile, $contents);
+	$postproc->process();
+}

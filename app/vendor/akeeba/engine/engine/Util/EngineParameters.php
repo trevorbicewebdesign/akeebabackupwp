@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -616,6 +616,9 @@ class EngineParameters
 		// Get a reference to the configuration
 		$configuration = Factory::getConfiguration();
 
+		// Determine the database technology family of the site being backed up, e.g. to filter dbtype-gated params
+		$siteDbTypeFamily = $this->getSiteDatabaseTypeFamily();
+
 		// Get data for all engines
 		$engine_types = [
 			'archiver',
@@ -659,6 +662,12 @@ class EngineParameters
 
 				foreach ($engine_data['parameters'] as $param_key => $param)
 				{
+					// Skip parameters (and separators) tied to a database technology other than the site's own
+					if (isset($param['dbtype']) && ($param['dbtype'] !== $siteDbTypeFamily))
+					{
+						continue;
+					}
+
 					$param['default'] = $configuration->get($param_key, $param['default'], false);
 
 					foreach ($param as $option_key => $option_value)
@@ -1014,6 +1023,33 @@ class EngineParameters
 		{
 			array_unshift($this->enginePartPaths[$section], $path);
 		}
+	}
+
+	/**
+	 * Returns the database technology family ("mysql", "postgres", ...) of the site's own database, as configured
+	 * in the current platform. Used to filter out GUI parameters (via their `dbtype` attribute) which only apply to
+	 * a different database technology than the one actually in use.
+	 *
+	 * @return  string
+	 *
+	 * @since   __DEPLOY_VERSION__
+	 */
+	private function getSiteDatabaseTypeFamily(): string
+	{
+		$driverClass = Platform::getInstance()->get_default_database_driver();
+		$driverName  = strtolower(is_string($driverClass) ? basename(str_replace('\\', '/', $driverClass)) : '');
+
+		if (str_contains($driverName, 'postgres') || str_contains($driverName, 'pgsql'))
+		{
+			return 'postgres';
+		}
+
+		if (str_contains($driverName, 'mysql'))
+		{
+			return 'mysql';
+		}
+
+		return $driverName;
 	}
 
 	/**

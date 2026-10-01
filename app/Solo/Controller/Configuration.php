@@ -38,7 +38,7 @@ class Configuration extends ControllerDefault
 		$this->csrfProtection();
 
 		// Which input am I going to use?
-		$jsonFormData = $this->input->getString('jsonForm', null);
+		$jsonFormData = $this->input->get('jsonForm', null, 'raw');
 		$jsonFormData = is_string($jsonFormData) ? @json_decode($jsonFormData, true) : $jsonFormData;
 
 		if (empty($jsonFormData))
@@ -173,6 +173,9 @@ class Configuration extends ControllerDefault
 	 */
 	public function testftp()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Configuration $model */
 		$model = $this->getModel();
 
@@ -218,6 +221,9 @@ class Configuration extends ControllerDefault
 	 */
 	public function testsftp()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Configuration $model */
 		$model = $this->getModel();
 
@@ -262,6 +268,9 @@ class Configuration extends ControllerDefault
 	 */
 	public function dpeoauthopen()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Configuration $model */
 		$model = $this->getModel();
 
@@ -287,6 +296,9 @@ class Configuration extends ControllerDefault
 	 */
 	public function dpecustomapi()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Configuration $model */
 		$model = $this->getModel();
 
@@ -320,6 +332,9 @@ class Configuration extends ControllerDefault
 	 */
 	public function dpecustomapiraw()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		/** @var \Solo\Model\Configuration $model */
 		$model = $this->getModel();
 

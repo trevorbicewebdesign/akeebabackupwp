@@ -31,7 +31,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SETUP_LBL_DATABASE_HOST')
     </label>
     <input type="text" id="host" name="host" placeholder="@lang('SOLO_SETUP_LBL_DATABASE_HOST')"
-           value="{{ $config->get('dbhost') }}">
+           value="{{{ $config->get('dbhost') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SETUP_LBL_DATABASE_HOST_HELP')
     </p>
@@ -42,7 +42,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SETUP_LBL_DATABASE_USER')
     </label>
     <input type="text" id="user" name="user" placeholder="@lang('SOLO_SETUP_LBL_DATABASE_USER')"
-           value="{{ $config->get('dbuser') }}">
+           value="{{{ $config->get('dbuser') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SETUP_LBL_DATABASE_USER_HELP')
     </p>
@@ -53,7 +53,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SETUP_LBL_DATABASE_PASS')
     </label>
     <input type="password" id="pass" name="pass" placeholder="@lang('SOLO_SETUP_LBL_DATABASE_PASS')"
-           value="{{ $config->get('dbpass') }}">
+           value="{{{ $config->get('dbpass') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SETUP_LBL_DATABASE_PASS_HELP')
     </p>
@@ -64,7 +64,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SETUP_LBL_DATABASE_NAME')
     </label>
     <input type="text" id="name" name="name" placeholder="@lang('SOLO_SETUP_LBL_DATABASE_NAME')"
-           value="{{ $config->get('dbname') }}">
+           value="{{{ $config->get('dbname') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SETUP_LBL_DATABASE_NAME_HELP')
     </p>
@@ -75,7 +75,7 @@ $config = $this->getContainer()->appConfig;
         @lang('SOLO_SETUP_LBL_DATABASE_PREFIX')
     </label>
     <input type="text" id="prefix" name="prefix" placeholder="@lang('SOLO_SETUP_LBL_DATABASE_PREFIX')"
-           value="{{ $config->get('prefix') }}">
+           value="{{{ $config->get('prefix') }}}">
     <p class="akeeba-help-text">
         @lang('SOLO_SETUP_LBL_DATABASE_PREFIX_HELP')
     </p>

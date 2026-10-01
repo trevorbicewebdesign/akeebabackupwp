@@ -7,9 +7,9 @@
 
 namespace Solo\View\Log;
 
-use Akeeba\Engine\Factory;
 use Awf\Mvc\View;
 use Awf\Utils\Template;
+use Solo\Helper\Utils;
 use Solo\Model\Log;
 use Solo\View\ViewTraits\ProfileIdAndName;
 
@@ -69,17 +69,9 @@ class Html extends View
 		// Let's check if the file is too big to display
 		if ($this->tag)
 		{
-			$logFile = Factory::getLog()->getLogFilename($this->tag);
+			$logFile = Utils::getLogFilePath($this->tag);
 
-			if (!@is_file($logFile) && @file_exists(substr($logFile, 0, -4)))
-			{
-				/**
-				 * Bad host: the log file akeeba.tag.log.php may not exist but the akeeba.tag.log does.
-				 */
-				$logFile = substr($logFile, 0, -4);
-			}
-
-			if (@file_exists($logFile))
+			if (!is_null($logFile))
 			{
 				$this->logSize   = filesize($logFile);
 				$this->logTooBig = ($this->logSize >= self::bigLogSize);

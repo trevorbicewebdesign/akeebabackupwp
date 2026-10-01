@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -22,6 +22,7 @@ defined('AKEEBAENGINE') || die();
 
 use Akeeba\Engine\Base\Part;
 use Akeeba\Engine\Core\Domain\Finalizer\LocalQuotas;
+use Akeeba\Engine\Core\Domain\Finalizer\LogFileQuotas;
 use Akeeba\Engine\Core\Domain\Finalizer\MailAdministrators;
 use Akeeba\Engine\Core\Domain\Finalizer\ObsoleteRecordsQuotas;
 use Akeeba\Engine\Core\Domain\Finalizer\PostProcessing;
@@ -144,6 +145,7 @@ final class Finalization extends Part
 			LocalQuotas::class,
 			RemoteQuotas::class,
 			ObsoleteRecordsQuotas::class,
+			LogFileQuotas::class,
 		];
 
 		// Get the default finalization actions

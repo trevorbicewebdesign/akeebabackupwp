@@ -61,9 +61,7 @@
         "default": "",
         "type": "string",
         "title": "COM_AKEEBA_CONFIG_POSTPROCSFTP_INITDIR_TITLE",
-        "description": "COM_AKEEBA_CONFIG_POSTPROCSFTP_INITDIR_DESCRIPTION",
-        "hook": "akeeba_postprocsftpcurl_init_browser",
-        "buttontitle": "UI-BROWSE"
+        "description": "COM_AKEEBA_CONFIG_POSTPROCSFTP_INITDIR_DESCRIPTION"
     },
     "engine.postproc.sftpcurl.sftp_test": {
         "default": "0",

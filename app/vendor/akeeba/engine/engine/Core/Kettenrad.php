@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -809,6 +809,25 @@ function akeebaEngineErrorHandler($errno, $errstr, $errfile, $errline)
 		return false;
 	}
 
+	/**
+	 * Special consideration: Joomla.
+	 *
+	 * Joomla logs a crapton of user deprecated notices **from its own core code**. If we have a user deprecated notice
+	 * in Joomla and the source file does not look like it is part of our software, we will not log it.
+	 */
+	$realFile = realpath($errfile);
+	$realLibs = defined('JPATH_LIBRARIES') ? realpath(JPATH_LIBRARIES) : null;
+
+	if (defined('_JEXEC')
+	    && $errno === E_USER_DEPRECATED
+	    && !empty($realLibs)
+	    && !empty($realFile)
+	    && str_starts_with($realFile, $realLibs)
+	)
+	{
+		return false;
+	}
+
 	// Do not proceed if the error springs from an @function() construct, or if
 	// the overall error reporting level is set to report no errors.
 	$error_reporting = error_reporting();
@@ -828,7 +847,7 @@ function akeebaEngineErrorHandler($errno, $errstr, $errfile, $errline)
 		case E_USER_ERROR:
 		case E_RECOVERABLE_ERROR:
 			/**
-			 * This will only work for E_RECOVERABLE_ERROR and E_USER_ERROR, not E_ERROR. In PHP 7 all errors throw an
+			 * This will only work for E_RECOVERABLE_ERROR and E_USER_ERROR, not E_ERROR. In PHP 7+ all errors throw an
 			 * Error throwable (a special kind of exception) which propagates nicely within our architecture.
 			 */
 			Factory::getLog()->error("PHP FATAL ERROR on line $errline in file $errfile:");
@@ -874,7 +893,7 @@ function akeebaEngineErrorHandler($errno, $errstr, $errfile, $errline)
 			break;
 
 		default:
-			// These are E_DEPRECATED, E_STRICT etc. Let PHP handle them
+			// Anything other. Let PHP handle it.
 			return false;
 
 			break;
@@ -882,7 +901,9 @@ function akeebaEngineErrorHandler($errno, $errstr, $errfile, $errline)
 
 	if ($loggable)
 	{
-		Factory::getLog()->{$logMode}("PHP $type (not an error; you can ignore) on line $errline in file $errfile:");
+		Factory::getLog()->{$logMode}(
+			sprintf("PHP %s (not an error; you can ignore) on line %s in file %s:", $type, $errline, $realFile)
+		);
 		Factory::getLog()->{$logMode}($errstr);
 	}
 

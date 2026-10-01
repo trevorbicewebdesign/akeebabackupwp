@@ -12,20 +12,20 @@ class ComposerStaticInitb42cdaeebd151c87a1463e2997311e2b
     );
 
     public static $prefixLengthsPsr4 = array (
-        'S' => 
+        'S' =>
         array (
             'Solo\\Alice\\' => 11,
             'Solo\\' => 5,
         ),
-        'P' => 
+        'P' =>
         array (
             'PHPMailer\\PHPMailer\\' => 20,
         ),
-        'C' => 
+        'C' =>
         array (
             'Composer\\CaBundle\\' => 18,
         ),
-        'A' => 
+        'A' =>
         array (
             'Awf\\' => 4,
             'Akeeba\\UsageStats\\Collector\\' => 28,
@@ -36,48 +36,48 @@ class ComposerStaticInitb42cdaeebd151c87a1463e2997311e2b
     );
 
     public static $prefixDirsPsr4 = array (
-        'Solo\\Alice\\' => 
+        'Solo\\Alice\\' =>
         array (
             0 => __DIR__ . '/../..' . '/Solo/AliceChecks',
         ),
-        'Solo\\' => 
+        'Solo\\' =>
         array (
             0 => __DIR__ . '/../..' . '/Solo',
         ),
-        'PHPMailer\\PHPMailer\\' => 
+        'PHPMailer\\PHPMailer\\' =>
         array (
             0 => __DIR__ . '/..' . '/phpmailer/phpmailer/src',
         ),
-        'Composer\\CaBundle\\' => 
+        'Composer\\CaBundle\\' =>
         array (
             0 => __DIR__ . '/..' . '/composer/ca-bundle/src',
         ),
-        'Awf\\' => 
+        'Awf\\' =>
         array (
             0 => __DIR__ . '/..' . '/akeeba/awf/src',
         ),
-        'Akeeba\\UsageStats\\Collector\\' => 
+        'Akeeba\\UsageStats\\Collector\\' =>
         array (
             0 => __DIR__ . '/..' . '/akeeba/stats_collector/src',
         ),
-        'Akeeba\\S3\\' => 
+        'Akeeba\\S3\\' =>
         array (
             0 => __DIR__ . '/..' . '/akeeba/s3/src',
         ),
-        'Akeeba\\PHPFinder\\' => 
+        'Akeeba\\PHPFinder\\' =>
         array (
             0 => __DIR__ . '/..' . '/akeeba/phpfinder/src',
         ),
-        'Akeeba\\Engine\\' => 
+        'Akeeba\\Engine\\' =>
         array (
             0 => __DIR__ . '/..' . '/akeeba/engine/engine',
         ),
     );
 
     public static $prefixesPsr0 = array (
-        'P' => 
+        'P' =>
         array (
-            'PHPSQLParser\\' => 
+            'PHPSQLParser\\' =>
             array (
                 0 => __DIR__ . '/..' . '/greenlion/php-sql-parser/src',
             ),

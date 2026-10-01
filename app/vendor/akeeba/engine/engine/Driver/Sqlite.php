@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -191,7 +191,17 @@ class Sqlite extends Base
 			return 'NULL';
 		}
 
-		return SQLite3::escapeString($text);
+		if (is_object($this->connection))
+		{
+			return substr($this->connection->quote($text), 1, -1);
+		}
+
+		if (class_exists('SQLite3'))
+		{
+			return SQLite3::escapeString($text);
+		}
+
+		return str_replace("'", "''", $text);
 	}
 
 	public function fetchAssoc($cursor = null)

@@ -87,7 +87,7 @@ class Joomla extends AbstractOracle
 				$line = rtrim($line, ';');
 				$line = ltrim($line, '$');
 				$line = trim($line);
-				[$key, $value] = explode('=', $line);
+				[$key, $value] = explode('=', $line, 2);
 				$key = trim($key);
 				$value = trim($value);
 

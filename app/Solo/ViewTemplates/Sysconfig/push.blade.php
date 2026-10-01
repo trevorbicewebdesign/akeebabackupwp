@@ -45,7 +45,7 @@ $config = $this->getContainer()->appConfig;
     </label>
     <input type="text" name="options[push_apikey]" id="push_apikey"
            placeholder="@lang('COM_AKEEBA_CONFIG_PUSH_APIKEY_LABEL')"
-           value="{{ $config->get('options.push_apikey') }}">
+           value="{{{ $config->get('options.push_apikey') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_PUSH_APIKEY_DESC')
     </p>

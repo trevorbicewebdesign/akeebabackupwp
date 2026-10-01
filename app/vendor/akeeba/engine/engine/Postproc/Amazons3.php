@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -480,7 +480,7 @@ class Amazons3 extends Base
 	 */
 	private function getEC2RoleCredentials(): array
 	{
-		$hasCurl = function_exists('curl_init') && function_exists('curl_exec') && function_exists('curl_close');
+		$hasCurl = function_exists('curl_init') && function_exists('curl_exec');
 
 		if (!$hasCurl)
 		{
@@ -606,7 +606,10 @@ class Amazons3 extends Base
 			$error = sprintf('HTTP %u error', $http_status);
 		}
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		if ($result === false)
 		{

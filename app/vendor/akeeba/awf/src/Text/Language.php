@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -10,10 +10,53 @@ namespace Awf\Text;
 use Awf\Container\Container;
 use Awf\Container\ContainerAwareInterface;
 use Awf\Container\ContainerAwareTrait;
+use Awf\Filesystem\File;
 use Awf\Mvc\Factory;
 use Awf\User\UserInterface;
 use Awf\Utils\ParseIni;
 
+/**
+ * Class Language
+ *
+ * Internationalisation class for Awf applications: loads INI language files and translates language keys.
+ *
+ * ### Language file naming convention
+ *
+ * A language file MUST be named after the full BCP 47 language code of the language it contains, followed by a
+ * lowercase `.ini` extension, e.g. `el-GR.ini`.
+ *
+ * The full BCP 47 language code consists of the lowercase, two–letter ISO 639-1 language code (`el`), a dash, and the
+ * UPPERCASE, two–letter ISO 3166-1 alpha-2 country code (`GR`). The country part is NOT optional, and the casing of
+ * both parts is significant — this is the same convention Joomla! uses, and we follow it deliberately.
+ *
+ * Therefore, `el-GR.ini` is the one and only correct spelling of a Greek (Greece) language file. All of `el.ini`,
+ * `el-gr.ini`, `EL-GR.ini`, `EL.ini`, `EL-gr.ini` and `el-GR.INI` are WRONG. They are not supported, and the language
+ * they contain will either be ignored, or be picked up under a language code which does not match what the browser
+ * asks for.
+ *
+ * ### Language directory layout
+ *
+ * Language files live either directly in the application's language directory:
+ *
+ * ```
+ * language/el-GR.ini
+ * language/en-GB.ini
+ * ```
+ *
+ * or in one directory per language, named after the language it contains:
+ *
+ * ```
+ * language/el-GR/el-GR.ini
+ * language/en-GB/en-GB.ini
+ * ```
+ *
+ * Both layouts are understood, and they can be mixed in the same language directory. Moreover, either layout may be
+ * nested inside a directory named after the application, e.g. `language/myapp/el-GR.ini` or
+ * `language/myapp/el-GR/el-GR.ini`. If a directory named after the application exists, it is used to the exclusion of
+ * the language directory itself.
+ *
+ * @package Awf\Text
+ */
 class Language implements ContainerAwareInterface
 {
 	use ContainerAwareTrait;
@@ -288,82 +331,135 @@ class Language implements ContainerAwareInterface
 	}
 
 	/**
-	 * Detect the best matching language from the browser settings
+	 * Returns the weighted list of accepted language given the content of the `Accept-Language` HTTP header.
 	 *
-	 * @param   string|null  $languagePath  The path we're going to be looking for language files in.
+	 * The header content is in the format `fr-ch;q=0.3, da, en-us;q=0.8, en;q=0.5, fr;q=0.3`. If omitted, we use the
+	 * Accept-Language header passed through the `$_SERVER` superglobal.
 	 *
-	 * @return  string|null  The detected language. NULL if there are no matches, or we hit an error.
-	 * @since   1.2.0
+	 * IMPORTANT: We only expect a value to be passed during unit testing. In regular use the parameter is NULL to force
+	 * automatic detection from the browser-provided HTTP header.
+	 *
+	 * It is possible for the language code to be a star (`*`). This is replaced with the $defaultLanguage.
+	 *
+	 * If the $defaultLanguage is not present, it is added with a minimal 0.001 weight as a "last resort".
+	 *
+	 * @param   string|null  $acceptLanguage  The content of the `Accept-Language` HTTP header to parse.
+	 * @param   string|null  $defaultLanguage The default language to use, see above.
+	 *
+	 * @return  array|float[]  Key is BCP 47 language code, value is the weight 0 to 1. Sorted by weight descending.
+	 * @link    https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Accept-Language
+	 * @since   1.2.2
 	 */
-	private function detectLanguageFromBrowser(?string $languagePath): ?string
+	private function getAcceptedLanguages(?string $acceptLanguage = null, ?string $defaultLanguage = null): array
 	{
-		if (!isset($_SERVER['HTTP_ACCEPT_LANGUAGE']))
+		// Default return if all else fails.
+		$defaultLanguage ??= $this->getContainer()->appConfig->get('language', 'en-GB') ?: 'en-GB';
+		$defaultLanguage = strtolower($defaultLanguage);
+		$defaultLanguageList = [$defaultLanguage => 1.0];
+
+		// If no accept language string passed, get from server environment
+		$acceptLanguage ??= $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '';
+
+		// Normalise
+		$acceptLanguage = strtolower(trim($acceptLanguage ?: ''));
+
+		// If it's empty, we don't have a preference order from the browser.
+		if (empty($acceptLanguage))
 		{
-			return null;
+			return $defaultLanguageList;
 		}
 
-		/**
-		 * Get the language preference from the Accept-Language HTTP header.
-		 *
-		 * We get something like:
-		 * fr-ch;q=0.3, da, en-us;q=0.8, en;q=0.5, fr;q=0.3
-		 */
-		$languages = strtolower($_SERVER["HTTP_ACCEPT_LANGUAGE"]);
-		// Remove spaces from strings to avoid errors
-		$languages = str_replace(' ', '', $languages);
-		$languages = explode(",", $languages);
+		// Convert to an array, e.g. `['fr-ch;q=0.3', 'da', 'en-us;q=0.8', 'en;q=0.5', 'fr;q=0.3']`.
+		$rawList = array_map('trim', explode(',', $acceptLanguage));
 
-		// First we need to sort languages by their weight
-		$temp = [];
-
-		foreach ($languages as $lang)
+		// We must have at least one item on the list...
+		if (empty($rawList))
 		{
-			$parts = explode(';', $lang);
+			return $defaultLanguageList;
+		}
 
-			$q = 1;
+		$ret = [];
 
-			if ((count($parts) > 1) && (substr($parts[1], 0, 2) == 'q='))
+		foreach ($rawList as $item)
+		{
+			// Parse the item (e.g. `en-us;q=0.8`) to a BCP 47 language (`en-us`) and a possible quality code (`q=0.8`).
+			$parts  = explode(';', $item, 2);
+			$lang   = trim($parts[0] ?? '');
+			$qParam = trim($parts[1] ?? '');
+
+			// If no BCP 47 language code was found, skip over this item.
+			if (empty($lang))
 			{
-				$q = floatval(substr($parts[1], 2));
+				continue;
 			}
 
-			$temp[$parts[0]] = $q;
-		}
-
-		arsort($temp);
-		$languages = $temp;
-
-		foreach ($languages as $language => $weight)
-		{
-			// Pull out the language, place languages into array of full and primary string structure.
-			$temp_array = [];
-			// Slice out the part before the dash, place into array
-			$temp_array[0] = $language; //full language
-			$parts         = explode('-', $language);
-			$temp_array[1] = $parts[0]; // cut out primary language
-
-			if ((strlen($temp_array[0]) == 5)
-			    && ((substr($temp_array[0], 2, 1) == '-')
-			        || (substr(
-				            $temp_array[0], 2, 1
-			            ) == '_')))
+			// If the language code is star (`*`), replace it with $defaultLanguage BUT ONLY if it's not already present.
+			if ($lang === '*')
 			{
-				$langLocation  = strtoupper(substr($temp_array[0], 3, 2));
-				$temp_array[0] = $temp_array[1] . '-' . $langLocation;
+				if (isset($ret[$defaultLanguage]))
+				{
+					continue;
+				}
+
+				$lang = $defaultLanguage;
 			}
 
-			// Place this array into main $user_languages language array
-			$user_languages[] = $temp_array;
+			// If the quality param is empty or does not start with `q=`, assume the weight is 1.0.
+			if (substr($qParam ?? '', 0, 2) !== 'q=')
+			{
+				$ret[$lang] = 1.0;
+
+				continue;
+			}
+
+			// Parse the weight and clamp it to the range 0-1 inclusive.
+			$q = @floatval(trim(substr($qParam, 2)));
+			$q = min(max(0.0, $q), 1.0);
+
+			// If the weight is less than 0.001 it's effectively 0, i.e. "do not use".
+			if ($q < 0.001)
+			{
+				continue;
+			}
+
+			$ret[$lang] = $q;
 		}
 
-		if (!isset($user_languages))
+		// If we have at least one language other than $defaultLanguage, add it with a minimum weight (fallback).
+		if (!empty($ret) && !isset($ret[$defaultLanguage]))
 		{
-			return null;
+			$ret[$defaultLanguage] = 0.001;
 		}
 
-		$appName      = $this->getContainer()->application_name;
+		// Sort the array by weight descending.
+		arsort($ret, SORT_NUMERIC);
+
+		return $ret ?: $defaultLanguageList;
+	}
+
+	/**
+	 * Get the languages known to the application by iterating the application's language folder.
+	 *
+	 * Both directory layouts documented in this class' docblock are detected: a language file sitting directly in the
+	 * language directory (`el-GR.ini`), and a language directory containing the language file named after itself
+	 * (`el-GR/el-GR.ini`). A language provided in both layouts is only reported once. A subdirectory which does not
+	 * contain the INI file named after itself is not a language directory and is ignored, which is what tells a language
+	 * directory apart from, say, a `media` directory.
+	 *
+	 * The language code is taken verbatim from the file, or directory, name, so anything which does not follow the
+	 * naming convention will yield a language code which no browser will ever ask for. Files with an uppercase or mixed
+	 * case extension, e.g. `el-GR.INI`, must likewise not be used: they are matched by the extension check, but their
+	 * extension is not stripped, resulting in the nonsensical language code `el-GR.INI`.
+	 *
+	 * @param   string|null  $languagePath
+	 *
+	 * @return  array
+	 * @since   1.2.2
+	 */
+	private function getKnownLanguages(?string $languagePath): array
+	{
 		$languagePath = $languagePath ?: $this->getContainer()->languagePath;
-		$baseName     = $languagePath . '/' . strtolower($appName) . '/';
+		$baseName     = $languagePath . '/' . strtolower($this->getContainer()->application_name) . '/';
 
 		if (!@is_dir($baseName))
 		{
@@ -372,41 +468,8 @@ class Language implements ContainerAwareInterface
 
 		if (!@is_dir($baseName))
 		{
-			return null;
+			return [];
 		}
-
-		// Look for classic file layout
-		foreach ($user_languages as $languageStruct)
-		{
-			// Search for exact language
-			$langFilename = $baseName . $languageStruct[0] . '.ini';
-
-			if (!file_exists($langFilename))
-			{
-				$langFilename = '';
-
-				if (function_exists('glob'))
-				{
-					$allFiles = glob($baseName . $languageStruct[1] . '-*.ini');
-
-					// Cover both failure cases: false (filesystem error) and empty array (no file found)
-					if (!is_array($allFiles) || empty($allFiles))
-					{
-						continue;
-					}
-
-					$langFilename = array_shift($allFiles);
-				}
-			}
-
-			if (!empty($langFilename) && file_exists($langFilename))
-			{
-				return basename($langFilename, '.ini');
-			}
-		}
-
-		// Look for subdirectory layout
-		$allFolders = [];
 
 		try
 		{
@@ -414,42 +477,151 @@ class Language implements ContainerAwareInterface
 		}
 		catch (\Exception $e)
 		{
-			return null;
+			return [];
 		}
+
+		$ret = [];
 
 		/** @var \DirectoryIterator $file */
 		foreach ($di as $file)
 		{
-			if ($di->isDot())
+			if ($file->isDot())
 			{
 				continue;
 			}
 
-			if (!$di->isDir())
+			// Flat layout: the language file itself, e.g. `.../el-GR.ini`.
+			if ($file->isFile())
 			{
-				continue;
-			}
-
-			$allFolders[] = $file->getFilename();
-		}
-
-		foreach ($user_languages as $languageStruct)
-		{
-			if (array_key_exists($languageStruct[0], $allFolders))
-			{
-				return $languageStruct[0];
-			}
-
-			foreach ($allFolders as $folder)
-			{
-				if (strpos($folder, $languageStruct[1]) === 0)
+				if (strtolower($file->getExtension() ?? '') !== 'ini')
 				{
-					return $folder;
+					continue;
+				}
+
+				$ret[] = $file->getBasename('.ini');
+
+				continue;
+			}
+
+			// One directory per language: a directory named after the language, e.g. `.../el-GR/el-GR.ini`.
+			if ($file->isDir())
+			{
+				$langCode = $file->getFilename();
+				$iniFile  = $file->getPathname() . '/' . $langCode . '.ini';
+
+				// A directory is only a language directory if it contains the INI file named after itself. This is what
+				// tells a language directory apart from any other directory, e.g. a `media` or an `overrides` one.
+				if (@is_file($iniFile) && @is_readable($iniFile))
+				{
+					$ret[] = $langCode;
 				}
 			}
 		}
 
+		// A language may exist in both layouts; it is still just the one language.
+		$ret = array_unique($ret);
+
+		sort($ret);
+
+		return $ret;
+	}
+
+	/**
+	 * Given a weighted list of accepted languages and a list of known languages, find the most relevant language which
+	 * is in both arrays. Unlike shifting from an array intersection, this works by doing a partial language match. For
+	 * example, the accepted language `el` will match the known language `el-GR`.
+	 *
+	 * The accepted language ranges are examined in the order they are given, i.e. by descending quality (q) value, and
+	 * the first one we can satisfy wins. A range is matched as-is; it is never broadened to its primary language subtag.
+	 * This is what RFC 9110 §12.5.4 requires:
+	 *
+	 * - A range which carries a region, e.g. `en-US`, may only be satisfied by that exact language code. If we do not
+	 *   know about `en-US` we move on to the next range; we may NOT serve `en-GB` in its place.
+	 * - A range which the client sent region-less, e.g. `en`, is a request for _any_ locale of that language, so it is
+	 *   satisfied by the first locale of it we know about. Since $knownLanguages is sorted ascending that is the
+	 *   lexicographically first one, e.g. `en-GB` rather than `en-US`.
+	 *
+	 * Hence, given the known languages `en-GB` and `en-US`, the header `en-US,en;q=0.9` returns `en-US` (the exact match
+	 * outranks the catch-all), whereas `en,en-US;q=0.9` returns `en-GB` (the client told us it prefers _any_ English
+	 * over `en-US` specifically, so it gets the first English we have).
+	 *
+	 * The RFC's own examples imply that the less specific language range should carry the lower q value, which is what
+	 * most browsers do. Clients which do not (Microsoft Edge being the notable offender) will therefore be served an
+	 * arbitrary, if lexicographically predictable, locale of their preferred language.
+	 *
+	 * @param   array  $acceptedLanguages
+	 * @param   array  $knownLanguages
+	 *
+	 * @return string|null
+	 * @since   1.2.2
+	 */
+	private function findMostRelevantLanguage(array $acceptedLanguages, array $knownLanguages): ?string
+	{
+		if (empty($acceptedLanguages))
+		{
+			return null;
+		}
+
+		if (empty($knownLanguages))
+		{
+			return null;
+		}
+
+		// Create a map of acceptable language ranges to the actual language code used in the application.
+		$langMap = [];
+
+		foreach ($knownLanguages as $item)
+		{
+			// The full, lowercase BCP 47 language code, e.g. `en-gb` for the known language `en-GB`.
+			$bcp47 = strtolower($item);
+			// The primary language subtag, e.g. `en` for the known language `en-GB`. Since $knownLanguages is sorted
+			// ascending, the first locale of each language wins, e.g. `en` maps to `en-GB` and not to `en-US`.
+			$lang = explode('-', $bcp47, 2)[0];
+
+			if (!isset($langMap[$lang]))
+			{
+				$langMap[$lang] = $item;
+			}
+
+			if (!isset($langMap[$bcp47]))
+			{
+				$langMap[$bcp47] = $item;
+			}
+		}
+
+		// Walk through the accepted language ranges, in order of preference, and return the first one we can satisfy.
+		//
+		// We deliberately match each range as-is, without broadening it to its primary language subtag. A range with a
+		// region (`en-us`) may only be satisfied by that exact language code; only a range the client actually sent
+		// region-less (`en`) may be satisfied by an arbitrary locale of that language, courtesy of the primary subtag
+		// keys we added to $langMap above.
+		foreach (array_keys($acceptedLanguages) as $item)
+		{
+			$bcp47 = strtolower($item);
+
+			if (isset($langMap[$bcp47]))
+			{
+				return $langMap[$bcp47];
+			}
+		}
+
 		return null;
+	}
+
+	/**
+	 * Detect the best matching language from the browser settings.
+	 *
+	 * @param   string|null  $languagePath  The path we're going to be looking for language files in.
+	 *
+	 * @return  string|null  The detected language. NULL if there are no matches, or we hit an error.
+	 * @since   1.2.0
+	 */
+	private function detectLanguageFromBrowser(?string $languagePath): ?string
+	{
+		$acceptedLanguages = $this->getAcceptedLanguages();
+		$knownLanguages    = $this->getKnownLanguages($languagePath);
+
+		return $this->findMostRelevantLanguage($acceptedLanguages, $knownLanguages);
 	}
 
 }

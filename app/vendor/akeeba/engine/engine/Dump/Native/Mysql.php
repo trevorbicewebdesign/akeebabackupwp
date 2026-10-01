@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -364,14 +364,16 @@ class Mysql extends Base
 				$this->maxRange  = 0;
 			}
 
+			$suffix = "/*ABDE:{$this->nextTable->abstractName}*/\n";
+
 			// Create drop statements if required (the key is defined by the scripting engine)
-			if ($this->createDropStatements)
+			if ($this->createDropStatements && !empty($outCreate))
 			{
 				$dropStatement = $this->createDrop($this->nextTable);
 
 				if (!empty($dropStatement))
 				{
-					$dropStatement .= "\n";
+					$dropStatement .= $suffix;
 
 					if (!$this->writeDump($dropStatement, true))
 					{
@@ -391,11 +393,11 @@ class Mysql extends Base
 			)
 			{
 				$outCreate = rtrim($outCreate, ";\n");
-				$outCreate = "DELIMITER $$\n$outCreate$$\nDELIMITER ;\n";
+				$outCreate = "DELIMITER $$\n$outCreate$$\nDELIMITER ;" . $suffix;
 			}
 
 			// Write the CREATE command after any DROP command which might be necessary.
-			if (!$this->writeDump($outCreate, true))
+			if (!$this->writeDump(rtrim($outCreate, "\n") . $suffix, true))
 			{
 				return;
 			}
@@ -692,7 +694,10 @@ class Mysql extends Base
 						switch ($columnTypes[$fieldName] ?? '')
 						{
 							// Hex encode spatial data
+							case 'BYTEA':
+							case 'JSONB':
 							case 'GEOMETRY':
+							case 'GEOGRAPHY':
 							case 'POINT':
 							case 'LINESTRING':
 							case 'POLYGON':
@@ -700,8 +705,7 @@ class Mysql extends Base
 							case 'MULTILINESTRING':
 							case 'MULTIPOLYGON':
 							case 'GEOMETRYCOLLECTION':
-								$hexEncoded = bin2hex($value);
-								$value      = "x'$hexEncoded'";
+								$value = $db->quoteHex($value);
 								break;
 
 							// VARCHAR, CHAR, TEXT etc: the database makes sure it's quoted appropriately.

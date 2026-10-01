@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -30,7 +30,10 @@ class File implements FilesystemInterface, ContainerAwareInterface
 	 */
 	public function __construct(array $options, ?Container $container = null)
 	{
-		$this->setContainer($container);
+		if ($container !== null)
+		{
+			$this->setContainer($container);
+		}
 	}
 
 	/**
@@ -204,7 +207,7 @@ class File implements FilesystemInterface, ContainerAwareInterface
 		// Get a raw directory listing (hoping it's a UNIX server!)
 		$list = array();
 
-		$handle = opendir($dir);
+		$handle = @opendir($dir);
 
 		if (!is_resource($handle))
 		{
@@ -341,7 +344,7 @@ class File implements FilesystemInterface, ContainerAwareInterface
                 if ($isDir && $recurse)
                 {
                     // Search recursively
-                    if (is_integer($recurse))
+                    if (is_int($recurse))
                     {
                         // Until depth 0 is reached
                         $arr = array_merge($arr, $this->folderItems($fullpath, $filter, $recurse - 1, $full, $exclude, $excludefilter_string, $findfiles));

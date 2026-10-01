@@ -6,5 +6,5 @@
  */
 
 define('AKEEBABACKUP_PRO', '0');
-define('AKEEBABACKUP_VERSION', '9.1.2');
-define('AKEEBABACKUP_DATE', '2026-03-03');
+define('AKEEBABACKUP_VERSION', '9.2.0');
+define('AKEEBABACKUP_DATE', '2026-08-26');

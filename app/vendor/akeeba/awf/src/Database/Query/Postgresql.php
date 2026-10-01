@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -310,8 +310,6 @@ class Postgresql extends Database\Query implements Database\QueryLimitable
 	 */
 	public function forUpdate ($table_name, $glue = ',')
 	{
-		$this->type = 'forUpdate';
-
 		if ( is_null($this->forUpdate) )
 		{
 			$glue = strtoupper($glue);
@@ -336,8 +334,6 @@ class Postgresql extends Database\Query implements Database\QueryLimitable
 	 */
 	public function forShare ($table_name, $glue = ',')
 	{
-		$this->type = 'forShare';
-
 		if ( is_null($this->forShare) )
 		{
 			$glue = strtoupper($glue);
@@ -455,8 +451,6 @@ class Postgresql extends Database\Query implements Database\QueryLimitable
 	 */
 	public function noWait ()
 	{
-		$this->type = 'noWait';
-
 		if ( is_null($this->noWait) )
 		{
 			$this->noWait = new \Awf\Database\QueryElement('NOWAIT', null);

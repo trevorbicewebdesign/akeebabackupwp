@@ -6,19 +6,13 @@
  */
 
 use Awf\Text\Text;
-use Solo\Helper\Escape;
 
 defined('_AKEEBA') or die();
 
 /** @var \Solo\View\Sysconfig\Html $this */
 
-$router = $this->getContainer()->router;
 $inCMS = $this->getContainer()->segment->get('insideCMS', false);
 ?>
-
-@include('CommonTemplates/FTPBrowser')
-@include('CommonTemplates/SFTPBrowser')
-@include('CommonTemplates/FTPConnectionTest')
 
 <form action="@route('index.php?view=sysconfig')" method="POST" id="adminForm"
       class="akeeba-form--horizontal" role="form">
@@ -108,17 +102,3 @@ $inCMS = $this->getContainer()->segment->get('insideCMS', false);
     </div>
 </form>
 
-<script type="text/javascript">
-// Callback routine to close the browser dialog
-var akeeba_browser_callback = null;
-
-akeeba.System.documentReady(function ()
-{
-	// Push some custom URLs
-	akeeba.Setup.URLs['ftpBrowser'] = '<?php echo Escape::escapeJS($router->route('index.php?view=ftpbrowser')) ?>';
-	akeeba.Setup.URLs['sftpBrowser'] = '<?php echo Escape::escapeJS($router->route('index.php?view=sftpbrowser')) ?>';
-	akeeba.Setup.URLs['testFtp'] = '<?php echo Escape::escapeJS($router->route('index.php?view=configuration&task=testftp')) ?>';
-	akeeba.Setup.URLs['testSftp'] = '<?php echo Escape::escapeJS($router->route('index.php?view=configuration&task=testsftp')) ?>';
-});
-
-</script>

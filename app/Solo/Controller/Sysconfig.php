@@ -121,6 +121,9 @@ class Sysconfig extends ControllerDefault
 
     public function testemail()
     {
+        // CSRF prevention
+        $this->csrfProtection();
+
         $config = $this->container->appConfig;
         $mailer = $this->container->mailer();
         $user   = $this->container->userManager->getUser();

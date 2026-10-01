@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -75,16 +75,19 @@ class AccountInformation
 		// The authorization token is valid for up to 24 hours
 		$this->validTo = time() + 86400;
 
-		if (empty($data))
+		// v4 b2_authorize_account nests apiUrl, downloadUrl, and part sizes under apiInfo.storageApi.
+		// Lift them to the top level so the existing property-assignment loop handles both shapes.
+		if (isset($data['apiInfo']['storageApi']) && is_array($data['apiInfo']['storageApi']))
 		{
-			return;
+			$data = array_merge($data['apiInfo']['storageApi'], $data);
+			unset($data['apiInfo']);
 		}
 
 		foreach ($data as $key => $value)
 		{
 			if ($key == 'allowed')
 			{
-				$this->allowed = new Allowed($value);
+				$this->allowed = new Allowed((array) $value);
 
 				continue;
 			}
@@ -95,6 +98,7 @@ class AccountInformation
 			}
 		}
 
+		// Every caller dereferences ->allowed without checking. Never leave it null, not even for an empty response.
 		if (is_null($this->allowed))
 		{
 			$this->allowed = new Allowed([]);
@@ -124,6 +128,23 @@ class AccountInformation
 		}
 
 		throw new DomainException(sprintf("Property %s does not exist in class %s", $name, __CLASS__));
+	}
+
+	/**
+	 * Is a property set, and not null?
+	 *
+	 * Without this, isset() and empty() on these properties go looking for __isset(), do not find it, and conclude the
+	 * property is unset — so empty($info->apiUrl) came back true even for a perfectly good URL. The properties are
+	 * private, so an outside caller never reaches them directly and PHP always routes through the magic methods.
+	 * __get() alone is not enough.
+	 *
+	 * @param   string  $name  The property name being tested
+	 *
+	 * @return  bool
+	 */
+	public function __isset($name)
+	{
+		return property_exists($this, $name) && !is_null($this->$name);
 	}
 
 	/**

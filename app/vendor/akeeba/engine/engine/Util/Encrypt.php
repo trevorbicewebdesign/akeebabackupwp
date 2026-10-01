@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -514,7 +514,8 @@ class Encrypt
 		}
 
 		// Read the data size
-		$data_size = unpack('V', substr($ciphertext, -4));
+		$unpacked  = unpack('V', substr($ciphertext, -4));
+		$data_size = $unpacked[1];
 
 		// Do I have a PBKDF2 salt?
 		$salt             = substr($ciphertext, -92, 68);

@@ -10,10 +10,9 @@
  */
 
 $doc = $this->getContainer()->application->getDocument();
-$doc->addHTTPHeader('Pragma', 'public');
-$doc->addHTTPHeader('Expires', '0');
-$doc->addHTTPHeader('Cache-Control', 'must-revalidate, post-check=0, pre-check=0');
-$doc->addHTTPHeader('Cache-Control', 'public');
+$doc->addHTTPHeader('Expires', 'Wed, 17 Aug 2005 00:00:00 GMT');
+$doc->addHTTPHeader('Cache-Control', 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0');
+$doc->addHTTPHeader('Pragma', 'no-cache');
 $doc->setMimeType('text/html');
 
 $title = $this->getLanguage()->sprintf('COM_AKEEBA_OAUTH2_TITLE', $this->provider->getEngineNameForHumans());

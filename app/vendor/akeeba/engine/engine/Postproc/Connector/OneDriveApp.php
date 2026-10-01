@@ -18,6 +18,12 @@
 
 namespace Akeeba\Engine\Postproc\Connector;
 
+/**
+ * OneDrive (custom Azure AD application) API connector.
+ *
+ * @deprecated Legacy OneDrive connector tied to a per-user custom OAuth2 application. Superseded by the
+ *             OneDriveBusiness connector using the modern Microsoft Graph API. Retained only for backwards compatibility.
+ */
 class OneDriveApp extends OneDrive
 {
 	/**

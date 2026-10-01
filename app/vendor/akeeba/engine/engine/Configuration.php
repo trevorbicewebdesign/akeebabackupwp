@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -161,11 +161,11 @@ class Configuration
 		// Post-process certain directory-containing variables
 		if ($process_special_vars && in_array($regpath, $this->directory_containing_keys))
 		{
-			if (!empty($stock_directories))
+			if (!empty($stock_directories) && !is_null($result))
 			{
 				foreach ($stock_directories as $tag => $content)
 				{
-					$result = str_replace($tag, $content, $result);
+					$result = str_replace($tag, (string) $content, $result);
 				}
 			}
 		}
@@ -230,8 +230,8 @@ class Configuration
 
 		for ($i = 0; $i < $pathNodes; $i++)
 		{
-			// If any node along the registry path does not exist, create it
-			if (!isset($ns->{$nodes[$i]}))
+			// If any node along the registry path does not exist, or is not an object, create it
+			if (!isset($ns->{$nodes[$i]}) || !is_object($ns->{$nodes[$i]}))
 			{
 				$ns->{$nodes[$i]} = new stdClass();
 			}
@@ -254,9 +254,12 @@ class Configuration
 			{
 				$data = $value;
 
-				foreach ($stock_directories as $tag => $content)
+				if (!is_null($data))
 				{
-					$data = str_replace($tag, $content, $data);
+					foreach ($stock_directories as $tag => $content)
+					{
+						$data = str_replace($tag, (string) $content, $data);
+					}
 				}
 
 				$ns->{$nodes[$i]} = $data;
@@ -458,11 +461,11 @@ class Configuration
 				{
 					if (!$noOverride)
 					{
-						$this->set($rootkey . '.' . $key, $rootvalue);
+						$this->set($rootkey . '.' . $key, $value);
 					}
 					elseif (is_null($this->get($rootkey . '.' . $key, null)))
 					{
-						$this->set($rootkey . '.' . $key, $rootvalue);
+						$this->set($rootkey . '.' . $key, $value);
 					}
 				}
 			}

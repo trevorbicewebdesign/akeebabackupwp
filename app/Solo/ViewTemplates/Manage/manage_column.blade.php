@@ -14,6 +14,7 @@ defined('_AKEEBA') or die();
 /** @var  Solo\View\Manage\Html $this */
 
 $router = $this->container->router;
+$token  = $this->container->session->getCsrfToken()->getValue();
 
 if (!isset($record['remote_filename']))
 {
@@ -21,11 +22,13 @@ if (!isset($record['remote_filename']))
 }
 
 $archiveExists = $record['meta'] == 'ok';
-$showManageRemote = $record['hasRemoteFiles'] && (AKEEBABACKUP_PRO == 1);
+// The privilege each of these is gated on MUST match the one its target view enforces, see Solo\Application\AclChecks.
+$showManageRemote = $this->privileges['download'] && $record['hasRemoteFiles'] && (AKEEBABACKUP_PRO == 1);
 $engineForProfile = array_key_exists($record['profile_id'], $this->enginesPerProfile) ? $this->enginesPerProfile[$record['profile_id']] : 'none';
 $showUploadRemote = $this->privileges['backup'] && $archiveExists && !$showManageRemote && ($engineForProfile != 'none') && ($record['meta'] != 'obsolete') && (AKEEBABACKUP_PRO == 1);
 $showDownload = $this->privileges['download'] && $archiveExists;
-$showViewLog = $this->privileges['backup'] && isset($record['backupid']) && !empty($record['backupid']);
+$showTransfer = $this->privileges['download'] && $archiveExists && ($record['type'] == 'full') && (AKEEBABACKUP_PRO == 1);
+$showViewLog = $this->privileges['configure'] && isset($record['backupid']) && !empty($record['backupid']);
 $postProcEngine = '';
 $thisPart = '';
 $thisID = urlencode($record['id']);
@@ -190,7 +193,7 @@ if ($showUploadRemote)
     </div>
 @elseif ($showUploadRemote)
     <a class="akeeba-btn--primary akeeba_upload"
-       data-upload="{{{ $router->route('index.php?view=Upload&tmpl=component&task=start&id=' . $record['id']) }}}"
+       data-upload="{{{ $router->route('index.php?view=Upload&tmpl=component&task=start&id=' . $record['id'] . '&' . $token . '=1') }}}"
        data-reload="{{{ $router->route('index.php?view=Manage') }}}"
        title="<?php echo Text::sprintf('COM_AKEEBA_TRANSFER_DESC', Text::_("ENGINE_POSTPROC_{$postProcEngine}_TITLE")) ?>"
     >
@@ -210,16 +213,35 @@ if ($showUploadRemote)
         </a>
     @endif
 
-    @if ($showViewLog)
-        <a class="akeeba-btn--grey akeebaCommentPopover"
-           {{ ($record['meta'] != 'obsolete') ? '' : 'disabled="disabled"' }}
-           href="@route('index.php?view=Log&tag=' . $this->escape($record['tag']) . '.' . $this->escape($record['backupid']) . '&task=start&profileid=' . $record['profile_id'])"
-           data-original-title="@lang('COM_AKEEBA_BUADMIN_LBL_LOGFILEID')"
-           data-content="{{{ $record['backupid'] }}}"
+    @if ($showTransfer)
+        <a class="akeeba-btn--grey"
+           href="@route('index.php?view=Transfer&task=wizard&id=' . (int) $record['id'])"
+           title="@lang('COM_AKEEBA_BUADMIN_LABEL_TRANSFER')"
         >
-            <span class="akion-ios-search-strong"></span>
-            @lang('COM_AKEEBA_LOG')
+            <span class="akion-paper-airplane"></span>
+            @lang('COM_AKEEBA_BUADMIN_LABEL_TRANSFER')
         </a>
+    @endif
+
+    @if ($showViewLog)
+        @if ($record['log_present'])
+            <a class="akeeba-btn--grey akeebaCommentPopover"
+               href="@route('index.php?view=Log&tag=' . $this->escape($record['tag']) . '.' . $this->escape($record['backupid']) . '&task=start&profileid=' . $record['profile_id'] . '&' . $token . '=1')"
+               data-original-title="@lang('COM_AKEEBA_BUADMIN_LBL_LOGFILEID')"
+               data-content="{{{ $record['backupid'] }}}"
+            >
+                <span class="akion-ios-search-strong"></span>
+                @lang('COM_AKEEBA_LOG')
+            </a>
+        @else
+            <button type="button"
+                    class="akeeba-btn--grey"
+                    disabled
+                    title="@lang('COM_AKEEBA_BUADMIN_LOG_NOT_AVAILABLE')">
+                <span class="akion-ios-search-strong"></span>
+                @lang('COM_AKEEBA_LOG')
+            </button>
+        @endif
     @endif
 
     <a class="akeeba-btn--grey--small akeebaCommentPopover akeeba_showinfo_link"

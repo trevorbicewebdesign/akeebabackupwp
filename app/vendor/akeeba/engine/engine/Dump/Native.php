@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -76,6 +76,7 @@ class Native extends Part
 				'user'     => $this->_parametersArray['user'] ?? ($this->_parametersArray['username'] ?? ''),
 				'password' => $this->_parametersArray['password'] ?? '',
 				'database' => $this->_parametersArray['database'] ?? '',
+				'schema'   => $this->_parametersArray['schema'] ?? '',
 				'prefix'   => is_null($prefix) ? '' : $prefix,
 			];
 
@@ -102,6 +103,12 @@ class Native extends Part
 		}
 
 		$driverType = $db->getDriverType();
+		
+		if ($driverType == 'pgsql')
+		{
+			$driverType = 'postgres';
+		}
+
 		$className  = '\\Akeeba\\Engine\\Dump\\Native\\' . ucfirst($driverType);
 
 		// Check if we have a native dump driver

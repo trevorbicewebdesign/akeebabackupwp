@@ -34,26 +34,26 @@ abstract class UserAuthenticationOtep extends Authentication implements Containe
 			return false;
 		}
 
-		$oteps = (array)$oteps;
+		$oteps = array_map('strval', (array) $oteps);
 
 		// Does this OTEP exist in the list?
 		$tempOtp = preg_filter('/\D/', '', $otp);
 		$otp = is_null($tempOtp) ? $otp : $tempOtp;
+		$otp = (string) $otp;
 
-		// No. Can't authenticate.
-		if (!in_array($otp, $oteps))
+		// No. Can't authenticate. Use a strict (type-safe) comparison to prevent numeric type juggling.
+		if (!in_array($otp, $oteps, true))
 		{
 			return false;
 		}
 
 		// Remove the OTEP from the list
-		$array_pos = array_search($otp, $oteps);
 		$temp = array();
 
 		// Ugly as heck, but PHP freaks out with the number-as-string array indexes it produces.
 		foreach ($oteps as $foo)
 		{
-			if ($foo == $otp)
+			if ($foo === $otp)
 			{
 				continue;
 			}

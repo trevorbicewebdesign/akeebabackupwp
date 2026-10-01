@@ -58,24 +58,42 @@
         "default": "0",
         "type": "separator",
         "title": "COM_AKEEBA_CONFIG_DUMP_DIVIDER_MYSQL",
-        "bold": "1"
+        "bold": "1",
+        "dbtype": "mysql"
     },
     "engine.dump.native.advanced_entitites": {
         "default": "0",
         "type": "bool",
         "title": "COM_AKEEBA_CONFIG_MYSQL5FEATURES_ENABLE_TITLE",
-        "description": "COM_AKEEBA_CONFIG_MYSQL5FEATURES_ENABLE_DESCRIPTION"
+        "description": "COM_AKEEBA_CONFIG_MYSQL5FEATURES_ENABLE_DESCRIPTION",
+        "dbtype": "mysql"
     },
     "engine.dump.native.nodependencies": {
         "default": "0",
         "type": "bool",
         "title": "COM_AKEEBA_CONFIG_NODEPENDENCIES_TITLE",
-        "description": "COM_AKEEBA_CONFIG_NODEPENDENCIES_DESCRIPTION"
+        "description": "COM_AKEEBA_CONFIG_NODEPENDENCIES_DESCRIPTION",
+        "dbtype": "mysql"
     },
     "engine.dump.native.nobtree": {
         "default": "1",
         "type": "bool",
         "title": "COM_AKEEBA_CONFIG_MYSQLNOBTREE_TITLE",
-        "description": "COM_AKEEBA_CONFIG_MYSQLNOBTREE_TIP"
+        "description": "COM_AKEEBA_CONFIG_MYSQLNOBTREE_TIP",
+        "dbtype": "mysql"
+    },
+    "engine.dump.divider.postgres": {
+        "default": "0",
+        "type": "separator",
+        "title": "COM_AKEEBA_CONFIG_DUMP_DIVIDER_POSTGRES",
+        "bold": "1",
+        "dbtype": "postgres"
+    },
+    "engine.dump.postgres.pgdump_path": {
+        "default": "",
+        "type": "string",
+        "title": "COM_AKEEBA_CONFIG_PGDUMP_PATH_TITLE",
+        "description": "COM_AKEEBA_CONFIG_PGDUMP_PATH_DESCRIPTION",
+        "dbtype": "postgres"
     }
 }

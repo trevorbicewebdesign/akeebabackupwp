@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -55,6 +55,13 @@ class Dropbox2
 	public const helperUrl = 'https://www.akeeba.com/oauth2/dropbox2.php';
 
 	/**
+	 * Refresh the access token proactively when it is within this many seconds of expiring. Dropbox access tokens are
+	 * short-lived (typically 4 hours); refreshing a little before expiry prevents the token from lapsing in the middle
+	 * of a long-running backup, which is the cause of intermittent, hard-to-reproduce upload/download failures.
+	 */
+	private const tokenExpirationThreshold = 300;
+
+	/**
 	 * The refresh token used to get a new access token for OneDrive
 	 *
 	 * @var string
@@ -93,6 +100,15 @@ class Dropbox2
 	private $namespaceId = '';
 
 	private $refreshUrl = '';
+
+	/**
+	 * UNIX timestamp at which the current access token expires. 0 means "unknown" — e.g. a token supplied from saved
+	 * configuration whose lifetime we have not learned yet. It is populated from the `expires_in` value Dropbox returns
+	 * whenever the token is refreshed.
+	 *
+	 * @var int
+	 */
+	private $tokenExpiration = 0;
 
 	/**
 	 * Public constructor
@@ -366,21 +382,42 @@ class Dropbox2
 	 *
 	 * @return  string
 	 */
-	public function getAuthenticatedUrl($path)
+	public function getAuthenticatedUrl($path, $retry = true)
 	{
 		$path = $this->normalizePath($path);
 
-		$params = [
-			'path' => $path,
-		];
+		// Use Dropbox's documented files/get_temporary_link endpoint. It returns a short-lived (~4 hour) direct-download
+		// URL that needs NO access token. This is robust and secure: unlike embedding the bearer token as a query
+		// parameter on the content endpoint (which Dropbox rejects intermittently once the token is near expiry, and
+		// which would leak the token into browser history, server logs and referrers), the temporary link keeps working
+		// for its whole lifetime regardless of what happens to the access token afterwards.
+		try
+		{
+			$result = $this->fetch('POST', self::rootUrl, 'files/get_temporary_link', [
+				'headers' => [
+					'Content-Type: application/json; charset=utf-8',
+				],
+			], json_encode(['path' => $path]));
+		}
+		catch (RuntimeException $e)
+		{
+			// The access token may have expired between minting and use. Refresh it and retry once.
+			if ($retry)
+			{
+				$this->refreshToken();
 
-		$paramsForURL = json_encode($params);
+				return $this->getAuthenticatedUrl($path, false);
+			}
 
-		$url = self::contentRootUrl . 'files/download';
-		$url .= '?authorization=Bearer%20' . urlencode($this->accessToken);
-		$url .= '&arg=' . urlencode($paramsForURL);
+			throw $e;
+		}
 
-		return $url;
+		if (empty($result['link']))
+		{
+			throw new RuntimeException('Could not obtain a temporary download link from Dropbox', 500);
+		}
+
+		return $result['link'];
 	}
 
 	/**
@@ -683,18 +720,35 @@ class Dropbox2
 			'needs_refresh' => false,
 		];
 
-		// If we're not force refreshing the tokens try to get the drive information. It's our test to see if the token
-		// works.
 		if (!$forceRefresh)
 		{
-			try
+			if (empty($this->accessToken))
 			{
-				$dummy = $this->getCurrentAccount();
-			}
-			catch (RuntimeException $e)
-			{
-				// If it failed we need to refresh the token
+				// We have no access token at all. There is nothing to probe with, and a recorded expiry for a token
+				// which is no longer there tells us nothing, so we must refresh. Without this the saved expiry would
+				// convince us the missing token is still good and every request would fail with an opaque "not
+				// authorised" error instead of the token being renewed transparently.
 				$response['needs_refresh'] = true;
+			}
+			elseif (!empty($this->tokenExpiration))
+			{
+				// We know when the token expires: refresh PROACTIVELY once it is at — or within a safety margin of —
+				// expiry, so it cannot lapse mid-operation. This avoids the race where a "test" call succeeds but the
+				// token then expires moments later during the real request (the cause of intermittent failures).
+				$response['needs_refresh'] = (time() + self::tokenExpirationThreshold) >= $this->tokenExpiration;
+			}
+			else
+			{
+				// We do NOT know this token's expiry (e.g. it was supplied from saved configuration). Fall back to
+				// probing the API with it and refreshing only if that probe fails.
+				try
+				{
+					$this->getCurrentAccount();
+				}
+				catch (RuntimeException $e)
+				{
+					$response['needs_refresh'] = true;
+				}
 			}
 		}
 
@@ -718,15 +772,72 @@ class Dropbox2
 	{
 		$refreshUrl = $this->getRefreshUrl();
 
-		$refreshResponse = $this->fetch('GET', '', $refreshUrl);
+		try
+		{
+			$refreshResponse = $this->fetch('GET', '', $refreshUrl);
+		}
+		catch (APIError $e)
+		{
+			// fetch() has already turned the relay's error payload into an APIError, but carrying only the API's own
+			// wording ("refresh token is malformed"), which does not tell the user what to DO. A failed refresh has a
+			// specific remedy, so spell it out on the way past.
+			throw new APIError(
+				'refresh_failed',
+				preg_replace('/^Error /', '', rtrim($e->getMessage(), " \t\n\r\0\x0B."))
+				. '. Your Dropbox authorisation could not be renewed. Reconnect your Dropbox account to this backup '
+				. 'profile, and check that your Download ID is set and your subscription is active.',
+				500,
+				$e
+			);
+		}
+
+		// A 200 carrying neither an error nor a token: fetch() has nothing to throw on, so without this we would keep
+		// the old, dead access token and report the refresh as a success.
+		if (!isset($refreshResponse['access_token']))
+		{
+			throw new APIError(
+				'refresh_failed',
+				'Dropbox did not return a new access token. Reconnect your Dropbox account to this backup profile.'
+			);
+		}
 
 		$this->refreshToken = $refreshResponse['refresh_token'] ?? $this->refreshToken;
-		$this->accessToken  = $refreshResponse['access_token'] ?? $this->accessToken;
+		$this->accessToken  = $refreshResponse['access_token'];
 
-		$refreshResponse['refresh_token'] = $this->refreshToken;
-		$refreshResponse['access_token']  = $this->accessToken;
+		// Record when the freshly minted access token will expire so ping() can refresh it proactively next time.
+		if (isset($refreshResponse['expires_in']))
+		{
+			$this->tokenExpiration = time() + (int) $refreshResponse['expires_in'];
+		}
+
+		$refreshResponse['refresh_token']    = $this->refreshToken;
+		$refreshResponse['access_token']     = $this->accessToken;
+		$refreshResponse['token_expiration'] = $this->tokenExpiration;
 
 		return $refreshResponse;
+	}
+
+	/**
+	 * Get the UNIX timestamp at which the current access token expires (0 if unknown).
+	 *
+	 * @return  int
+	 */
+	public function getTokenExpiration()
+	{
+		return $this->tokenExpiration;
+	}
+
+	/**
+	 * Restore a previously persisted access-token expiry timestamp, so ping() can refresh proactively without first
+	 * having to probe the API. Pass 0 to mark the expiry as unknown.
+	 *
+	 * @param   int  $tokenExpiration  UNIX timestamp at which the access token expires.
+	 *
+	 * @return  void
+	 */
+	public function setTokenExpiration($tokenExpiration)
+	{
+		$this->tokenExpiration = (int) $tokenExpiration;
 	}
 
 	/**
@@ -942,7 +1053,10 @@ class Dropbox2
 		$error        = curl_error($ch);
 		$lastHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-		curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			curl_close($ch);
+		}
 
 		// Close open file pointers
 		if ($fp)
@@ -1002,8 +1116,14 @@ class Dropbox2
 		// Did we get an error response (from the helper script)?
 		if (isset($response['error']))
 		{
-			$error            = $response['error'];
-			$errorDescription = $response['error_description'] ?? 'No error description provided';
+			$error = $response['error'];
+
+			// The akeeba.com relay explains a rejected token in error_description, but a missing or lapsed Download ID
+			// in user_message. Read both, or the latter is reported as "No error description provided" — which tells
+			// the user precisely nothing about the one thing they can actually fix.
+			$errorDescription = $response['error_description']
+				?? $response['user_message']
+				?? 'No error description provided';
 
 			throw new APIError($error, $errorDescription, 500);
 		}

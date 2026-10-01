@@ -23,7 +23,7 @@ $router = $this->container->router;
 		</label>
 		<div class="col-sm-9">
 			<input type="text" name="description" maxlength="255" size="50"
-				   value="{{ $this->record['description'] }}"
+				   value="{{{ $this->record['description'] }}}"
 				   class="form-control" />
 		</div>
 	</div>

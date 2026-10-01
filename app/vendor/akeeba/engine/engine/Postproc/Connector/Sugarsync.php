@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -29,6 +29,12 @@ use DOMElement;
 
 /**
  * SugarSync PHP API class for Akeeba Engine
+ *
+ * @obsolete  SugarSync discontinued its consumer file-sync service and its public REST API
+ *            (https://api.sugarsync.com) is no longer generally available. This connector can therefore no longer be
+ *            exercised against a live service, and no integration test exists for it (see GitHub issue #146). It is
+ *            retained only for backward compatibility with the equally-obsolete Sugarsync post-processing engine; do
+ *            not build new functionality on top of it.
  */
 class Sugarsync
 {
@@ -773,7 +779,10 @@ class Sugarsync
 		$errno  = curl_errno($ch);
 		$error  = curl_error($ch);
 
-		@curl_close($ch);
+		if (version_compare(PHP_VERSION, '8.5.0', 'lt'))
+		{
+			@curl_close($ch);
+		}
 
 		if (!is_null($fp))
 		{

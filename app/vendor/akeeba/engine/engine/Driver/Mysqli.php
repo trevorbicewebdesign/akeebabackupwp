@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -21,7 +21,9 @@ namespace Akeeba\Engine\Driver;
 defined('AKEEBAENGINE') || die();
 
 use Akeeba\Engine\Driver\Query\Mysqli as QueryMysqli;
+use Akeeba\Engine\Factory;
 use Akeeba\Engine\FixMySQLHostname;
+use Exception;
 use mysqli_result;
 use RuntimeException;
 
@@ -31,7 +33,7 @@ use RuntimeException;
  * Based on Joomla! Platform 11.2
  */
 #[\AllowDynamicProperties]
-class Mysqli extends Mysql
+class Mysqli extends Base
 {
 	use FixMySQLHostname;
 
@@ -49,14 +51,46 @@ class Mysqli extends Mysql
 	/** @var mysqli_result|null The database connection cursor from the last query. */
 	protected $cursor;
 
+	/** @var string Hostname */
+	protected $host;
+
+	/**
+	 * The character(s) used to quote SQL statement names such as table names or field names,
+	 * etc.
+	 *
+	 * @var    string
+	 * @since  11.1
+	 */
+	protected $nameQuote = '`';
+
+	/**
+	 * The null or zero representation of a timestamp for the database driver.
+	 *
+	 * @var    string
+	 * @since  11.1
+	 */
+	protected $nullDate = '0000-00-00 00:00:00';
+
+	/** @var string Password */
+	protected $password;
+
 	protected $port;
+
+	/** @var bool Should I select a database? */
+	protected $selectDatabase;
 
 	protected $socket;
 
 	protected $ssl = [];
 
+	/** @var string Username */
+	protected $user;
+
 	/** @var bool Are we in the process of reconnecting to the database server? */
 	private $isReconnecting = false;
+
+	/** @var array|null A cache of the tables contained in the currently connected database */
+	public $tablesCache = null;
 
 	/**
 	 * Database object constructor
@@ -94,8 +128,11 @@ class Mysqli extends Mysql
 		$this->selectDatabase = $options['select'] ?? true;
 		$this->ssl            = $options['ssl'] ?? [];
 
-		// Finalize initialization. Also opens the connection.
+		// Finalize initialization.
 		parent::__construct($options);
+
+		// Open the connection.
+		$this->open();
 	}
 
 	/**
@@ -187,6 +224,25 @@ class Mysqli extends Mysql
 	}
 
 	/**
+	 * Drops a table from the database.
+	 *
+	 * @param   string   $tableName  The name of the database table to drop.
+	 * @param   boolean  $ifExists   Optionally specify that the table must exist before it is dropped.
+	 *
+	 * @return  Mysqli  Returns this object to support chaining.
+	 */
+	public function dropTable($tableName, $ifExists = true)
+	{
+		$query = $this->getQuery(true);
+
+		$this->setQuery('DROP TABLE ' . ($ifExists ? 'IF EXISTS ' : '') . $query->quoteName($tableName));
+
+		$this->query();
+
+		return $this;
+	}
+
+	/**
 	 * Method to escape a string for usage in an SQL statement.
 	 *
 	 * @param   string   $text   The string to be escaped.
@@ -199,6 +255,16 @@ class Mysqli extends Mysql
 		if (is_null($text))
 		{
 			return 'NULL';
+		}
+
+		if (is_int($text))
+		{
+			return (string) $text;
+		}
+
+		if (is_float($text))
+		{
+			return $this->floatToSqlString($text);
 		}
 
 		$result = @mysqli_real_escape_string($this->getConnection(), $text);
@@ -262,6 +328,19 @@ class Mysqli extends Mysql
 	}
 
 	/**
+	 * Method to get the database collation in use by sampling a text field of a table in the database.
+	 *
+	 * @return  mixed  The collation in use by the database (string) or boolean false if not supported.
+	 */
+	public function getCollation()
+	{
+		$this->setQuery('SHOW FULL COLUMNS FROM #__ak_stats');
+		$array = $this->loadAssocList();
+
+		return $array['2']['Collation'];
+	}
+
+	/**
 	 * Get the number of returned rows for the previous executed SQL statement.
 	 *
 	 * @param   mysqli_result  $cursor  An optional database cursor resource to extract the row count from.
@@ -295,6 +374,300 @@ class Mysqli extends Mysql
 	public function createQuery()
 	{
 		return new QueryMysqli($this);
+	}
+
+	/**
+	 * Retrieves field information about a given table.
+	 *
+	 * @param   string   $table     The name of the database table.
+	 * @param   boolean  $typeOnly  True to only return field types.
+	 *
+	 * @return  array  An array of fields for the database table.
+	 */
+	public function getTableColumns($table, $typeOnly = true)
+	{
+		$result = [];
+
+		// Set the query to get the table fields statement.
+		$this->setQuery('SHOW FULL COLUMNS FROM ' . $this->quoteName($this->escape($table)));
+		$fields = $this->loadObjectList();
+
+		// If we only want the type as the value add just that to the list.
+		if ($typeOnly)
+		{
+			foreach ($fields as $field)
+			{
+				$result[$field->Field] = preg_replace("/[(0-9)]/", '', $field->Type);
+			}
+		}
+		// If we want the whole field data object add that to the list.
+		else
+		{
+			foreach ($fields as $field)
+			{
+				$result[$field->Field] = $field;
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Shows the table CREATE statement that creates the given tables.
+	 *
+	 * @param   mixed  $tables  A table name or a list of table names.
+	 *
+	 * @return  array  A list of the create SQL for the tables.
+	 */
+	public function getTableCreate($tables)
+	{
+		// Initialise variables.
+		$result = [];
+
+		// Sanitize input to an array and iterate over the list.
+		$tables = (array) $tables;
+		foreach ($tables as $table)
+		{
+			// Set the query to get the table CREATE statement.
+			$this->setQuery('SHOW CREATE table ' . $this->quoteName($this->escape($table)));
+			$row = $this->loadRow();
+
+			// Populate the result array based on the create statements.
+			$result[$table] = $row[1];
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Get the details list of keys for a table.
+	 *
+	 * @param   string  $table  The name of the table.
+	 *
+	 * @return  array  An array of the column specification for the table.
+	 */
+	public function getTableKeys($table)
+	{
+		// Get the details columns information.
+		$this->setQuery('SHOW KEYS FROM ' . $this->quoteName($table));
+		$keys = $this->loadObjectList();
+
+		return $keys;
+	}
+
+	/**
+	 * Method to get an array of all tables in the database.
+	 *
+	 * @return  array  An array of all the tables in the database.
+	 */
+	public function getTableList()
+	{
+		// Set the query to get the tables statement.
+		$this->setQuery('SHOW TABLES');
+		$tables = $this->loadColumn();
+
+		return $tables;
+	}
+
+	/**
+	 * Returns an array with the names of tables, views, procedures, functions and triggers
+	 * in the database. The table names are the keys of the tables, whereas the value is
+	 * the type of each element: table, view, merge, temp, procedure, function or trigger.
+	 * Note that merge are MRG_MYISAM tables and temp is non-permanent data table, usually
+	 * set up as temporary, black hole or federated tables. These two types should never,
+	 * ever, have their data dumped in the SQL dump file.
+	 *
+	 * @param   bool  $abstract  Return abstract or normal names? Defaults to true (abstract names)
+	 *
+	 * @return array
+	 */
+	public function getTables($abstract = true)
+	{
+		if (!empty($this->tablesCache[$this->_database]))
+		{
+			return $this->tablesCache[$this->_database];
+		}
+
+		$sql = "SHOW TABLES";
+		$this->setQuery($sql);
+		$all_tables = $this->loadColumn();
+
+		if (!empty($all_tables))
+		{
+			// Start by adding tables and views to the list
+			foreach ($all_tables as $table_name)
+			{
+				if ($abstract)
+				{
+					$table_name = $this->getAbstract($table_name);
+				}
+				$this->tablesCache[$this->_database][$table_name] = 'table';
+			}
+
+			// Loop all metadatas
+			foreach ($all_tables as $table_metadata)
+			{
+				$table_name     = $table_metadata;
+				$table_abstract = $this->getAbstract($table_metadata);
+				$type           = 'table';
+
+				if ($abstract)
+				{
+					$table_metadata = $table_abstract;
+				}
+
+				$create = $this->get_create($table_abstract, $table_name, $type);
+				// Scan for the table engine.
+				$engine = null; // So that we detect VIEWs correctly
+
+				if ($type == 'table')
+				{
+					$engine      = 'MyISAM'; // So that even with MySQL 4 hosts we don't screw this up
+					$engine_keys = ['ENGINE=', 'TYPE='];
+					foreach ($engine_keys as $engine_key)
+					{
+						$start_pos = strrpos($create, $engine_key);
+						if ($start_pos !== false)
+						{
+							// Advance the start position just after the position of the ENGINE keyword
+							$start_pos += strlen($engine_key);
+							// Try to locate the space after the engine type
+							$end_pos = stripos($create, ' ', $start_pos);
+							if ($end_pos === false)
+							{
+								// Uh... maybe it ends with ENGINE=EngineType;
+								$end_pos = stripos($create, ';');
+							}
+							if ($end_pos !== '')
+							{
+								// Grab the string
+								$engine = substr($create, $start_pos, $end_pos - $start_pos);
+							}
+						}
+					}
+					$engine = strtoupper($engine);
+				}
+
+				switch ($engine)
+				{
+					// Views -- FIX: They are detected based on their CREATE STATEMENT
+					case null:
+						$this->tablesCache[$this->_database][$table_metadata] = 'view';
+						break;
+
+					// Merge tables
+					case 'MRG_MYISAM':
+						$this->tablesCache[$this->_database][$table_metadata] = 'merge';
+						break;
+
+					// Tables whose data we do not back up (memory, federated and can-have-no-data tables)
+					case 'MEMORY':
+					case 'EXAMPLE':
+					case 'BLACKHOLE':
+					case 'FEDERATED':
+						$this->tablesCache[$this->_database][$table_metadata] = 'temp';
+						break;
+
+					// Normal tables
+					default:
+						break;
+				} // switch
+			} // foreach
+		} // if !empty
+
+		// If we have MySQL > 5.0 add the list of stored procedures, stored functions
+		// and triggers
+		$registry        = Factory::getConfiguration();
+		$enable_entities = $registry->get('engine.dump.native.advanced_entitites', true);
+		if ($enable_entities)
+		{
+			// 1. Stored procedures
+			$sql = "SHOW PROCEDURE STATUS WHERE " . $this->quoteName('Db') . "=" . $this->quote($this->_database);
+			$this->setQuery($sql);
+
+			try
+			{
+				$all_entries = $this->loadAssocList();
+			}
+			catch (Exception $e)
+			{
+				$all_entries = [];
+			}
+
+			if (is_array($all_entries) || $all_entries instanceof \Countable ? count($all_entries) : 0)
+			{
+				foreach ($all_entries as $entry)
+				{
+					$table_name = $entry['Name'];
+					if ($abstract)
+					{
+						$table_name = $this->getAbstract($table_name);
+					}
+					$this->tablesCache[$this->_database][$table_name] = 'procedure';
+				}
+			}
+
+			// 2. Stored functions
+			$sql = "SHOW FUNCTION STATUS WHERE " . $this->quoteName('Db') . "=" . $this->quote($this->_database);
+			$this->setQuery($sql);
+
+			try
+			{
+				$all_entries = $this->loadColumn(1);
+			}
+			catch (Exception $e)
+			{
+				$all_entries = [];
+			}
+
+			// If we have filters, make sure the tables pass the filtering
+			if (is_array($all_entries))
+			{
+				if (count($all_entries))
+				{
+					foreach ($all_entries as $table_name)
+					{
+						if ($abstract)
+						{
+							$table_name = $this->getAbstract($table_name);
+						}
+						$this->tablesCache[$this->_database][$table_name] = 'function';
+					}
+				}
+			}
+
+			// 3. Triggers
+			$sql = "SHOW TRIGGERS";
+			$this->setQuery($sql);
+
+			try
+			{
+				$all_entries = $this->loadColumn();
+			}
+			catch (Exception $e)
+			{
+				$all_entries = [];
+			}
+
+			// If we have filters, make sure the tables pass the filtering
+			if (is_array($all_entries))
+			{
+				if (count($all_entries))
+				{
+					foreach ($all_entries as $table_name)
+					{
+						if ($abstract)
+						{
+							$table_name = $this->getAbstract($table_name);
+						}
+						$this->tablesCache[$this->_database][$table_name] = 'trigger';
+					}
+				}
+			}
+
+		}
+
+		return $this->tablesCache[$this->_database];
 	}
 
 	/**
@@ -346,6 +719,20 @@ class Mysqli extends Mysql
 	public function insertid()
 	{
 		return mysqli_insert_id($this->connection);
+	}
+
+	/**
+	 * Locks a table in the database.
+	 *
+	 * @param   string  $table  The name of the table to unlock.
+	 *
+	 * @return  Mysqli  Returns this object to support chaining.
+	 */
+	public function lockTable($table)
+	{
+		$this->setQuery('LOCK TABLES ' . $this->quoteName($table) . ' WRITE')->query();
+
+		return $this;
 	}
 
 	public function open()
@@ -534,6 +921,23 @@ class Mysqli extends Mysql
 	}
 
 	/**
+	 * Renames a table in the database.
+	 *
+	 * @param   string  $oldTable  The name of the table to be renamed
+	 * @param   string  $newTable  The new name for the table.
+	 * @param   string  $backup    Not used by MySQL.
+	 * @param   string  $prefix    Not used by MySQL.
+	 *
+	 * @return  Mysqli  Returns this object to support chaining.
+	 */
+	public function renameTable($oldTable, $newTable, $backup = null, $prefix = null)
+	{
+		$this->setQuery('RENAME TABLE ' . $oldTable . ' TO ' . $newTable)->query();
+
+		return $this;
+	}
+
+	/**
 	 * Select a database for use.
 	 *
 	 * @param   string  $database  The name of the database to select for use.
@@ -579,28 +983,51 @@ class Mysqli extends Mysql
 	}
 
 	/**
-	 * Does this database server support UTF-8 four byte (utf8mb4) collation?
+	 * Method to commit a transaction.
 	 *
-	 * libmysql supports utf8mb4 since 5.5.3 (same version as the MySQL server). mysqlnd supports utf8mb4 since 5.0.9.
-	 *
-	 * This method's code is based on WordPress' wpdb::has_cap() method
-	 *
-	 * @return  bool
+	 * @return  void
 	 */
-	public function supportsUtf8mb4()
+	public function transactionCommit()
 	{
-		$client_version = mysqli_get_client_info();
+		$this->setQuery('COMMIT');
+		$this->execute();
+	}
 
-		if (strpos($client_version, 'mysqlnd') !== false)
-		{
-			$client_version = preg_replace('/^\D+([\d.]+).*/', '$1', $client_version);
+	/**
+	 * Method to roll back a transaction.
+	 *
+	 * @return  void
+	 */
+	public function transactionRollback()
+	{
+		$this->setQuery('ROLLBACK');
+		$this->execute();
+	}
 
-			return version_compare($client_version, '5.0.9', '>=');
-		}
-		else
-		{
-			return version_compare($client_version, '5.5.3', '>=');
-		}
+	/**
+	 * Method to initialize a transaction.
+	 *
+	 * @return  void
+	 */
+	public function transactionStart()
+	{
+		$this->setQuery('START TRANSACTION');
+		$this->execute();
+	}
+
+	/**
+	 * Unlocks tables in the database.
+	 *
+	 * @return  Mysqli  Returns this object to support chaining.
+	 *
+	 * @throws  Exception
+	 * @since   11.4
+	 */
+	public function unlockTables()
+	{
+		$this->setQuery('UNLOCK TABLES')->execute();
+
+		return $this;
 	}
 
 	/**
@@ -626,5 +1053,114 @@ class Mysqli extends Mysql
 	protected function fetchObject($cursor = null, $class = 'stdClass')
 	{
 		return mysqli_fetch_object($cursor ?: $this->cursor, $class);
+	}
+
+	/**
+	 * Gets the CREATE TABLE command for a given table/view
+	 *
+	 * @param   string  $table_abstract  The abstracted name of the entity
+	 * @param   string  $table_name      The name of the table
+	 * @param   string  $type            The type of the entity to scan. If it's found to differ, the correct type is
+	 *                                   returned.
+	 *
+	 * @return string The CREATE command, w/out newlines
+	 */
+	protected function get_create($table_abstract, $table_name, &$type)
+	{
+		$sql = "SHOW CREATE TABLE " . $this->quoteName($table_name);
+		$this->setQuery($sql);
+		$temp      = $this->loadRowList();
+		$table_sql = $temp[0][1];
+		unset($temp);
+
+		// Smart table type detection
+		if (in_array($type, ['table', 'merge', 'view']))
+		{
+			// Check for CREATE VIEW
+			$pattern = '/^CREATE(.*) VIEW (.*)/i';
+			$result  = preg_match($pattern, $table_sql);
+			if ($result === 1)
+			{
+				// This is a view.
+				$type = 'view';
+			}
+			else
+			{
+				// This is a table.
+				$type = 'table';
+			}
+
+			// Is it a VIEW but we don't have SHOW VIEW privileges?
+			if (empty($table_sql))
+			{
+				$type = 'view';
+			}
+		}
+
+		$table_sql = str_replace($table_name, $table_abstract, $table_sql);
+
+		// Replace newlines with spaces
+		$table_sql = str_replace("\n", " ", $table_sql) . ";\n";
+		$table_sql = str_replace("\r", " ", $table_sql);
+		$table_sql = str_replace("\t", " ", $table_sql);
+
+		// Post-process CREATE VIEW
+		if ($type == 'view')
+		{
+			$pos_view = strpos($table_sql, ' VIEW ');
+
+			if ($pos_view > 7)
+			{
+				// Only post process if there are view properties between the CREATE and VIEW keywords
+				$propstring = substr($table_sql, 7, $pos_view - 7); // Properties string
+				// Fetch the ALGORITHM={UNDEFINED | MERGE | TEMPTABLE} keyword
+				$algostring = '';
+				$algo_start = strpos($propstring, 'ALGORITHM=');
+				if ($algo_start !== false)
+				{
+					$algo_end   = strpos($propstring, ' ', $algo_start);
+					$algostring = substr($propstring, $algo_start, $algo_end - $algo_start + 1);
+				}
+				// Create our modified create statement
+				$table_sql = 'CREATE OR REPLACE ' . $algostring . substr($table_sql, $pos_view);
+			}
+		}
+
+		return $table_sql;
+	}
+
+	/**
+	 * Does this database server support UTF-8 four byte (utf8mb4) collation?
+	 *
+	 * libmysql supports utf8mb4 since 5.5.3 (same version as the MySQL server). mysqlnd supports utf8mb4 since 5.0.9.
+	 *
+	 * This method's code is based on WordPress' wpdb::has_cap() method
+	 *
+	 * @return  bool
+	 */
+	public function supportsUtf8mb4()
+	{
+		$client_version = mysqli_get_client_info();
+
+		if (strpos($client_version, 'mysqlnd') !== false)
+		{
+			$client_version = preg_replace('/^\D+([\d.]+).*/', '$1', $client_version);
+
+			return version_compare($client_version, '5.0.9', '>=');
+		}
+		else
+		{
+			return version_compare($client_version, '5.5.3', '>=');
+		}
+	}
+
+	protected function unsafe_escape($string)
+	{
+		if (function_exists('mb_ereg_replace'))
+		{
+			return mb_ereg_replace('[\x00\x0A\x0D\x1A\x22\x27\x5C]', '\\\0', $string);
+		}
+
+		return preg_replace('~[\x00\x0A\x0D\x1A\x22\x27\x5C]~u', '\\\$0', $string);
 	}
 }

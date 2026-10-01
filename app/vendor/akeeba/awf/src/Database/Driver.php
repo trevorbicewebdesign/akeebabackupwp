@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -111,6 +111,11 @@ abstract class Driver implements DatabaseInterface
 	 * @var    boolean  True if the database engine supports UTF-8 character encoding.
 	 */
 	protected $utf = true;
+
+	/**
+	 * @var    string|null  The character set used by the database connection.
+	 */
+	protected $charset = null;
 
 	/**
 	 * @var    integer  The database error number
@@ -407,6 +412,7 @@ abstract class Driver implements DatabaseInterface
 		$this->_database = (isset($options['database'])) ? $options['database'] : '';
 
 		$this->tablePrefix = (isset($options['prefix'])) ? $options['prefix'] : '';
+		$this->charset = (isset($options['charset'])) ? $options['charset'] : null;
 		$this->count = 0;
 		$this->errorNum = 0;
 		$this->log = array();
@@ -518,6 +524,22 @@ abstract class Driver implements DatabaseInterface
 	 * @return  string   The escaped string.
 	 */
 	abstract public function escape($text, $extra = false);
+
+	/**
+	 * Returns the ` ESCAPE '...'` fragment to append to a LIKE clause whose pattern was escaped
+	 * with escape($value, true).
+	 *
+	 * The escape character is a backslash on every supported server, but the way a backslash is
+	 * written inside a string literal is not portable, so the fragment has to come from the
+	 * driver. It also makes the behaviour explicit rather than relying on a server default that
+	 * MySQL drops under NO_BACKSLASH_ESCAPES and SQLite does not have at all.
+	 *
+	 * @return  string
+	 */
+	public function getLikeEscapeSql()
+	{
+		return " ESCAPE '\\\\'";
+	}
 
 	/**
 	 * Method to fetch a row from the result set cursor as an array.
@@ -890,6 +912,11 @@ abstract class Driver implements DatabaseInterface
 	 */
 	public function isMinimumVersion()
 	{
+		if (static::$dbMinimum === null)
+		{
+			return true;
+		}
+
 		return version_compare($this->getVersion(), static::$dbMinimum) >= 0;
 	}
 

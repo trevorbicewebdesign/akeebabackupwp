@@ -91,6 +91,9 @@ class Cron extends DataModel
 		parent::__construct($container, $language);
 
 		$this->addBehaviour('filters');
+
+		// Never let this be filtered on: it holds the serialised engine state of a running task.
+		$this->blacklistFilters(['storage']);
 	}
 
 	/**
@@ -191,6 +194,9 @@ class Cron extends DataModel
 		// Install a timeout trap
 		register_shutdown_function([$this, 'timeoutTrap'], $pendingTask);
 
+		$loopStart   = microtime(true);
+		$loopMaxTime = ($this->getBestMaxExecTime() ?? 30) * 0.75;
+
 		try
 		{
 			do
@@ -205,7 +211,7 @@ class Cron extends DataModel
 				}
 
 				$willContinue = $pendingTask->last_exit == self::TASK_WILL_CONTINUE;
-			} while ($willContinue && Factory::getTimer()->getTimeLeft() > 0);
+			} while ($willContinue && (microtime(true) - $loopStart) < $loopMaxTime);
 		}
 		catch (\Exception $e)
 		{
@@ -638,7 +644,7 @@ class Cron extends DataModel
 		$lockTimeout = defined('WP_CRON_LOCK_TIMEOUT') ? WP_CRON_LOCK_TIMEOUT : 60;
 
 		$maxExec = function_exists('ini_get') ? ini_get('max_execution_time') : null;
-		$maxExec = is_int($maxExec) ? $maxExec : 30;
+		$maxExec = is_numeric($maxExec) ? (int) $maxExec : 30;
 
 		try
 		{

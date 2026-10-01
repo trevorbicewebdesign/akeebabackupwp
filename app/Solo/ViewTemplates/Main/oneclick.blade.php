@@ -29,7 +29,7 @@ $token    = $this->container->session->getCsrfToken()->getValue();
             <form action="{{ $router->route('index.php?view=backup') }}" method="post">
                 <a class="oneclick akeeba-action--green" href="#">
                     <span class="akion-play"></span>
-                    <span>{{ $qiProfile->description }} </span>
+                    <span>{{{ $qiProfile->description }}} </span>
                 </a>
 
                 <input type="hidden" name="autostart" value="1" />

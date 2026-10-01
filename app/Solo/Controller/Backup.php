@@ -83,6 +83,9 @@ class Backup extends ControllerDefault
 	 */
 	public function ajax()
 	{
+		// CSRF prevention
+		$this->csrfProtection(true);
+
 		$model = $this->getModel();
 
 		$model->setState('profile',			$this->input->get('profile', Platform::getInstance()->get_active_profile(), 'int'));
@@ -115,6 +118,7 @@ class Backup extends ControllerDefault
 		$ret_array = $model->runBackup();
 
 		@ob_end_clean();
+		$this->sendNoCacheHeaders();
 		header('Content-type: text/plain');
 		header('Connection: close');
 		echo '#"\#\"#' . json_encode($ret_array) . '#"\#\"#';

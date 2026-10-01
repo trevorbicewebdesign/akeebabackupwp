@@ -3,7 +3,7 @@
         'name' => 'akeeba/solo',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => 'fb7db55a19f3153b6d603e7173afc52c7bfa1631',
+        'reference' => '799aa367c7ec640b9b3a4f7ca36472783edc00e7',
         'type' => 'project',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -11,25 +11,21 @@
     ),
     'versions' => array(
         'akeeba/awf' => array(
-            'pretty_version' => 'dev-development',
-            'version' => 'dev-development',
-            'reference' => '460b4a6ffaa7af0fd92ffad925b5e637254ddc3d',
+            'pretty_version' => '1.3.0',
+            'version' => '1.3.0.0',
+            'reference' => 'ee3c9f63c00637ef69e5ef615613215aca17886b',
             'type' => 'library',
             'install_path' => __DIR__ . '/../akeeba/awf',
-            'aliases' => array(
-                0 => '9999999-dev',
-            ),
+            'aliases' => array(),
             'dev_requirement' => false,
         ),
         'akeeba/engine' => array(
-            'pretty_version' => 'dev-development',
-            'version' => 'dev-development',
-            'reference' => '57b93c30fff6aad5c14d75d2a5f17162d66bd0cd',
+            'pretty_version' => '10.4.0',
+            'version' => '10.4.0.0',
+            'reference' => '3327d0f94250b6e742ea3433df5e82edcfb016bb',
             'type' => 'library',
             'install_path' => __DIR__ . '/../akeeba/engine',
-            'aliases' => array(
-                0 => '9999999-dev',
-            ),
+            'aliases' => array(),
             'dev_requirement' => false,
         ),
         'akeeba/phpfinder' => array(
@@ -44,7 +40,7 @@
         'akeeba/s3' => array(
             'pretty_version' => 'dev-development',
             'version' => 'dev-development',
-            'reference' => '5ad65d046715be83d6f156edfb8286c746c2476c',
+            'reference' => '111fdfc7d2a9f9cebedf07a0300f24942f25b42d',
             'type' => 'library',
             'install_path' => __DIR__ . '/../akeeba/s3',
             'aliases' => array(
@@ -55,27 +51,25 @@
         'akeeba/solo' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => 'fb7db55a19f3153b6d603e7173afc52c7bfa1631',
+            'reference' => '799aa367c7ec640b9b3a4f7ca36472783edc00e7',
             'type' => 'project',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
             'dev_requirement' => false,
         ),
         'akeeba/stats_collector' => array(
-            'pretty_version' => 'dev-main',
-            'version' => 'dev-main',
-            'reference' => '22d56622bd2bb34c0c95d4493d7b6ea7032c8f25',
+            'pretty_version' => '1.0.0',
+            'version' => '1.0.0.0',
+            'reference' => 'd9362fdf6ba46f2eb78f06548bc13885fe0d8161',
             'type' => 'library',
             'install_path' => __DIR__ . '/../akeeba/stats_collector',
-            'aliases' => array(
-                0 => '9999999-dev',
-            ),
+            'aliases' => array(),
             'dev_requirement' => false,
         ),
         'composer/ca-bundle' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '961a5e4056dd2e4a2eedcac7576075947c28bf63',
+            'reference' => '4ed87f5359a103c90f3f17c3a4612bb7b90f4380',
             'type' => 'library',
             'install_path' => __DIR__ . '/./ca-bundle',
             'aliases' => array(

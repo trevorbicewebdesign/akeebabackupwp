@@ -1,0 +1,38 @@
+{
+	"accountId": "a1b2c3d4e5f6",
+	"apiInfo": {
+		"storageApi": {
+			"absoluteMinimumPartSize": 5000000,
+			"allowed": {
+				"buckets": [
+					{
+						"id": "b100000000000000000000a1",
+						"name": "akeeba-backups-main"
+					},
+					{
+						"id": "b200000000000000000000b2",
+						"name": "akeeba-backups-offsite"
+					},
+					{
+						"id": "b300000000000000000000c3",
+						"name": null
+					}
+				],
+				"capabilities": [
+					"listFiles",
+					"readFiles",
+					"writeFiles",
+					"deleteFiles"
+				],
+				"namePrefix": null
+			},
+			"apiUrl": "https://api001.backblazeb2.com",
+			"downloadUrl": "https://f001.backblazeb2.com",
+			"infoType": "storageApi",
+			"recommendedPartSize": 100000000,
+			"s3ApiUrl": "https://s3.us-west-001.backblazeb2.com"
+		}
+	},
+	"applicationKeyExpirationTimestamp": null,
+	"authorizationToken": "4_0011223344556677_88990011_aabbcc_acct_dGVzdA=="
+}

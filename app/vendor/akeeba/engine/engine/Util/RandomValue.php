@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -82,7 +82,11 @@ class RandomValue
 	 */
 	public function generateString($characters = 32, $characterSet = 'abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789')
 	{
-		$sourceString = str_split('abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789', 1);
+		$sourceString = str_split(
+			!empty($characterSet) ? $characterSet : 'abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789',
+			1
+		);
+		$sourceLen    = count($sourceString);
 		$ret          = '';
 
 		$bytes     = ceil($characters / 4) * 3;
@@ -96,10 +100,10 @@ class RandomValue
 			$subBytes = $subBytes & bindec('00000000111111111111111111111111');
 
 			$b    = [];
-			$b[0] = $subBytes >> 18;
-			$b[1] = ($subBytes >> 12) & bindec('111111');
-			$b[2] = ($subBytes >> 6) & bindec('111111');
-			$b[3] = $subBytes & bindec('111111');
+			$b[0] = ($subBytes >> 18) % $sourceLen;
+			$b[1] = (($subBytes >> 12) & bindec('111111')) % $sourceLen;
+			$b[2] = (($subBytes >> 6) & bindec('111111')) % $sourceLen;
+			$b[3] = ($subBytes & bindec('111111')) % $sourceLen;
 
 			$ret .= $sourceString[$b[0]] . $sourceString[$b[1]] . $sourceString[$b[2]] . $sourceString[$b[3]];
 		}

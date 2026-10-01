@@ -1,7 +1,7 @@
 <?php
 /**
  * @package   awf
- * @copyright Copyright (c)2014-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2014-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   GNU GPL version 3 or later
  */
 
@@ -142,7 +142,7 @@ class Basic extends AbstractHelper
 			$format = $this->getContainer()->language->text($format);
 		}
 
-		return $date->format($format, true);
+		return $date->format($format, true, true);
 	}
 
 	/**

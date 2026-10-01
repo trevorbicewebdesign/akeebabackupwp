@@ -4,7 +4,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -29,8 +29,8 @@
  * - MODE is the operating mode (grow, shrink or nuke)
  *
  * There are three modes:
- * - `grow`    A 15 MiB file grows by 64 KiB every TIME seconds until it reaches a size of 20 MiB.
- * - `shrink`  A 15 MiB file shrinks by 64 KiB every TIME seconds until it reaches a size of 10 MiB.
+ * - `grow`    A 15 MiB file grows by 64 KiB every TIME msec until it reaches a size of 20 MiB.
+ * - `shrink`  A 15 MiB file shrinks by 64 KiB every TIME msec until it reaches a size of 10 MiB.
  * - `nuke`    A 15 MiB file disappears after TIME milliseconds.
  *
  * TIME is in milliseconds. The default is 120.

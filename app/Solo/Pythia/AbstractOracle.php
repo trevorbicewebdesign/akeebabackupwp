@@ -122,7 +122,7 @@ abstract class AbstractOracle implements OracleInterface
 	 */
 	protected function parseDefine(string $line): array
 	{
-		$pattern = '#define\s*\(\s*(["\'][A-Z_]*["\'])\s*,\s*(["\'].*["\'])\s*\)\s*;#u';
+		$pattern = '#define\s*\(\s*(["\'][A-Za-z_][A-Za-z0-9_]*["\'])\s*,\s*(["\'].*?["\'])\s*\)\s*;#u';
 		$numMatches = preg_match($pattern, $line, $matches);
 
 		if ($numMatches < 1)
@@ -152,7 +152,7 @@ abstract class AbstractOracle implements OracleInterface
 	 */
 	protected function parseConst(string $line): array
 	{
-		$pattern = '#const\s*\s*([A-Z_]*)\s*=\s*(["\'].*["\'])\s*;#u';
+		$pattern = '#const\s*\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["\'].*?["\'])\s*;#u';
 		$numMatches = preg_match($pattern, $line, $matches);
 
 		if ($numMatches < 1)

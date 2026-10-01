@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -646,7 +646,13 @@ class Davclient
 
 			if (count($parts) == 2)
 			{
-				$headers[strtolower(trim($parts[0]))] = trim($parts[1]);
+				$name  = strtolower(trim($parts[0]));
+				$value = trim($parts[1]);
+
+				// A header may legitimately appear more than once (e.g. Apache mod_dav sends several `DAV:` headers).
+				// Per RFC 7230 §3.2.2 that is equivalent to a single comma-folded header, so we join repeats rather than
+				// letting the last occurrence overwrite the earlier ones — otherwise options() would lose DAV classes.
+				$headers[$name] = isset($headers[$name]) ? $headers[$name] . ', ' . $value : $value;
 			}
 		}
 

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -102,7 +102,7 @@ HTML;
 		{
 			try
 			{
-				$connector->ping();
+				$this->pingAndPersist($connector);
 				$connector->makeDirectory($directory);
 				$config->set('volatile.engine.postproc.dropbox2.check_directory', 1);
 			}
@@ -112,8 +112,10 @@ HTML;
 			}
 		}
 
-		// Get the remote file's pathname
-		$remotePath = trim($directory, '/') . '/' . basename($localFilepath);
+		// Get the remote file's pathname. Use the resolved $basename (which honours an explicit $remoteBaseName) rather
+		// than re-deriving it from the local file path; otherwise the file is stored under the local (temporary) file
+		// name and every subsequent lookup (download, delete, metadata, listing) by the reported remote path fails.
+		$remotePath = trim($directory, '/') . '/' . $basename;
 
 		// Check if the size of the file is compatible with chunked uploading
 		clearstatcache();
@@ -141,7 +143,7 @@ HTML;
 		}
 
 		// Download the file
-		$connector->ping();
+		$this->pingAndPersist($connector);
 		$connector->download($remotePath, $localFile);
 
 		return true;
@@ -151,7 +153,7 @@ HTML;
 	{
 		/** @var ConnectorDropboxV2 $connector */
 		$connector = $this->getConnector();
-		$connector->ping();
+		$this->pingAndPersist($connector);
 
 		return $connector->getAuthenticatedUrl($remotePath);
 	}
@@ -160,7 +162,7 @@ HTML;
 	{
 		/** @var ConnectorDropboxV2 $connector */
 		$connector = $this->getConnector();
-		$connector->ping();
+		$this->pingAndPersist($connector);
 
 		$connector->delete($path);
 	}
@@ -259,7 +261,37 @@ HTML;
 
 		$connector->setNamespaceId($namespaceId);
 
+		// Restore the persisted access-token expiry so the connector can refresh proactively (before the token lapses)
+		// across stepped backup runs, instead of only reacting after a request has already failed.
+		$connector->setTokenExpiration((int) Factory::getConfiguration()->get('engine.postproc.dropbox2.token_expiration', 0));
+
 		return $connector;
+	}
+
+	/**
+	 * Ping the connector (refreshing the access token if needed) and persist any refreshed tokens back to the profile
+	 * configuration, so the next backup step starts from the fresh tokens and their known expiry instead of refreshing
+	 * again from scratch.
+	 *
+	 * @param   ConnectorDropboxV2  $connector  The connector to ping.
+	 *
+	 * @return  void
+	 */
+	protected function pingAndPersist($connector)
+	{
+		$pingResult = $connector->ping();
+
+		if (empty($pingResult['needs_refresh']) || !isset($pingResult['access_token']))
+		{
+			return;
+		}
+
+		$config = Factory::getConfiguration();
+		$config->set('engine.postproc.dropbox2.access_token', $pingResult['access_token'], false);
+		$config->set('engine.postproc.dropbox2.refresh_token', $pingResult['refresh_token'], false);
+		$config->set('engine.postproc.dropbox2.token_expiration', $pingResult['token_expiration'] ?? 0, false);
+
+		Platform::getInstance()->save_configuration($config->activeProfile);
 	}
 
 	/**
@@ -287,9 +319,9 @@ HTML;
 		Factory::getLog()->debug(__METHOD__ . " - Dropbox tokens were forcibly refreshed");
 		$config->set('engine.postproc.dropbox2.access_token', $pingResult['access_token'], false);
 		$config->set('engine.postproc.dropbox2.refresh_token', $pingResult['refresh_token'], false);
+		$config->set('engine.postproc.dropbox2.token_expiration', $pingResult['token_expiration'] ?? 0, false);
 
-		$profile_id = Platform::getInstance()->get_active_profile();
-		Platform::getInstance()->save_configuration($profile_id);
+		Platform::getInstance()->save_configuration($config->activeProfile);
 	}
 
 	/**

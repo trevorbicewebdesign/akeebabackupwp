@@ -97,7 +97,8 @@ class Html extends View
 		$document          = $this->container->application->getDocument();
 
 		// Add script options
-		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=Fsfilters&task=ajax'));
+		$token = $this->container->session->getCsrfToken()->getValue();
+		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=Fsfilters&task=ajax&' . $token . '=1'));
 		$document->addScriptOptions('akeeba.Fsfilters.loadingGif', Template::parsePath('media://image/loading.gif', false, $this->getContainer()->application));
 
 		switch ($task)

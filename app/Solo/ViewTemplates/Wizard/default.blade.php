@@ -38,7 +38,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.site_url]"
                    name="var[akeeba.platform.site_url]" size="30"
-                   value="{{ $this->siteInfo->url }}">
+                   value="{{{ $this->siteInfo->url }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_SITEURL_DESCRIPTION')
             </p>
@@ -51,7 +51,7 @@ $config = Factory::getConfiguration();
             <div class="akeeba-input-group">
                 <input type="text" id="var[akeeba.platform.newroot]"
                        name="var[akeeba.platform.newroot]" size="30"
-                       value="{{ $this->siteInfo->root }}">
+                       value="{{{ $this->siteInfo->root }}}">
                 <span class="akeeba-input-group-btn">
                     <button title="@lang('COM_AKEEBA_CONFIG_UI_BROWSE')" class="akeeba-btn--teal" id="btnBrowse">
                         <span class="akion-android-folder-open"></span>
@@ -102,7 +102,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.dbhost]"
                    name="var[akeeba.platform.dbhost]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbhost', 'localhost') }}">
+                   value="{{{ $config->get('akeeba.platform.dbhost', 'localhost') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBHOST_DESCRIPTION')
             </p>
@@ -114,7 +114,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.dbport]"
                    name="var[akeeba.platform.dbport]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbport', '') }}">
+                   value="{{{ $config->get('akeeba.platform.dbport', '') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBPORT_DESCRIPTION')
             </p>
@@ -126,7 +126,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.dbusername]"
                    name="var[akeeba.platform.dbusername]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbusername', '') }}">
+                   value="{{{ $config->get('akeeba.platform.dbusername', '') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBUSERNAME_DESCRIPTION')
             </p>
@@ -138,7 +138,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="password" id="var[akeeba.platform.dbpassword]"
                    name="var[akeeba.platform.dbpassword]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbpassword', '') }}">
+                   value="{{{ $config->get('akeeba.platform.dbpassword', '') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBPASSWORD_DESCRIPTION')
             </p>
@@ -150,7 +150,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.dbname]"
                    name="var[akeeba.platform.dbname]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbname', '') }}">
+                   value="{{{ $config->get('akeeba.platform.dbname', '') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBDATABASE_DESCRIPTION')
             </p>
@@ -162,7 +162,7 @@ $config = Factory::getConfiguration();
             </label>
             <input type="text" id="var[akeeba.platform.dbprefix]"
                    name="var[akeeba.platform.dbprefix]" size="30"
-                   value="{{ $config->get('akeeba.platform.dbprefix', '') }}">
+                   value="{{{ $config->get('akeeba.platform.dbprefix', '') }}}">
             <p class="akeeba-help-text">
                 @lang('SOLO_CONFIG_PLATFORM_DBPREFIX_DESCRIPTION')
             </p>

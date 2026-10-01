@@ -169,6 +169,11 @@ class Manage extends Model
 			return $stat;
 		}, $allStats);
 
+		$ret = array_map(function (array $stat): array {
+			$stat['log_present'] = $this->hasLogFile($stat);
+			return $stat;
+		}, $ret);
+
 		// Update records which report that their files exist on the server but, in fact, they don't.
 		Platform::getInstance()->invalidate_backup_records($updateObsoleteRecords);
 
@@ -340,6 +345,26 @@ class Manage extends Model
 	}
 
 	/**
+	 * Does the log file for the given backup record exist on the server?
+	 *
+	 * @param   array  $stat  A backup record (as returned by get_statistics_list)
+	 *
+	 * @return  bool
+	 */
+	public function hasLogFile(array $stat): bool
+	{
+		if (empty($stat['backupid']) || empty($stat['tag']) || empty($stat['absolute_path']))
+		{
+			return false;
+		}
+
+		$logDir = dirname($stat['absolute_path']);
+		$base   = 'akeeba.' . $stat['tag'] . '.' . $stat['backupid'] . '.log';
+
+		return @file_exists($logDir . '/' . $base) || @file_exists($logDir . '/' . $base . '.php');
+	}
+
+	/**
 	 * Deletes the backup-specific log files of a stats record
 	 *
 	 * @param   array  $stat  The array holding the backup stats record
@@ -355,9 +380,11 @@ class Manage extends Model
 		}
 
 		$fs           = $this->container->fileSystem;
+		$baseName     = 'akeeba.' . $stat['tag'] . '.' . $stat['backupid'];
 		$logFileNames = [
-			'akeeba.' . $stat['tag'] . '.' . $stat['backupid'] . '.log',
-			'akeeba.' . $stat['tag'] . '.' . $stat['backupid'] . '.log.php',
+			$baseName . '.log',
+			$baseName . '.log.php',
+			$baseName . '.php',
 		];
 
 		foreach ($logFileNames as $logFileName)

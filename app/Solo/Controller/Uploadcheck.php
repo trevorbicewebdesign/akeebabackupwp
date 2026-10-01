@@ -44,6 +44,7 @@ class Uploadcheck extends ControllerDefault
 		$message .= implode(', ', $result['message']);
 
 		@ob_end_clean();
+		$this->sendNoCacheHeaders();
 		header('Content-type: text/plain');
 		header('Connection: close');
 		echo $message;
@@ -77,14 +78,21 @@ class Uploadcheck extends ControllerDefault
 
 		if (!$febEnabled || empty($validKey))
 		{
+			$this->refuseFrontendEndpoint();
+
+			// Unreachable: refuseFrontendEndpoint() terminates the request. Kept so that this method can never fall
+			// through into the privileged code path, should close() ever stop exiting.
 			throw new \RuntimeException(Text::_('SOLO_REMOTE_ERROR_NOT_ENABLED'), 403);
 		}
 
 		// Is the key good?
 		$key = $this->input->get('key', '', 'none', 2);
 
-		if (($key != $validKey) || (empty($validKeyTrim)))
+		if (!is_string($key) || !hash_equals((string) $validKey, $key) || (empty($validKeyTrim)))
 		{
+			$this->refuseFrontendEndpoint();
+
+			// Unreachable — see above.
 			throw new \RuntimeException(Text::_('SOLO_REMOTE_ERROR_INVALID_KEY'), 403);
 		}
 	}

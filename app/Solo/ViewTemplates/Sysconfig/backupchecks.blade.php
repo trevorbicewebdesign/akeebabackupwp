@@ -53,7 +53,7 @@ global $wp_version;
         <input type="number"
                name="options[backup_age_max_hours]"
                id="options_backup_age_max_hours"
-               value="{{ $config->get('options.backup_age_max_hours', 24) }}"
+               value="{{{ $config->get('options.backup_age_max_hours', 24) }}}"
                min="1"
                max="8784"
         >
@@ -71,7 +71,7 @@ global $wp_version;
     </label>
     <input type="text" name="options[failure_timeout]" id="failure_timeout"
            placeholder="@lang('COM_AKEEBA_CONFIG_FAILURE_TIMEOUT_LABEL')"
-           value="{{ $config->get('options.failure_timeout', 180) }}">
+           value="{{{ $config->get('options.failure_timeout', 180) }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FAILURE_TIMEOUT_DESC')
     </p>
@@ -83,7 +83,7 @@ global $wp_version;
     </label>
     <input type="text" name="options[failure_email_address]" id="failure_email_address"
            placeholder="@lang('COM_AKEEBA_CONFIG_FAILURE_EMAILADDRESS_LABEL')"
-           value="{{ $config->get('options.failure_email_address') }}">
+           value="{{{ $config->get('options.failure_email_address') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FAILURE_EMAILADDRESS_DESC')
     </p>
@@ -95,7 +95,7 @@ global $wp_version;
     </label>
     <input type="text" name="options[failure_email_subject]" id="failure_email_subject"
            placeholder="@lang('COM_AKEEBA_CONFIG_FAILURE_EMAILSUBJECT_LABEL')"
-           value="{{ $config->get('options.failure_email_subject') }}">
+           value="{{{ $config->get('options.failure_email_subject') }}}">
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FAILURE_EMAILSUBJECT_DESC')
     </p>
@@ -107,7 +107,7 @@ global $wp_version;
     </label>
     <textarea type="text" name="options[failure_email_body]" id="failure_email_body"
               placeholder="@lang('COM_AKEEBA_CONFIG_FAILURE_EMAILBODY_LABEL')"
-              rows="15">{{ $config->get('options.failure_email_body') }}</textarea>
+              rows="15">{{{ $config->get('options.failure_email_body') }}}</textarea>
     <p class="akeeba-help-text">
         @lang('COM_AKEEBA_CONFIG_FAILURE_EMAILBODY_DESC')
     </p>

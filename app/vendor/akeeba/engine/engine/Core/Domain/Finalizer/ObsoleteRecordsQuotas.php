@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -98,23 +98,20 @@ final class ObsoleteRecordsQuotas extends AbstractFinalizer
 				continue;
 			}
 
-			$logFileName = 'akeeba.' . $stat['tag'] . '.' . $stat['backupid'] . '.log.php';
-			$logPath     = dirname($stat['absolute_path']) . '/' . $logFileName;
-
-			if (@file_exists($logPath))
-			{
-				@unlink($logPath);
-			}
+			$baseName = dirname($stat['absolute_path']) . '/akeeba.' . $stat['tag'] . '.' . $stat['backupid'];
 
 			/**
-			 * Transitional period: the log file akeeba.tag.log.php may not exist but the akeeba.tag.log does. This
-			 * addresses this transition.
+			 * Transitional period: the log file akeeba.tag.log.php may not exist but the akeeba.tag.php or the
+			 * akeeba.tag.log does. This addresses this transition.
 			 */
-			$logPath = dirname($stat['absolute_path']) . '/' . substr($logFileName, 0, -4);
-
-			if (@file_exists($logPath))
+			foreach (['.log.php', '.php', '.log'] as $suffix)
 			{
-				@unlink($logPath);
+				$logPath = $baseName . $suffix;
+
+				if (@file_exists($logPath))
+				{
+					@unlink($logPath);
+				}
 			}
 		}
 

@@ -3,7 +3,7 @@
  * Akeeba Engine
  *
  * @package   akeebaengine
- * @copyright Copyright (c)2006-2025 Nicholas K. Dionysopoulos / Akeeba Ltd
+ * @copyright Copyright (c)2006-2026 Nicholas K. Dionysopoulos / Akeeba Ltd
  * @license   https://www.gnu.org/licenses/gpl-3.0.html GNU General Public License version 3, or later
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
@@ -65,6 +65,7 @@ class FileSystem
 	public function TranslateWinPath($p_path)
 	{
 		$is_unc = false;
+		$p_path = (string) $p_path;
 
 		if ($this->isWindows)
 		{
@@ -100,6 +101,7 @@ class FileSystem
 	 */
 	public function TrimTrailingSlash($path)
 	{
+		$path    = (string) $path;
 		$newpath = $path;
 
 		if (substr($path, strlen($path) - 1, 1) == '\\')
@@ -218,11 +220,11 @@ class FileSystem
 			self::$stockDirs = Platform::getInstance()->get_stock_directories();
 		}
 
-		$temp = $folder;
+		$temp = (string) $folder;
 
 		foreach (self::$stockDirs as $find => $replace)
 		{
-			$temp = str_replace($find, $replace, $temp);
+			$temp = str_replace($find, (string) $replace, $temp);
 		}
 
 		if ($translate_win_dirs)

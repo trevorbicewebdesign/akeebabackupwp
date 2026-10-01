@@ -89,6 +89,9 @@ class Wizard extends ControllerDefault
 
 	public function ajax()
 	{
+		// CSRF prevention
+		$this->csrfProtection();
+
 		$act = $this->input->getCmd('akact', '');
 
 		/** @var \Solo\Model\Wizard $model */

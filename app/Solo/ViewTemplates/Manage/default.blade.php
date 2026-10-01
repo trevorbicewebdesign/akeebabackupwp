@@ -92,7 +92,7 @@ $proKey = (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO) ? 'PRO' : 'CORE';
             <td>
                 <input type="text" name="filter_description" id="description"
                        class="akeebaGridViewAutoSubmitOnChange" style="width: 100%;"
-                       value="{{ $this->lists->fltDescription }}"
+                       value="{{{ $this->lists->fltDescription }}}"
                        placeholder="@lang('SOLO_MANAGE_FIELD_DESCRIPTION')">
             </td>
             <td class="akeeba-hidden-phone">
@@ -147,9 +147,13 @@ $proKey = (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO) ? 'PRO' : 'CORE';
                     </td>
 
                     <td style="text-align: center">
-                        <a href="@route('index.php?view=Manage&id=' . $record['id'] . '&task=' . $frozenTask . '&token=' . $token)" title="{{$frozenTitle}}">
-                            <span class="{{ $frozenIcon }}"></span>
-                        </a>
+                        @if ($this->privileges['backup'])
+                            <a href="@route('index.php?view=Manage&id=' . $record['id'] . '&task=' . $frozenTask . '&token=' . $token)" title="{{$frozenTitle}}">
+                                <span class="{{ $frozenIcon }}"></span>
+                            </a>
+                        @else
+                            <span class="{{ $frozenIcon }}" title="{{$frozenTitle}}"></span>
+                        @endif
                     </td>
 
                     <td>
@@ -160,10 +164,13 @@ $proKey = (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO) ? 'PRO' : 'CORE';
                             <span class="akion-help-circled akeebaCommentPopover" rel="popover"
                                   data-content="{{{ $record['comment'] }}}"></span>
                         @endif
-                        <a href="@route('index.php?view=manage&task=showComment&id=' . $record['id'] . '&token=' . $token)">
+                        @if ($this->privileges['backup'])
+                            <a href="@route('index.php?view=manage&task=showComment&id=' . $record['id'] . '&token=' . $token)">
+                                {{{ empty($record['description']) ? Text::_('COM_AKEEBA_BUADMIN_LABEL_NODESCRIPTION') : $record['description'] }}}
+                            </a>
+                        @else
                             {{{ empty($record['description']) ? Text::_('COM_AKEEBA_BUADMIN_LABEL_NODESCRIPTION') : $record['description'] }}}
-
-                        </a>
+                        @endif
                         <br />
                         <div class="akeeba-buadmin-startdate" title="@lang('COM_AKEEBA_BUADMIN_LABEL_START')">
                             <small>
@@ -213,8 +220,8 @@ $proKey = (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO) ? 'PRO' : 'CORE';
     <div class="akeeba-hidden-fields-container">
         <input type="hidden" name="boxchecked" id="boxchecked" value="0">
         <input type="hidden" name="task" id="task" value="default">
-        <input type="hidden" name="filter_order" id="filter_order" value="{{ $this->lists->order }}">
-        <input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{ $this->lists->order_Dir }}">
+        <input type="hidden" name="filter_order" id="filter_order" value="{{{ $this->lists->order }}}">
+        <input type="hidden" name="filter_order_Dir" id="filter_order_Dir" value="{{{ $this->lists->order_Dir }}}">
         <input type="hidden" name="token" value="@token()">
     </div>
 </form>

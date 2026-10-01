@@ -1,0 +1,5 @@
+{
+    "test.key1": "value_one",
+    "test.key2": "value_two",
+    "test.nested.deep": "deep_value"
+}

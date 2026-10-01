@@ -57,7 +57,7 @@ class Html extends View
 
 		$token       = $this->getContainer()->session->getCsrfToken()->getValue();
 		$router      = $this->getContainer()->router;
-		$ajaxUrl     = $router->route('index.php?view=update&task=downloader&format=raw');
+		$ajaxUrl     = $router->route('index.php?view=update&task=downloader&format=raw&' . $token . '=1');
 		$nextStepUrl = $router->route('index.php?view=update&task=extract&token=' . $token);
 		$document    = $this->getContainer()->application->getDocument();
 
