@@ -37,6 +37,11 @@ class Log extends ControllerDefault
 	 */
 	public function execute($task)
 	{
+		// Enforce the ACL gate for this view/task *before* any state-changing side effect (the profile
+		// switch below) can run -- a caller who fails this check must not be able to mutate their own
+		// session first and get rejected only afterwards.
+		$this->aclCheck($this->input->getCmd('view', 'main'), $task);
+
 		// If the profile_id parameter is defined and it's a positive integer change the active profile
 		$profile_id = $this->input->getInt('profileid', null);
 

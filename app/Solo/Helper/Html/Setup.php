@@ -321,7 +321,7 @@ class Setup extends AbstractHelper
 
 		foreach ($drivers as $driver)
 		{
-			$checked = (strtoupper($selected) == strtoupper($driver)) ? 'selected="selected"' : '';
+			$checked = (strtoupper((string) $selected) == strtoupper($driver)) ? 'selected="selected"' : '';
 
 			$html .= "\t<option value=\"$driver\" $checked>" . Text::_('SOLO_SETUP_LBL_FS_DRIVER_' . $driver)
 			         . "</option>\n";

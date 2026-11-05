@@ -14,6 +14,12 @@ defined('_AKEEBA') or die();
 @include('CommonTemplates/ErrorModal')
 @include('CommonTemplates/ProfileName')
 
+@if (empty($this->roots))
+<div class="akeeba-block--warning">
+	<p>@lang('COM_AKEEBA_DBFILTER_LABEL_NODATABASE')</p>
+</div>
+@endif
+
 <form class="akeeba-form--inline akeeba-panel--info">
     <div class="akeeba-form-group">
         <label>

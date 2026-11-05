@@ -10,9 +10,34 @@ namespace Solo\Controller;
 use Awf\Inflector\Inflector;
 use Awf\Text\Text;
 use RuntimeException;
+use Solo\Helper\Utils;
 
 class Profiles extends DataControllerDefault
 {
+	public function read()
+	{
+		try
+		{
+			parent::read();
+		}
+		catch (RuntimeException $e)
+		{
+			if ($e->getCode() !== 404 || $this->input->get('format', 'html', 'cmd') !== 'json')
+			{
+				throw $e;
+			}
+
+			http_response_code(404);
+
+			if (!headers_sent())
+			{
+				header('Content-Type: application/json; charset=utf-8');
+			}
+
+			echo json_encode(['error' => $e->getMessage()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		}
+	}
+
 	/**
 	 * Imports an exported profile .json file
 	 *
@@ -130,11 +155,8 @@ class Profiles extends DataControllerDefault
 			$error  = $e->getMessage();
 		}
 
-		// Redirect
-		if ($customURL = $this->input->getBase64('returnurl', ''))
-		{
-			$customURL = base64_decode($customURL);
-		}
+		// Redirect. Sanitise the return URL; redirecting to a raw base64_decode() of it is an open redirect.
+		$customURL = Utils::safeDecodeReturnUrl($this->input->get('returnurl', '', 'raw'));
 
 		$router = $this->container->router;
 		$url = !empty($customURL) ? $customURL : $router->route('index.php?view=' . Inflector::pluralize($this->view));
@@ -180,11 +202,8 @@ class Profiles extends DataControllerDefault
 			$error  = $e->getMessage();
 		}
 
-		// Redirect
-		if ($customURL = $this->input->getBase64('returnurl', ''))
-		{
-			$customURL = base64_decode($customURL);
-		}
+		// Redirect. Sanitise the return URL; redirecting to a raw base64_decode() of it is an open redirect.
+		$customURL = Utils::safeDecodeReturnUrl($this->input->get('returnurl', '', 'raw'));
 
 		$router = $this->container->router;
 		$url    = !empty($customURL)

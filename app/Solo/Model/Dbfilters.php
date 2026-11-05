@@ -29,6 +29,15 @@ class Dbfilters extends Model
 		$filters = Factory::getFilters();
 		$database_list = $filters->getInclusions('db');
 
+		// No such database (e.g. the profile has none): there is nothing to list
+		if (empty($database_list[$root]['database']))
+		{
+			return [
+				'tables' => [],
+				'root'   => $root,
+			];
+		}
+
 		// Load the database object for the selected database
 		$config = $database_list[$root];
 		$config['user'] = $config['username'];
@@ -128,6 +137,12 @@ class Dbfilters extends Model
 
 		foreach ($database_list as $name => $definition)
 		{
+			// A definition without a database name (e.g. a profile with no site database) cannot be connected to or listed
+			if (empty($definition['database']))
+			{
+				continue;
+			}
+
 			$root = $definition['host'];
 			if (!empty($definition['port'])) $root .= ':' . $definition['port'];
 			$root .= '/' . $definition['database'];
@@ -400,7 +415,7 @@ class Dbfilters extends Model
 		{
 			// Return a listing for the normal view
 			case 'list':
-				$ret_array = $this->make_listing($action->root, $action->node);
+				$ret_array = $this->make_listing($action->root);
 				break;
 
 			// Toggle a filter's state

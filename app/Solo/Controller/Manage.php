@@ -44,10 +44,8 @@ class Manage extends ControllerDefault
 		$task = $this->container->segment->get('solo_manage_task', 'main');
 		$returnUrl = $router->route('index.php?view=manage&task=' . $task);
 
-		$model = $this->getModel();
-
 		// Get the ID
-		$id = $model->getState('id', 0);
+		$id = $this->input->get('id', 0, 'int');
 
 		$part = $this->input->get('part', -1, 'int');
 
@@ -68,11 +66,11 @@ class Manage extends ControllerDefault
 		if ($id <= 0)
 		{
 			$this->setRedirect($returnUrl, Text::_('COM_AKEEBA_BUADMIN_ERROR_INVALIDID'), 'error');
+
+			return;
 		}
-		else
-		{
-			$this->getModel()->setState('id', $id);
-		}
+
+		$this->getModel()->setState('id', $id);
 
 		$this->getView()->setLayout('comment');
 		$this->display();
@@ -86,8 +84,7 @@ class Manage extends ControllerDefault
 	public function download()
 	{
 		$router = $this->container->router;
-		$model = $this->getModel();
-		$id = $model->getState('id', 0);
+		$id = $this->input->get('id', 0, 'int');
 
 		$part = $this->input->get('part', -1, 'int');
 
@@ -186,7 +183,7 @@ class Manage extends ControllerDefault
 			}
 
 			// Disable caching
-			header("Cache-Control: must-revalidate, post-check=0, pre-check=0");
+			header('Cache-Control: private, no-store, no-cache, must-revalidate', true);
 			header("Expires: 0");
 			header('Pragma: no-cache');
 
@@ -330,7 +327,7 @@ class Manage extends ControllerDefault
 		}
 		else
 		{
-			$result = $this->_remove($id);
+			$result = $this->_removeFiles($id);
 
 			if (!$result)
 			{

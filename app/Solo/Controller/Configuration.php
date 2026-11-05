@@ -96,10 +96,15 @@ class Configuration extends ControllerDefault
 
 		if ($mustSaveProvile)
 		{
-			$profileRecord->save(array(
-				'description' => $newProfileName,
-				'quickicon'   => $newQuickIcon,
-			));
+			$profileData = ['quickicon' => $newQuickIcon];
+
+			// An empty profile name must never replace the existing one
+			if (!empty($newProfileName))
+			{
+				$profileData['description'] = $newProfileName;
+			}
+
+			$profileRecord->save($profileData);
 		}
 
 		$router = $this->container->router;
@@ -303,7 +308,7 @@ class Configuration extends ControllerDefault
 		$model = $this->getModel();
 
 		$model->setState('engine', $this->input->get('engine', '', 'raw'));
-		$model->setState('method', $this->input->getVar('method', '', 'raw'));
+		$model->setState('method', $this->input->get('method', '', 'raw'));
 		$model->setState('params', $this->input->get('params', array(), 'array'));
 
         $result = $model->dpeCustomAPICall();
@@ -339,7 +344,7 @@ class Configuration extends ControllerDefault
 		$model = $this->getModel();
 
 		$model->setState('engine', $this->input->get('engine', '', 'raw'));
-		$model->setState('method', $this->input->getVar('method', '', 'raw'));
+		$model->setState('method', $this->input->get('method', '', 'raw'));
 		$model->setState('params', $this->input->get('params', array(), 'array'));
 
 		@ob_end_clean();

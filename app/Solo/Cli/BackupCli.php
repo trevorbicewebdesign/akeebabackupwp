@@ -28,9 +28,27 @@ class BackupCli extends AbstractCliApplication
 		$model = $this->container->mvcFactory->makeModel('Backup');
 
 		// Get the backup profile and description
-		$profile = $this->getContainer()->input->get('profile', 1, 'int');
+		$profile = $this->getContainer()->input->get('profile', null, 'int');
 
-		if ($profile <= 0)
+		if (is_null($profile))
+		{
+			$profile = 1;
+		}
+		elseif ($profile <= 0)
+		{
+			// Profile IDs start at 1: 0, a negative number or text are not profiles
+			echo "An error has occurred:\nCould not find backup profile #$profile.\n\n";
+
+			$this->close(2);
+		}
+
+		$profileModel = $this->getContainer()->mvcFactory->makeTempModel('Profiles');
+
+		try
+		{
+			$profileModel->findOrFail($profile);
+		}
+		catch (\RuntimeException $e)
 		{
 			$profile = 1;
 		}

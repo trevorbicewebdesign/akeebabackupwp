@@ -42,13 +42,13 @@ class AltCheckFailedCli extends AbstractCliApplication
 		$phpversion     = PHP_VERSION;
 		$phpenvironment = PHP_SAPI;
 
+		$softwareName = defined('ABSPATH') ? 'Akeeba Backup' : 'Akeeba Solo';
+
 		if ($this->getContainer()->input->get('quiet', -1, 'int') == -1)
 		{
-			$softwareName = defined('ABSPATH') ? 'Akeeba Backup' : 'Akeeba Solo';
-
 			$year = gmdate('Y');
 			echo <<<ENDBLOCK
-$softwareName Alternate CLI Backup Script version $version ($date)
+$softwareName Alternate CLI Check Failed Script version $version ($date)
 Copyright (C) 2014-$year Nicholas K. Dionysopoulos / Akeeba Ltd
 -------------------------------------------------------------------------------
 $softwareName is Free Software, distributed under the terms of the GNU General
@@ -76,9 +76,9 @@ ENDBLOCK;
 		{
 			echo <<<ENDTEXT
 ERROR:
-	This script could not detect your Akeeba Solo installation's URL. Please
-	visit Akeeba Solo's main page at least once before running this script.
-	When you do that, Akeeba Solo will record the URL to itself and make it
+	This script could not detect your $softwareName installation's URL. Please
+	visit {$softwareName}'s main page at least once before running this script.
+	When you do that, $softwareName will record the URL to itself and make it
 	available to this script.
 
 ENDTEXT;
@@ -93,8 +93,8 @@ ENDTEXT;
 		{
 			echo <<<ENDTEXT
 ERROR:
-	Your Akeeba Solo installation's Legacy Front-end API feature is currently
-	disabled. Please log in to Akeeba Solo, click on the System Configuration
+	Your $softwareName installation's Legacy Front-end API feature is currently
+	disabled. Please log in to $softwareName, click on the System Configuration
 	icon in the system management pane towards the bottom of the page and
 	set Enable Legacy Front-end Backup API to Yes. Do not forget to also set 
 	a Secret Word!
@@ -108,7 +108,7 @@ ENDTEXT;
 ERROR:
 	You have set Enable Legacy Front-end API to Yes, but you forgot to set a
 	Secret Word. This script can not continue with an empty Secret Word.
-	Please log in to Akeeba Solo, click on the System Configuration
+	Please log in to $softwareName, click on the System Configuration
 	icon in the system management pane towards the bottom of the page and
 	set a Secret Word.
 
@@ -150,7 +150,7 @@ ENDTEXT;
 			echo <<<ENDTEXT
 ERROR:
 	Could not find any supported method for running the front-end backup
-	feature of Akeeba Solo. Please check with your host that at least
+	feature of $softwareName. Please check with your host that at least
 	one of the following features are supported in your PHP configuration:
 
 	1. The cURL extension
@@ -200,6 +200,8 @@ ERROR:
 Your check for failures attempt has timed out, or a fatal PHP error has occurred.
 
 ENDTEXT;
+
+			$this->close(100);
 		}
 		elseif (strpos($result, '200 ') !== false)
 		{
@@ -209,6 +211,8 @@ ENDTEXT;
 Checks are finished successfully.
 
 ENDTEXT;
+
+			$this->close(0);
 		}
 		elseif (strpos($result, '500 ') !== false)
 		{
@@ -221,6 +225,8 @@ An error has occurred. The server's response was:
 $result
 
 ENDTEXT;
+
+			$this->close(2);
 		}
 		elseif (strpos($result, '403 ') !== false)
 		{
@@ -236,6 +242,8 @@ ERROR:
 	Check failed.
 
 ENDTEXT;
+
+			$this->close(103);
 		}
 		else
 		{
@@ -251,6 +259,8 @@ $result
 	If you do not see "200 OK" at the end of this output, checks failed.
 
 ENDTEXT;
+
+			$this->close(1);
 		}
 	}
 

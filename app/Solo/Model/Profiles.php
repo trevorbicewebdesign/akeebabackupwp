@@ -7,6 +7,7 @@
 
 namespace Solo\Model;
 
+use Akeeba\Engine\Factory;
 use Akeeba\Engine\Platform;
 use Awf\Container\Container;
 use Awf\Mvc\DataModel;
@@ -112,6 +113,16 @@ class Profiles extends DataModel
 		}
 
 		$data['akeeba.flag.confwiz'] = 1;
+
+		/**
+		 * Exported profiles carry their configuration decrypted. Platform::save_configuration() encrypts it when the
+		 * settings encryption is enabled, but we are saving through the model, so we have to do the same here lest the
+		 * secrets (S3 keys, FTP passwords...) sit in the database in plain text.
+		 */
+		if (is_string($data['configuration']) && ($data['configuration'] !== '') && (strpos($data['configuration'], '###') !== 0))
+		{
+			$data['configuration'] = Factory::getSecureSettings()->encryptSettings($data['configuration']);
+		}
 
 		// Try saving the profile
 		$result = $this->save($data);

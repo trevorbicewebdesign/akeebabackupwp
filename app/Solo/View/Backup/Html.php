@@ -178,7 +178,7 @@ class Html extends View
 		$document->addScriptOptions('akeeba.System.notification.iconURL', Uri::base(false, $this->getContainer()) . '/media/logo/' . $this->getContainer()->iconBaseName . '-96.png');
 		$document->addScriptOptions('akeeba.Backup.domains', $this->getDomains());
 		$token = $this->getContainer()->session->getCsrfToken()->getValue();
-		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=backup&task=ajax&' . $token . '=1'));
+		$document->addScriptOptions('akeeba.System.params.AjaxURL', $router->route('index.php?view=backup&task=ajax&format=raw&' . $token . '=1'));
 		$document->addScriptOptions('akeeba.Backup.returnForm', (bool) $this->returnForm);
 		$document->addScriptOptions('akeeba.Backup.URLs.LogURL', $router->route('index.php?view=log'));
 		$document->addScriptOptions('akeeba.Backup.URLs.AliceURL', $router->route('index.php?view=alices'));

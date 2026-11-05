@@ -227,7 +227,7 @@ akeeba.Configuration.FtpBrowser.open = function ()
             if (data.error != false)
             {
                 // An error occured
-                document.getElementById("ftpBrowserError").innerHTML              = data.error;
+                document.getElementById("ftpBrowserError").textContent            = data.error;
                 document.getElementById("ftpBrowserErrorContainer").style.display = "block";
 
                 return;
@@ -281,7 +281,7 @@ akeeba.Configuration.FtpBrowser.open = function ()
         },
         function (message)
         {
-            document.getElementById("ftpBrowserError").innerHTML              = message;
+            document.getElementById("ftpBrowserError").textContent            = message;
             document.getElementById("ftpBrowserErrorContainer").style.display = "block";
             document.getElementById("ftpBrowserFolderList").style.display     = "none";
             document.getElementById("ftpBrowserCrumbs").style.display         = "none";
@@ -449,7 +449,7 @@ akeeba.Configuration.SftpBrowser.open = function ()
             if (data.error != false)
             {
                 // An error occured
-                document.getElementById("sftpBrowserError").innerHTML              = data.error;
+                document.getElementById("sftpBrowserError").textContent            = data.error;
                 document.getElementById("sftpBrowserErrorContainer").style.display = "block";
 
                 return;
@@ -504,7 +504,7 @@ akeeba.Configuration.SftpBrowser.open = function ()
         },
         function (message)
         {
-            document.getElementById("sftpBrowserError").innerHTML              = message;
+            document.getElementById("sftpBrowserError").textContent            = message;
             document.getElementById("sftpBrowserErrorContainer").style.display = "block";
             document.getElementById("sftpBrowserFolderList").style.display     = "none";
             document.getElementById("sftpBrowserCrumbs").style.display         = "none";
@@ -849,6 +849,8 @@ akeeba.Configuration.GUI.renderOptionLabel = function (current_id, defdata, row_
         label.setAttribute("rel", "akeeba-sticky-tooltip");
         label.setAttribute("data-original-title", defdata["title"]);
         label.setAttribute("data-content", defdata["description"]);
+        // The title and description are trusted, translated strings which contain HTML markup
+        label.setAttribute("data-content-html", "1");
     }
 
     if (defdata["bold"])
@@ -1389,7 +1391,8 @@ akeeba.Configuration.GUI.renderOptionTypeInteger = function (current_id, defdata
     //elCustomValue.style.marginLeft = '6px';
     elCustomValue.className     = "akeeba-form-input-mini";
 
-    akeeba.System.addEventListener(elCustomValue, "blur", function ()
+    // Copy the (clamped) value of the custom box to the hidden field, which is what gets saved
+    var updateHiddenFromCustom = function ()
     {
         var value = parseFloat(elCustomValue.value);
         value     = value * defdata["scale"];
@@ -1408,7 +1411,9 @@ akeeba.Configuration.GUI.renderOptionTypeInteger = function (current_id, defdata
         var newValue = value / defdata["scale"];
 
         elCustomValue.value = newValue.toFixed(2);
-    });
+    };
+
+    akeeba.System.addEventListener(elCustomValue, "blur", updateHiddenFromCustom);
 
     // Select element with preset options
     var elDropdown = document.createElement("select");
@@ -1461,7 +1466,14 @@ akeeba.Configuration.GUI.renderOptionTypeInteger = function (current_id, defdata
 
         if (value == -1)
         {
-            elCustomValue.value         = (defdata["default"] / defdata["scale"]).toFixed(2);
+            // An empty box shows the page-load value. Whatever the box shows is also what gets saved. A box which
+            // already holds a value (typed earlier, or restored when the engine changed) is kept.
+            if (elCustomValue.value === "")
+            {
+                elCustomValue.value = (defdata["default"] / defdata["scale"]).toFixed(2);
+            }
+
+            updateHiddenFromCustom();
             elCustomValue.style.display = "inline-block";
             akeeba.System.triggerEvent(elCustomValue, "focus");
 
@@ -1716,51 +1728,38 @@ akeeba.Configuration.onFormSubmit = function(event) {
     );
 };
 
-akeeba.Configuration.submitJsonForm = async function (json) {
-    // Set up our virtual form
-    const formData = new FormData();
-    formData.set('jsonForm', json);
-    formData.set(akeeba.System.getOptions('akeeba.Configuration.token'), 1);
-    formData.set('task', document.forms['adminForm']['task'].value);
+akeeba.Configuration.submitJsonForm = function (json)
+{
+    // Set up our virtual form. It is submitted for real, instead of using fetch(), so that the browser itself follows
+    // the server's redirection (an HTTP redirect, or the script redirect WordPress sends once it has output the admin
+    // screen) and the message the server flashes in the session is shown by the page it redirects to.
+    const adminForm = document.forms['adminForm'];
+    const form      = document.createElement('form');
 
-    // Initialise the redirection detection code.
-    let url = null;
+    form.method = 'POST';
+    form.action = adminForm.action;
+    form.style.display = 'none';
 
-    try {
-        // Do an async POST to the profile config save endpoint
-        const response = await fetch(
-            document.forms['adminForm'].action,
-            {
-                method: "POST",
-                body: formData,
-            });
+    const fields = {
+        jsonForm: json,
+        task:     adminForm['task'].value,
+    };
 
-        // Redirections will be respected by using their URL as the ultimate redirection target.
-        if (response.redirected)
-        {
-            url = response.url;
-        }
+    fields[akeeba.System.getOptions('akeeba.Configuration.token')] = 1;
 
-        // Something went wrong. Reload the configuration page.
-        if (!response.ok) {
-            throw new Error('Error found in network response');
-        }
-    } catch (error) {
-        location.reload();
-        return;
-    }
-
-    // No redirection URL detected; reload the page.
-    if (!url)
+    Object.entries(fields).forEach(([name, value]) =>
     {
-        location.reload();
+        const input = document.createElement('input');
 
-        return;
-    }
+        input.type  = 'hidden';
+        input.name  = name;
+        input.value = value;
+        form.appendChild(input);
+    });
 
-    // We have a redirection URL; follow it.
-    window.location = url;
-}
+    document.body.appendChild(form);
+    form.submit();
+};
 
 // =====================================================================================================================
 // Initialise hooks used by the engine definitions INI files
@@ -1906,33 +1905,6 @@ akeeba_dropbox2_oauth_callback = function (data)
     myWindow.close();
 };
 
-akconfig_onedrive_openoauth = function ()
-{
-    var url = akeeba.Configuration.URLs.dpeauthopen;
-
-    if (url.indexOf("?") == -1)
-    {
-        url = url + "?";
-    }
-    else
-    {
-        url = url + "&";
-    }
-
-    window.open(url + "engine=onedrive", "akeeba_onedrive_window", "width=1010,height=500,opener");
-};
-
-akeeba_onedrive_oauth_callback = function (data)
-{
-    // Update the tokens
-    document.getElementById("var[engine.postproc.onedrive.access_token]").value  = data.access_token;
-    document.getElementById("var[engine.postproc.onedrive.refresh_token]").value = data.refresh_token;
-
-    // Close the window
-    myWindow = window.open("", "akeeba_onedrive_window");
-    myWindow.close();
-};
-
 akconfig_onedrivebusiness_openoauth = function ()
 {
     var url = akeeba.Configuration.URLs.dpeauthopen;
@@ -1974,7 +1946,7 @@ akeeba_onedrivebusiness_refreshdrives = function (params)
     if (typeof params["engine.postproc.onedrivebusiness.drive"] === "undefined")
     {
         params["engine.postproc.onedrivebusiness.drive"] = {
-            "default": document.getElementById("var[engine.postproc.googledrive.team_drive]").value
+            "default": document.getElementById("var[engine.postproc.onedrivebusiness.drive]").value
         };
     }
 
@@ -1985,9 +1957,9 @@ akeeba_onedrivebusiness_refreshdrives = function (params)
         method: "getDrives",
         params: {
             "engine.postproc.onedrivebusiness.access_token":  document.getElementById(
-                "var[engine.postproc.googledrive.access_token]").value,
+                "var[engine.postproc.onedrivebusiness.access_token]").value,
             "engine.postproc.onedrivebusiness.refresh_token": document.getElementById(
-                "var[engine.postproc.googledrive.refresh_token]").value
+                "var[engine.postproc.onedrivebusiness.refresh_token]").value
         }
     };
 
@@ -2002,7 +1974,14 @@ akeeba_onedrivebusiness_refreshdrives = function (params)
                 return;
             }
 
-            var dropDown       = document.getElementById("var[engine.postproc.onedrivebusiness.drive]");
+            var dropDown = document.getElementById("var[engine.postproc.onedrivebusiness.drive]");
+
+            // The user may have chosen another engine while the request was in flight, removing the drop-down
+            if (!dropDown)
+            {
+                return;
+            }
+
             dropDown.innerHTML = "";
 
             res.list.forEach(item => {
@@ -2094,6 +2073,13 @@ akeeba_googledrive_refreshdrives = function (params)
             }
 
             var dropDown = document.getElementById("var[engine.postproc.googledrive.team_drive]");
+
+            // The user may have chosen another engine while the request was in flight, removing the drop-down
+            if (!dropDown)
+            {
+                return;
+            }
+
             dropDown.innerHTML = "";
 
             res.list.forEach(item => {
@@ -2141,33 +2127,6 @@ akconfig_box_oauth_callback = function (data)
     myWindow.close();
 };
 
-function akconfig_onedriveapp_openoauth()
-{
-    var url = akeebabackup.Configuration.URLs.dpeauthopen;
-
-    if (url.indexOf("?") == -1)
-    {
-        url = url + "?";
-    }
-    else
-    {
-        url = url + "&";
-    }
-
-    window.open(url + "engine=onedriveapp", "akeeba_onedriveapp_window", "width=1010,height=500,opener");
-}
-
-function akeeba_onedriveapp_oauth_callback(data)
-{
-    // Update the tokens
-    document.getElementById("var[engine.postproc.onedriveapp.access_token]").value  = data.access_token;
-    document.getElementById("var[engine.postproc.onedriveapp.refresh_token]").value = data.refresh_token;
-
-    // Close the window
-    var myWindow = window.open("", "akeeba_onedriveapp_window");
-    myWindow.close();
-}
-
 // Initialization
 akeeba.System.documentReady(function ()
 {
@@ -2206,9 +2165,9 @@ akeeba.System.documentReady(function ()
         // Work around browsers now ignoring autocomplete=off
         setTimeout(akeeba.Configuration.restoreDefaultPasswords, 1000);
 
-        // Reload drive lists if applicable
-        akeeba_googledrive_refreshdrives(akeeba.Configuration.engines.postproc.googledrive.parameters);
-        akeeba_onedrivebusiness_refreshdrives(akeeba.Configuration.engines.postproc.onedrivebusiness.parameters);
+        // Reload drive lists if applicable. The Core edition does not ship these engines.
+        akeeba_googledrive_refreshdrives(akeeba.Configuration.engines.postproc.googledrive?.parameters);
+        akeeba_onedrivebusiness_refreshdrives(akeeba.Configuration.engines.postproc.onedrivebusiness?.parameters);
 
         // Post the form as a big JSON blob if possible
         const adminForm = document.getElementById('adminForm');

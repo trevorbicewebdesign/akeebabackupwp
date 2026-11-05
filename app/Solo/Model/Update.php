@@ -16,6 +16,7 @@ use Awf\Session\Exception;
 use Awf\Text\Language;
 use Awf\Text\Text;
 use Awf\Uri\Uri;
+use Solo\Helper\UpdateSource;
 
 class Update extends Model
 {
@@ -87,7 +88,7 @@ class Update extends Model
 		$this->updateStreamURL =
 			(isset($container['updateStreamURL']) && !empty($container['updateStreamURL']))
 				? $container->updateStreamURL
-				: 'http://cdn.akeeba.com/updates/solo' . $pro . '.json';
+				: 'https://cdn.akeeba.com/updates/solo' . $pro . '.json';
 
 		// Testing updates in development versions: define AKEEBABACKUP_UPDATE_BASEURL in version.php
 		if (defined('AKEEBABACKUP_UPDATE_BASEURL'))
@@ -257,10 +258,38 @@ class Update extends Model
 		// Check if an update is available and push it to the update information registry
 		$this->updateInfo->set('hasUpdate', $this->hasUpdate());
 
-		// Post-process the download URL, appending the Download ID (if defined)
+		// Post-process the download URL
+		$this->processDownloadUrl();
+	}
+
+	/**
+	 * Vets the update's download URL, then appends the Download ID (if defined) to it.
+	 *
+	 * The update stream decides where we download the update package from, and we install whatever we get from there.
+	 * A download URL which is not HTTPS on Akeeba's own servers is therefore discarded, along with the update itself;
+	 * we must neither install that package nor send the Download ID to that host.
+	 *
+	 * @return  void
+	 * @see     UpdateSource::isAllowedDownloadUrl()
+	 */
+	protected function processDownloadUrl(): void
+	{
 		$link = $this->updateInfo->get('download', '');
 
-		if (!empty($link) && !empty($this->downloadId))
+		if (empty($link))
+		{
+			return;
+		}
+
+		if (!UpdateSource::isAllowedDownloadUrl($link, UpdateSource::getTestingBaseUrl()))
+		{
+			$this->updateInfo->set('download', '');
+			$this->updateInfo->set('hasUpdate', false);
+
+			return;
+		}
+
+		if (!empty($this->downloadId))
 		{
 			$link = new Uri($link);
 			$link->setVar('dlid', $this->downloadId);
@@ -438,7 +467,25 @@ class Update extends Model
 		}
 
 		/**
-		 * Back to our regular code. Set up the file import parameters.
+		 * Back to our regular code. Never download a package from anywhere but Akeeba's own HTTPS servers.
+		 */
+		$downloadUrl = $this->updateInfo->get('download', '');
+
+		if (!UpdateSource::isAllowedDownloadUrl($downloadUrl, UpdateSource::getTestingBaseUrl()))
+		{
+			return [
+				"status"    => false,
+				"error"     => Text::sprintf('AWF_DOWNLOAD_ERR_LIB_COULDNOTDOWNLOADFROMURL', htmlspecialchars((string) $downloadUrl, ENT_QUOTES, 'UTF-8')),
+				"frag"      => -1,
+				"totalSize" => 0,
+				"doneSize"  => 0,
+				"percent"   => 0,
+				"errorCode" => 500,
+			];
+		}
+
+		/**
+		 * Set up the file import parameters.
 		 */
 		$params = [
 			'file'          => $this->updateInfo->get('download', ''),

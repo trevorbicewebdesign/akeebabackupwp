@@ -38,7 +38,16 @@ abstract class AbstractCliApplication extends Cli
 		}
 
 		// Load the application's configuration
-		$this->container->appConfig->loadConfiguration($configPath);
+		try
+		{
+			$this->container->appConfig->loadConfiguration($configPath);
+		}
+		catch (\RuntimeException $e)
+		{
+			// The file exists but is empty or damaged. Say so briefly, instead of a stack trace.
+			$this->out('Configuration error: ' . $e->getMessage() . '; aborting');
+			$this->close(254);
+		}
 
 		// Load the extra language files
 		$this->container->language->loadLanguage(null, $this->container->languagePath . '/akeebabackup');

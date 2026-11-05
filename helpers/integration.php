@@ -136,65 +136,50 @@ call_user_func(
 defined('WPINC')
 || call_user_func(
 	function () {
-		$foundWpConfig = false;
+		/**
+		 * Find the WordPress core directory (the one with wp-settings.php), looking in the site root implied by the
+		 * plugin's own location and the folder above it, then upwards from the current and the executed script's folder.
+		 * Can't use realpath() on the plugin's location because in our dev environment it resolves the symlinks outside
+		 * the site root.
+		 */
+		$dirParts   = explode(DIRECTORY_SEPARATOR, __DIR__);
+		$candidates = [
+			implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -4)),
+			implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -5)),
+		];
+		$possibleDirs = [getcwd()];
 
-		$dirParts      = explode(DIRECTORY_SEPARATOR, __DIR__);
-		$dirParts      = array_splice($dirParts, 0, -4);
-		$filePath      = implode(DIRECTORY_SEPARATOR, $dirParts);
-		$foundWpConfig = file_exists($filePath . '/wp-config.php');
-
-		if (!$foundWpConfig)
+		if (isset($_SERVER['SCRIPT_FILENAME']))
 		{
-			$dirParts      = array_splice($dirParts, 0, -1);
-			$altFilePath   = implode(DIRECTORY_SEPARATOR, $dirParts);
-			$foundWpConfig = file_exists($altFilePath . '/wp-config.php');
+			$possibleDirs[] = dirname($_SERVER['SCRIPT_FILENAME']);
 		}
 
-		if (!$foundWpConfig)
+		foreach ($possibleDirs as $scriptFolder)
 		{
-			$possibleDirs = [getcwd()];
+			$dirParts     = explode(DIRECTORY_SEPARATOR, (string) $scriptFolder);
+			$candidates[] = $scriptFolder;
 
-			if (isset($_SERVER['SCRIPT_FILENAME']))
+			foreach ([2, 3, 4, 5] as $levels)
 			{
-				$possibleDirs[] = dirname($_SERVER['SCRIPT_FILENAME']);
+				$candidates[] = implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -$levels));
+			}
+		}
+
+		$filePath = \Solo\Helper\WordPressRoot::find($candidates);
+
+		/**
+		 * Inside WordPress, the plugin's own app/index.php and app/remote.php are not web entry points: everything goes
+		 * through wp-admin (and admin-ajax.php) since Akeeba Backup 8.1.1. Only the CLI scripts use this bootstrap.
+		 * Refuse web requests without saying anything about the server, whether we found WordPress or not.
+		 */
+		if (PHP_SAPI !== 'cli')
+		{
+			if (!headers_sent())
+			{
+				http_response_code($filePath === null ? 500 : 403);
 			}
 
-			foreach ($possibleDirs as $scriptFolder)
-			{
-				// Can't use realpath() because in our dev environment it will resolve the symlinks outside the site root
-				$dirParts = explode(DIRECTORY_SEPARATOR, $scriptFolder);
-
-				$filePath = $scriptFolder;
-
-				if (!is_file($filePath . '/wp-config.php'))
-				{
-					$filePath = implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -2));
-				}
-
-				if (!is_file($filePath . '/wp-config.php'))
-				{
-					$filePath = implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -3));
-				}
-
-				if (!is_file($filePath . '/wp-config.php'))
-				{
-					$filePath = implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -4));
-				}
-
-				if (!is_file($filePath . '/wp-config.php'))
-				{
-					$filePath = implode(DIRECTORY_SEPARATOR, array_slice($dirParts, 0, -5));
-				}
-
-				$foundWpConfig = file_exists($filePath . '/wp-config.php');
-
-				if ($foundWpConfig)
-				{
-					$filePath = dirname(realpath($filePath . '/wp-config.php'));
-
-					break;
-				}
-			}
+			exit;
 		}
 
 		$noWpConfig = (isset($_REQUEST) && isset($_REQUEST['no-wp-config']))
@@ -202,24 +187,19 @@ defined('WPINC')
 		              || @file_exists(__DIR__ . '/private/no-wp-config.txt')
 		              || @file_exists(__DIR__ . '/private/wp-config.php');
 
-		$oracle = new Wordpress($filePath);
+		$oracle = new Wordpress((string) $filePath);
 
 		if ($noWpConfig)
 		{
 			$oracle->setLoadWPConfig(false);
 		}
 
-		if (!$oracle->isRecognised())
+		if ($filePath === null || !$oracle->isRecognised())
 		{
-			$filePath = realpath($filePath . '/..');
-			$oracle   = new Wordpress($filePath);
-		}
-
-		if (!$oracle->isRecognised())
-		{
-			$curDir = __DIR__;
+			$curDir   = __DIR__;
+			$filePath = $filePath ?? '(not found)';
 			echo <<< ENDTEXT
-ERROR: Could not find wp-config.php
+ERROR: Could not find WordPress (wp-settings.php) or its wp-config.php
 
 Technical information
 --
@@ -345,8 +325,8 @@ $akeebaBackupWordPressContainer = $akeebaBackupWordPressContainer ?? call_user_f
 					'application_name' => 'Solo',
 					'filesystemBase'   => AKEEBABACKUPWP_PATH . '/app',
 					'updateStreamURL'  => (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO)
-						? 'http://cdn.akeeba.com/updates/akeebabackupwp_pro.json'
-						: 'http://cdn.akeeba.com/updates/akeebabackupwp_core.json',
+						? 'https://cdn.akeeba.com/updates/akeebabackupwp_pro.json'
+						: 'https://cdn.akeeba.com/updates/akeebabackupwp_core.json',
 					'changelogPath'    => AKEEBABACKUPWP_PATH . 'CHANGELOG.php',
 				]
 			);
@@ -389,7 +369,7 @@ call_user_func(
 
 		if (!empty($downloadId))
 		{
-			$akeebaBackupWordPressContainer['updateStreamURL'] = 'http://cdn.akeeba.com/updates/backupwppro.ini';
+			$akeebaBackupWordPressContainer['updateStreamURL'] = 'https://cdn.akeeba.com/updates/backupwppro.ini';
 		}
 	}, $akeebaBackupWordPressContainer
 );

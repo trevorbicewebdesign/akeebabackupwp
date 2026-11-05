@@ -496,9 +496,15 @@ class Migreight extends Model
 		$db = $this->container->db;
 		$db->transactionStart();
 
-		for ($i = 0; $i < (count($invalidRecordIDs) % 100); $i++)
+		// Record IDs are integers. Cast them (and drop empty values) before they go into the SQL query.
+		$invalidRecordIDs = array_values(array_filter(array_map('intval', $invalidRecordIDs)));
+
+		foreach (array_chunk($invalidRecordIDs, 100) as $chunk)
 		{
-			$chunk = array_slice($invalidRecordIDs, 100 * $i, 100);
+			if (empty($chunk))
+			{
+				continue;
+			}
 
 			$query = $db->getQuery(true)
 				->update($db->quoteName('#__ak_stats'))

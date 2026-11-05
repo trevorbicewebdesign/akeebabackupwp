@@ -458,6 +458,17 @@ akeeba.Backup.onError = function (message)
         return;
     }
 
+    /**
+     * If the backup never started, die. Without the backup ID the start request should have given us there is no
+     * backup to resume: retrying would only replace the real error with one about the missing backup.
+     */
+    if (!akeeba.Backup.backupid)
+    {
+        akeeba.Backup.endWithError(message);
+
+        return;
+    }
+
     // If we are past the max retries, die.
     var maxRetries = akeeba.System.getOptions("akeeba.Backup.resume.maxRetries");
     if (akeeba.Backup.resume.retry >= maxRetries)
@@ -523,14 +534,21 @@ akeeba.Backup.endWithError = function (message)
         aliceUrl   = aliceUrl + "." + encodeURIComponent(akeeba.Backup.backupid);
     }
 
-    if (akeeba.Backup.currentDomain == "finale")
+    // The log analyser button only exists in the Pro edition
+    var elAliceError = document.getElementById("ab-alice-error");
+
+    if (elAliceError && (akeeba.Backup.currentDomain == "finale"))
     {
         alice_autorun = true;
         aliceUrl += "&autorun=1";
     }
 
     document.getElementById("ab-viewlog-error").setAttribute("href", viewLogUrl);
-    document.getElementById("ab-alice-error").setAttribute("href", aliceUrl);
+
+    if (elAliceError)
+    {
+        elAliceError.setAttribute("href", aliceUrl);
+    }
 
     akeeba.System.notification.notify(akeeba.System.Text._("COM_AKEEBA_BACKUP_TEXT_BACKUPFAILED"), message);
 

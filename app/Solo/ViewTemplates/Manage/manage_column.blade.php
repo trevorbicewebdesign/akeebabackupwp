@@ -141,13 +141,17 @@ if ($showUploadRemote)
 	                    $extension = substr($archiveName, -4);
 	                    $firstPart = substr($extension, 0, 2) . '01';
 	                    $lastPart = substr($extension, 0, 2) . sprintf('%02u', max($record['multipart'] - 1, 1));
+	                    // The archive name is attacker-influenceable and @sprintf outputs raw HTML: escape the arguments.
+	                    [$escArchiveName, $escBaseName, $escExtension, $escFirstPart, $escLastPart] = \Solo\Helper\Utils::escapeSprintfParams([
+	                        $archiveName, substr($archiveName, 0, -4), $extension, $firstPart, $lastPart,
+	                    ]);
 	                    ?>
                         @if ($record['multipart'] < 2)
-                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART_1', $archiveName)
+                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART_1', $escArchiveName)
                         @elseif($record['multipart'] < 3)
-                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART_2', substr($archiveName, 0, -4), $extension, $firstPart)
+                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART_2', $escBaseName, $escExtension, $escFirstPart)
                         @else
-                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART', $record['multipart'], substr($archiveName, 0, -4), $extension, $firstPart, $lastPart)
+                            @sprintf('COM_AKEEBA_BUADMIN_LBL_DOWNLOAD_WARNING_NODOWNLOAD_MULTIPART', $record['multipart'], $escBaseName, $escExtension, $escFirstPart, $escLastPart)
                         @endif
                     </div>
                 @else

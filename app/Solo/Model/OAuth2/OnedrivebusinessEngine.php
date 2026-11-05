@@ -33,6 +33,7 @@ class OnedrivebusinessEngine extends AbstractProvider
 					'offline_access',
 				]
 			),
+			'state'         => $this->generateState(),
 		];
 
 		return 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' . http_build_query($params);

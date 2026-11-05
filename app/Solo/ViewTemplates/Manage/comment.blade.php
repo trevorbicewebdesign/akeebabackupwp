@@ -34,7 +34,7 @@ $router = $this->container->router;
 		</label>
 		<div class="col-sm-9">
 			<textarea id="comment" name="comment" rows="5" cols="73"
-					  autocomplete="off">{{ $this->record['comment'] }}</textarea>
+					  autocomplete="off">{{{ $this->record['comment'] }}}</textarea>
 		</div>
 	</div>
 

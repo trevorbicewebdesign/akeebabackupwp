@@ -66,7 +66,7 @@ class Main extends ControllerDefault
 		if ($ret['hasUpdate'])
 		{
 			$router            = $this->container->router;
-			$updateHeader      = Text::sprintf('SOLO_UPDATE_LBL_MAINNOTICE_TEXT', '<span class="label label-success">' . $ret['version'] . '</span>');
+			$updateHeader      = Text::sprintf('SOLO_UPDATE_LBL_MAINNOTICE_TEXT', '<span class="label label-success">' . htmlspecialchars((string) $ret['version'], ENT_QUOTES, 'UTF-8') . '</span>');
 			$updateButton      = Text::_('SOLO_UPDATE_BTN_UPDATE_NOW');
 			$updateLink        = $router->route('index.php?view=update');
 			$ret['noticeHTML'] = <<< HTML

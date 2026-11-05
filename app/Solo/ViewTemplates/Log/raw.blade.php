@@ -107,7 +107,7 @@ else
 				$fmtString = "<span class=\"default\">[";
 				break;
 		}
-		$fmtString .= $exploded[1] . "] " . htmlspecialchars($exploded[2]) . "</span>";
+		$fmtString .= htmlspecialchars($exploded[1]) . "] " . htmlspecialchars($exploded[2]) . "</span>";
 		unset($exploded);
 		echo $fmtString;
 		unset($fmtString);

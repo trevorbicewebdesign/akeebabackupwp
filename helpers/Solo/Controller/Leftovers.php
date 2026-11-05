@@ -8,11 +8,18 @@
 namespace Solo\Controller;
 
 use Awf\Mvc\Controller;
+use Awf\Text\Text;
 
 class Leftovers extends Controller
 {
 	public function remove(): void
 	{
+		// The notice is shown to every plugin user, but only those who can manage the site's options get the button.
+		if (!current_user_can('manage_options'))
+		{
+			throw new \RuntimeException(Text::_('SOLO_ERR_ACLDENIED'), 403);
+		}
+
 		$this->csrfProtection();
 
 		[$success, $fail] = \Solo\Helper\Leftovers::deleteLeftovers($this->container);

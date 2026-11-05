@@ -56,7 +56,20 @@ JS
 	{
 		$darkMode = $this->container->appConfig->get('darkmode', -1);
 
-		Template::addCss('media://css/fef.css', $this->container->application);
+		/**
+		 * Akeeba Backup for WordPress does not ship fef.css, it has its own build of FEF, fef-wp.css. AkeebaBackupWP::
+		 * loadCommonCSS() preloads it on the plugin's pages, but the pages which are not part of the WordPress admin
+		 * (tmpl=component, e.g. the folder browser in its modal) are printed by our own template and need it requested.
+		 */
+		if (!defined('WPINC'))
+		{
+			Template::addCss('media://css/fef.css', $this->container->application);
+		}
+		elseif ($this->container->input->getCmd('tmpl', '') === 'component')
+		{
+			Template::addCss('media://css/fef-wp.css', $this->container->application);
+		}
+
 		Template::addCss('media://css/theme.css', $this->container->application);
 
 		if ($darkMode != 0)

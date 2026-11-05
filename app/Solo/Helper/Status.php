@@ -206,6 +206,14 @@ class Status implements ContainerAwareInterface
 				$origin = Text::_('COM_AKEEBA_BUADMIN_LABEL_ORIGIN_CLI');
 				break;
 
+			case 'json':
+				$origin = Text::_('COM_AKEEBA_BUADMIN_LABEL_ORIGIN_JSON');
+				break;
+
+			case 'wpcron':
+				$origin = Text::_('COM_AKEEBA_BUADMIN_LABEL_ORIGIN_WPCRON');
+				break;
+
 			default:
 				$origin = '&ndash;';
 				break;
@@ -226,8 +234,8 @@ class Status implements ContainerAwareInterface
 		$html .= '<tr><td>' . Text::_('COM_AKEEBA_BUADMIN_LABEL_START') . '</td><td>' . $startTime->format(
 				Text::_('DATE_FORMAT_LC2'), true
 			) . '</td></tr>';
-		$html .= '<tr><td>' . Text::_('COM_AKEEBA_BUADMIN_LABEL_DESCRIPTION') . '</td><td>' . $record['description']
-		         . '</td></tr>';
+		$html .= '<tr><td>' . Text::_('COM_AKEEBA_BUADMIN_LABEL_DESCRIPTION') . '</td><td>'
+		         . htmlspecialchars((string) $record['description'], ENT_QUOTES, 'UTF-8') . '</td></tr>';
 		$html .= '<tr><td>' . Text::_('COM_AKEEBA_BUADMIN_LABEL_STATUS') . '</td><td><span class="label ' . $statusClass
 		         . '">' . $status . '</span></td></tr>';
 		$html .= '<tr><td>' . Text::_('COM_AKEEBA_BUADMIN_LABEL_ORIGIN') . '</td><td>' . $origin . '</td></tr>';

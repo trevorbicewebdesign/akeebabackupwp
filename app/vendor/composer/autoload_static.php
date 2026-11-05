@@ -9,9 +9,15 @@ class ComposerStaticInitb42cdaeebd151c87a1463e2997311e2b
     public static $files = array (
         '714ccd4b330431237faf946f71c4c9a4' => __DIR__ . '/..' . '/akeeba/s3/src/aliasing.php',
         '1dcdacd755a1604b300d3ccfdeb7255f' => __DIR__ . '/..' . '/akeeba/awf/src/Utils/helpers.php',
+        '58f264347523156ff2f3861ad3ec4e1f' => __DIR__ . '/../..' . '/Solo/Polyfill/php80.php',
     );
 
     public static $prefixLengthsPsr4 = array (
+        'c' =>
+        array (
+            'chillerlan\\Settings\\' => 20,
+            'chillerlan\\QRCode\\' => 18,
+        ),
         'S' =>
         array (
             'Solo\\Alice\\' => 11,
@@ -36,6 +42,14 @@ class ComposerStaticInitb42cdaeebd151c87a1463e2997311e2b
     );
 
     public static $prefixDirsPsr4 = array (
+        'chillerlan\\Settings\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/chillerlan/php-settings-container/src',
+        ),
+        'chillerlan\\QRCode\\' =>
+        array (
+            0 => __DIR__ . '/..' . '/chillerlan/php-qrcode/src',
+        ),
         'Solo\\Alice\\' =>
         array (
             0 => __DIR__ . '/../..' . '/Solo/AliceChecks',

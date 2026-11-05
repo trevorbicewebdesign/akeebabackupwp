@@ -264,8 +264,8 @@ akeeba.System.modalErrorHandler = function (error)
     if (dialogElement != null)
     {
         var errorElement       = document.getElementById(errorMessageId);
-        errorElement.innerHTML = error;
-        errorContent           = dialogElement.innerHTML;
+        errorElement.textContent = error;
+        errorContent             = dialogElement.innerHTML;
     }
 
     akeeba.Modal.open({

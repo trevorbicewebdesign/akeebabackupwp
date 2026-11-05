@@ -8,6 +8,7 @@
 namespace Solo\Model\Mixin;
 
 use Exception;
+use Solo\Helper\ExceptionChain;
 use Throwable;
 
 trait GetErrorsFromExceptions
@@ -24,16 +25,10 @@ trait GetErrorsFromExceptions
 	 */
 	public function getErrorsFromExceptions($exception, $includeTraceInDebug = true)
 	{
-		$ret = [
-			$exception->getMessage(),
-		];
-
-		$previous = $exception->getPrevious();
-
-		if (!is_null($previous))
-		{
-			$ret = array_merge($ret, $this->getErrorsFromExceptions($previous, false));
-		}
+		$ret = array_map(
+			fn (Throwable $thisException) => $thisException->getMessage(),
+			ExceptionChain::walk($exception)
+		);
 
 		if ($includeTraceInDebug && ((defined('JDEBUG') && JDEBUG) || (defined('AKEEBADEBUG') && AKEEBADEBUG)))
 		{

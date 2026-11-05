@@ -93,6 +93,15 @@ class Html extends View
 	public $checkMbstring = true;
 
 	/**
+	 * Is the OpenSSL extension installed and enabled? Without it, Akeeba Backup stores sensitive settings
+	 * (cloud storage keys, FTP/SFTP passwords, OAuth refresh tokens, the JPS password, the Secret Word) as
+	 * plaintext.
+	 *
+	 * @var  bool
+	 */
+	public $checkOpenSsl = true;
+
+	/**
 	 * The HTML for the backup status cell
 	 *
 	 * @var   string
@@ -189,6 +198,7 @@ class Html extends View
 		$this->needsDownloadId                 = $model->needsDownloadID();
 		$this->warnCoreDownloadId              = $model->mustWarnAboutDownloadIdInCore();
 		$this->checkMbstring                   = $model->checkMbstring();
+		$this->checkOpenSsl                    = $model->checkOpenSsl();
 		$this->frontEndSecretWordIssue         = $model->getFrontendSecretWordError();
 		$this->newSecretWord                   = $session->get('newSecretWord', null);
 		$this->stuckUpdates                    = ($this->container->appConfig->get('updatedb', 0) == 1);

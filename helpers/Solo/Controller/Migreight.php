@@ -7,12 +7,11 @@
 
 namespace Solo\Controller;
 
-use Awf\Mvc\Controller;
 use Awf\Text\Text;
 use RuntimeException;
 use Throwable;
 
-class Migreight extends Controller
+class Migreight extends ControllerDefault
 {
 	private const MAX_TIME = 2;
 
@@ -23,6 +22,9 @@ class Migreight extends Controller
 	 */
 	public function start()
 	{
+		// This is a state-changing action reachable with a GET request. It needs an anti-CSRF token.
+		$this->csrfProtection();
+
 		// Store the necessary information to the session
 		/** @var \Solo\Model\Migreight $model */
 		$model   = $this->getModel();

@@ -29,7 +29,7 @@ class Manage extends Model
 		$limitStart = $this->getUserStateFromRequest('solo_manage_start', 'limitstart', 0, 'int');
 
 		$this->setState('limit', $limit);
-		$this->setState('limitStart', $limitStart);
+		$this->setState('limitstart', $limitStart);
 	}
 
 	/**
@@ -74,7 +74,8 @@ class Manage extends Model
 		}
 
 		// The engine must be known to the backup engine
-		$classname = 'Akeeba\\Engine\\Postproc\\' . ucfirst($engine);
+		// Class files are named Ucfirst + lowercase (e.g. Amazons3.php); normalise so any casing autoloads.
+		$classname = 'Akeeba\\Engine\\Postproc\\' . ucfirst(strtolower($engine));
 
 		return class_exists($classname);
 	}
@@ -91,7 +92,7 @@ class Manage extends Model
 	 */
 	public function &getStatisticsListWithMeta($overrideLimits = false, $filters = null, $order = null)
 	{
-		$limitstart = $overrideLimits ? 0 : $this->getState('limitstart', 0);
+		$limitstart = $overrideLimits ? 0 : (int) $this->getState('limitstart', 0);
 		$limit      = $overrideLimits ? 0 : $this->getState('limit', 10);
 		$filters    = $overrideLimits ? null : $filters;
 
@@ -271,7 +272,7 @@ class Manage extends Model
 		{
 			// Prepare pagination values
 			$total      = Platform::getInstance()->get_statistics_count($filters);
-			$limitStart = $this->getState('limitStart');
+			$limitStart = $this->getState('limitstart');
 			$limit      = $this->getState('limit');
 
 			// Create the pagination object

@@ -9,6 +9,7 @@ namespace Solo\Model;
 
 use Akeeba\Engine\Factory;
 use Akeeba\Engine\Platform;
+use Akeeba\Engine\Util\AesAdapter\OpenSSL;
 use Akeeba\Engine\Util\Complexify;
 use Akeeba\Engine\Util\RandomValue;
 use Awf\Database\Installer;
@@ -21,6 +22,7 @@ use Exception;
 use RuntimeException;
 use Solo\Application;
 use Solo\Helper\HashHelper;
+use Solo\Helper\PathContainment;
 use Solo\Helper\SecretWord;
 use Solo\PostUpgradeScript;
 use stdClass;
@@ -344,6 +346,24 @@ class Main extends Model
 		}
 	}
 
+	/**
+	 * Converts a comma-separated list of email addresses into an array, dropping blanks and surrounding whitespace.
+	 *
+	 * @param   mixed  $list  The comma-separated list, as stored in the configuration.
+	 *
+	 * @return  string[]  The email addresses. Empty when nothing is configured.
+	 * @since   9.3.0
+	 */
+	public static function parseEmailAddressList($list): array
+	{
+		if (!is_string($list) || trim($list) === '')
+		{
+			return [];
+		}
+
+		return array_values(array_filter(array_map('trim', explode(',', $list)), fn($x) => $x !== ''));
+	}
+
 	public function notifyFailed()
 	{
 		$config = $this->container->appConfig;
@@ -372,10 +392,9 @@ class Main extends Model
 		}
 
 		// Whops! Something went wrong, let's start notifing
-		$emails = $config->get('options.failure_email_address', '');
-		$emails = explode(',', $emails);
+		$emails = self::parseEmailAddressList($config->get('options.failure_email_address', ''));
 
-		if (!$emails)
+		if (empty($emails))
 		{
 			$emails = Platform::getInstance()->get_administrator_emails();
 		}
@@ -597,7 +616,7 @@ ENDBODY;
 				continue;
 			}
 
-			Factory::nuke();
+			$this->nukeEngine();
 			Platform::getInstance()->load_configuration($profile_id);
 			$config = Factory::getConfiguration();
 			$config->set('akeeba.flag.confwiz', 1);
@@ -605,8 +624,35 @@ ENDBODY;
 		}
 
 		// Restore the old profile
-		Factory::nuke();
+		$this->nukeEngine();
 		Platform::getInstance()->load_configuration($oldProfile);
+	}
+
+	/**
+	 * Resets the Akeeba Engine's objects, keeping the path to the settings encryption key file.
+	 *
+	 * Factory::nuke() also discards the SecureSettings object, taking with it the key file path set when the
+	 * application booted. The new object looks for the key file in the engine's own folder, finds none, and decrypts
+	 * every encrypted profile to an empty string. Saving that back would overwrite the profile with defaults. This only
+	 * bites when the key has not been read yet in the request, e.g. when the same page load enabled the encryption.
+	 *
+	 * @return  void
+	 */
+	private function nukeEngine(): void
+	{
+		$secretKeyFile = APATH_BASE . '/Solo/secretkey.php';
+
+		// Different secretkey.php path when using WordPress
+		if (defined('ABSPATH'))
+		{
+			$secretKeyFile = rtrim(
+				                 (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : (rtrim(ABSPATH, '/') . '/wp-content')),
+				                 '/'
+			                 ) . '/akeebabackup_secretkey.php';
+		}
+
+		Factory::nuke();
+		Factory::getSecureSettings()->setKeyFilename($secretKeyFile);
 	}
 
 	/**
@@ -662,6 +708,18 @@ ENDBODY;
 	}
 
 	/**
+	 * Checks if the OpenSSL extension is installed and enabled. Without it, encrypted settings (cloud
+	 * storage keys, FTP and SFTP passwords, OAuth refresh tokens, the JPS password and the Secret Word)
+	 * are stored as plaintext.
+	 *
+	 * @return  bool
+	 */
+	public function checkOpenSsl()
+	{
+		return (new OpenSSL())->isSupported();
+	}
+
+	/**
 	 * Is the output directory under the configured site root?
 	 *
 	 * @param   string|null  $outDir  The output directory to check. NULL for the currently configured one.
@@ -693,7 +751,7 @@ ENDBODY;
 			return false;
 		}
 
-		return strpos($outDir, $siteRoot) === 0;
+		return PathContainment::isUnderRoot($outDir, $siteRoot);
 	}
 
 	/**
@@ -990,7 +1048,7 @@ ENDBODY;
 		}
 
 		// The output directory is NOT under the site's root.
-		if (strpos($outDir, $siteRoot) !== 0)
+		if (!PathContainment::isUnderRoot($outDir, $siteRoot))
 		{
 			return null;
 		}
@@ -1298,34 +1356,6 @@ ENDBODY;
 		}
 
 		return $success;
-	}
-
-	/**
-	 * Translate an absolute filesystem path into a relative URL
-	 *
-	 * @param   string  $fileName  The full filesystem path of a file or directory
-	 *
-	 * @return  string  The relative URL (or empty string if it's outside the site's root)
-	 */
-	protected function translatePath($fileName)
-	{
-		$fileName = str_replace('\\', '/', $fileName);
-
-		$appRoot = str_replace('\\', '/', APATH_BASE);
-		$appRoot = rtrim($appRoot, '/');
-
-		if (strpos($fileName, $appRoot) === 0)
-		{
-			$fileName = substr($fileName, strlen($appRoot) + 1);
-
-			$fileName = trim($fileName, '/');
-		}
-		else
-		{
-			return '';
-		}
-
-		return $fileName;
 	}
 
 	/**
@@ -1715,8 +1745,7 @@ ENDBODY;
 
 			try
 			{
-				$mailer = $this->container->mailer;
-				$mailer->sendEmail($email, $email_subject, $email_body);
+				Platform::getInstance()->send_email($email, $email_subject, $email_body);
 			}
 			catch (Exception $e)
 			{
@@ -1738,7 +1767,7 @@ ENDBODY;
 					count($emails)
 				),
 			],
-			'result'  => false,
+			'result'  => true,
 		];
 	}
 

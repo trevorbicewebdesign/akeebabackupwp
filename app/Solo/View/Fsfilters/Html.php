@@ -89,9 +89,8 @@ class Html extends View
 		}
 
 		$siteRoot          = $roots[0];
-		$attributes        = ['onchange' => "akeeba.Fsfilters.activeRootChanged();"];
 		$this->root_select = $this->getContainer()->html->select->genericList(
-			$options, 'root', $attributes, 'value', 'text', $siteRoot, 'active_root'
+			$options, 'root', [], 'value', 'text', $siteRoot, 'active_root'
 		);
 		$this->roots       = $roots;
 		$document          = $this->container->application->getDocument();

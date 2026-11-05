@@ -8,4 +8,5 @@ $baseDir = dirname($vendorDir);
 return array(
     '714ccd4b330431237faf946f71c4c9a4' => $vendorDir . '/akeeba/s3/src/aliasing.php',
     '1dcdacd755a1604b300d3ccfdeb7255f' => $vendorDir . '/akeeba/awf/src/Utils/helpers.php',
+    '58f264347523156ff2f3861ad3ec4e1f' => $baseDir . '/Solo/Polyfill/php80.php',
 );

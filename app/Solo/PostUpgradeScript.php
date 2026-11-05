@@ -10,6 +10,7 @@ namespace Solo;
 use Akeeba\Engine\Factory;
 use Akeeba\Engine\Platform;
 use Awf\Database\Installer;
+use Awf\Text\Text;
 
 class PostUpgradeScript
 {
@@ -210,13 +211,26 @@ class PostUpgradeScript
 		'Solo/Model/Json/Task/UpdateExtract.php',
 		'Solo/Model/Json/Task/UpdateGetInformation.php',
 		'Solo/Model/Json/Task/UpdateInstall.php',
+
+		// Developer error test controller, never meant to ship
+		'Solo/Controller/Errortest.php',
+
+		// Removed OneDrive (LEGACY) and OneDrive (App-Specific Folder) post-processing engines
+		'vendor/akeeba/engine/engine/Postproc/onedrive.ini',
+		'vendor/akeeba/engine/engine/Postproc/onedrive.json',
+		'vendor/akeeba/engine/engine/Postproc/Onedrive.php',
+		'vendor/akeeba/engine/engine/Postproc/onedriveapp.ini',
+		'vendor/akeeba/engine/engine/Postproc/onedriveapp.json',
+		'vendor/akeeba/engine/engine/Postproc/Onedriveapp.php',
 	];
 
 	/**
 	 * @var array Files to remove from Pro
 	 */
 	protected $removeFilesPro = [
-
+		// Removed APIv1 (legacy JSON API) endpoint
+		'Solo/Controller/Json.php',
+		'Solo/Model/Json.php',
 	];
 
 	/**
@@ -286,6 +300,13 @@ class PostUpgradeScript
 		"vendor/akeeba/engine/Test",
 		"vendor/akeeba/engine/tools",
 		"vendor/akeeba/s3/minitest",
+
+		// Development and test files which used to ship inside vendor folders
+		"vendor/akeeba/engine/dev_platform",
+		"vendor/greenlion/php-sql-parser/tests",
+		"vendor/greenlion/php-sql-parser/examples",
+		"vendor/greenlion/php-sql-parser/libs",
+		"vendor/greenlion/php-sql-parser/wiki",
 
 		// Old stats collector
 		'Solo/assets/stats',
@@ -421,9 +442,6 @@ class PostUpgradeScript
 		'vendor/akeeba/engine/engine/Postproc/idrivesync.ini',
 		'vendor/akeeba/engine/engine/Postproc/idrivesync.json',
 		'vendor/akeeba/engine/engine/Postproc/Idrivesync.php',
-		'vendor/akeeba/engine/engine/Postproc/onedrive.ini',
-		'vendor/akeeba/engine/engine/Postproc/onedrive.json',
-		'vendor/akeeba/engine/engine/Postproc/Onedrive.php',
 		'vendor/akeeba/engine/engine/Postproc/onedrivebusiness.ini',
 		'vendor/akeeba/engine/engine/Postproc/onedrivebusiness.json',
 		'vendor/akeeba/engine/engine/Postproc/Onedrivebusiness.php',
@@ -486,6 +504,10 @@ class PostUpgradeScript
 		'Solo/Model/Schedule.php',
 		'Solo/Model/Transfers.php',
 		'Solo/Model/Upload.php',
+		'Solo/Model/Exception/TransferFatalError.php',
+		'Solo/Model/Exception/TransferIgnorableError.php',
+
+		'Solo/assets/installers/kickstart.transfer.php',
 
 		'media/js/solo/alice.min.js',
 		'media/js/solo/alice.min.map',
@@ -499,6 +521,7 @@ class PostUpgradeScript
 		'media/js/solo/regexfsfilters.min.map',
 		'media/js/solo/restore.min.js',
 		'media/js/solo/restore.min.map',
+		'media/js/solo/transfer.js',
 		'media/js/solo/transfer.min.js',
 		'media/js/solo/transfer.min.map',
 
@@ -539,6 +562,36 @@ class PostUpgradeScript
 		'helpers/Solo/Widget/BackupGlance.php',
 		'helpers/Solo/Widget/QuickBackup.php',
 	];
+
+	/**
+	 * The names (top-level keys of the application configuration) of cookies which System Configuration used to store.
+	 *
+	 * Before the Save task stored only the fields of its page it stored every request variable, and PHP's $_REQUEST includes
+	 * the cookies on most hosts. The patterns are exact shapes, not prefixes: no configuration key the application or the
+	 * engine reads can match one (notably wp_cron_override_time). Anything else which sits in the configuration is left alone.
+	 *
+	 * @var  string[]
+	 */
+	private const STRAY_CONFIGURATION_KEYS = [
+		// Solo's PHP session cookie
+		'/^PHPSESSID$/',
+		// WordPress: the (secure) auth cookie, the login cookie, the test cookie
+		'/^wordpress_(test_cookie|(sec_|logged_in_)?[0-9a-f]{32})$/',
+		// WordPress: the user settings cookies and the language chosen at the login page
+		'/^wp-settings-(time-)?[0-9]+$/',
+		'/^wp_lang$/',
+	];
+
+	/**
+	 * Top-level keys which the Database tab of System Configuration (standalone Solo only) used to store.
+	 *
+	 * The tab posted driver, host, user, pass and name while the application reads dbdriver, dbhost, dbuser, dbpass and dbname,
+	 * so these five sat in config.php unused (pass is the database password in plain text a second time). No other code reads a
+	 * top-level key of these names from the application configuration. The options.* keys of the same names are not touched.
+	 *
+	 * @var  string[]
+	 */
+	private const STRAY_DATABASE_KEYS = ['driver', 'host', 'user', 'pass', 'name'];
 
 	/**
 	 * Class constructor
@@ -595,9 +648,79 @@ class PostUpgradeScript
 		// Migrate profiles
 		$this->migrateProfiles();
 
+		// Remove cookies which older versions stored in the application configuration
+		$this->removeStrayConfigurationKeys();
+
 		// Migrate front-end API activation options
 		$this->upgradeFrontendEnable();
 
+	}
+
+	/**
+	 * Removes cookies (and WordPress' admin page variable) from the application configuration.
+	 *
+	 * System Configuration used to store every request variable (see STRAY_CONFIGURATION_KEYS). The session cookie then
+	 * sat in Solo's config.php, and the WordPress login cookies in the akeebabackupwp_config option, i.e. in the database
+	 * and in every backup of it. Standalone Solo also lost the five database keys of the Database tab (see
+	 * STRAY_DATABASE_KEYS). Only top-level keys of the exact shapes above are removed, and the configuration is saved only if
+	 * one was found, so running this again changes nothing.
+	 *
+	 * @return  void
+	 */
+	public function removeStrayConfigurationKeys(): void
+	{
+		$config     = $this->container->appConfig;
+		$removed    = false;
+		$standalone = !defined('WPINC') && !$this->container->segment->get('insideCMS', false);
+
+		foreach (get_object_vars($config->toObject()) as $key => $value)
+		{
+			$key = (string) $key;
+
+			// set() takes a dotted path: a key with a dot in it cannot be addressed (and is not one of ours)
+			if (strpos($key, '.') !== false || !$this->isStrayConfigurationKey($key, $value, $standalone))
+			{
+				continue;
+			}
+
+			$config->set($key, null);
+
+			$removed = true;
+		}
+
+		if ($removed)
+		{
+			$config->saveConfiguration();
+		}
+	}
+
+	/**
+	 * Is this top-level key of the application configuration a leftover of the request variables stored by older versions?
+	 *
+	 * @param   string  $key         The key
+	 * @param   mixed   $value       Its value
+	 * @param   bool    $standalone  Is this standalone Solo (as opposed to Akeeba Backup for WordPress)?
+	 *
+	 * @return  bool
+	 */
+	private function isStrayConfigurationKey(string $key, $value, bool $standalone): bool
+	{
+		// Only standalone Solo has the Database tab (and a config.php): the WordPress configuration never held these
+		if ($standalone && in_array($key, self::STRAY_DATABASE_KEYS, true) && is_scalar($value))
+		{
+			return true;
+		}
+
+		foreach (self::STRAY_CONFIGURATION_KEYS as $pattern)
+		{
+			if (preg_match($pattern, $key))
+			{
+				return true;
+			}
+		}
+
+		// The WordPress admin page the form was posted to, e.g. akeebabackupwp/akeebabackupwp.php
+		return $key === 'page' && is_string($value) && strpos($value, 'akeebabackupwp') === 0;
 	}
 
 	/**
@@ -856,6 +979,8 @@ class PostUpgradeScript
 	/**
 	 * Migrates existing backup profiles. The changes currently made are:
 	 * * Change post-processing from "s3" (legacy) to "amazons3" (current version).
+	 * * Switch profiles using the removed OneDrive (LEGACY) or OneDrive (App-Specific Folder) engines to OneDrive
+	 *   (Business), blanking their now invalid authentication tokens.
 	 * * Fix profiles with invalid embedded installer settings.
 	 * * Migrate to separate local and remote quota settings.
 	 *
@@ -865,14 +990,19 @@ class PostUpgradeScript
 	{
 		// Get a list of backup profiles
 		$db       = $this->container->db;
-		$query    = $db->getQuery(true)->select($db->qn('id'))->from($db->qn('#__ak_profiles'));
-		$profiles = $db->setQuery($query)->loadColumn();
+		$query    = $db->getQuery(true)
+			->select([$db->qn('id'), $db->qn('description')])
+			->from($db->qn('#__ak_profiles'));
+		$profiles = $db->setQuery($query)->loadObjectList();
 
 		// Normally this should never happen as we're supposed to have at least profile #1
 		if (empty($profiles))
 		{
 			return;
 		}
+
+		// Profiles switched away from the removed OneDrive engines, to warn the user about
+		$affectedProfiles = [];
 
 		// Migrate each profile
 		foreach ($profiles as $profile)
@@ -881,7 +1011,7 @@ class PostUpgradeScript
 			$dirty = false;
 
 			// Load the profile configuration
-			Platform::getInstance()->load_configuration($profile);
+			Platform::getInstance()->load_configuration($profile->id);
 			$config = Factory::getConfiguration();
 
 			// Remove key protection
@@ -916,6 +1046,26 @@ class PostUpgradeScript
 					'engine.postproc.amazons3.customendpoint', $config->get('engine.postproc.s3.customendpoint')
 				);
 				$config->set('engine.postproc.amazons3.legacy', $config->get('engine.postproc.s3.legacy'));
+			}
+
+			// -- Migrate the removed OneDrive (LEGACY) and OneDrive (App-Specific Folder) engines to OneDrive (Business)
+			$currentPostproc = $config->get('akeeba.advanced.postproc_engine', '');
+
+			if (in_array($currentPostproc, ['onedrive', 'onedriveapp']))
+			{
+				$dirty = true;
+
+				$affectedProfiles[] = !empty($profile->description)
+					? $profile->description
+					: sprintf('Profile #%d', (int) $profile->id);
+
+				$config->setKeyProtection('akeeba.advanced.postproc_engine', false);
+				$config->setKeyProtection(sprintf('engine.postproc.%s.access_token', $currentPostproc), false);
+				$config->setKeyProtection(sprintf('engine.postproc.%s.refresh_token', $currentPostproc), false);
+
+				$config->set('akeeba.advanced.postproc_engine', 'onedrivebusiness');
+				$config->set(sprintf('engine.postproc.%s.access_token', $currentPostproc), '');
+				$config->set(sprintf('engine.postproc.%s.refresh_token', $currentPostproc), '');
 			}
 
 			// Fix and migrate profiles with invalid, or outdated embedded installer settings.
@@ -965,8 +1115,17 @@ class PostUpgradeScript
 			// Save dirty records
 			if ($dirty)
 			{
-				Platform::getInstance()->save_configuration($profile);
+				Platform::getInstance()->save_configuration($profile->id);
 			}
+		}
+
+		// Warn the user about the profiles which no longer have valid authentication
+		if (!empty($affectedProfiles))
+		{
+			$this->container->application->enqueueMessage(
+				Text::sprintf('COM_AKEEBA_UPGRADE_MIGRATED_ONEDRIVE_ENGINES', implode(', ', $affectedProfiles)),
+				'warning'
+			);
 		}
 	}
 

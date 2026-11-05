@@ -420,7 +420,7 @@ akeeba.Wizard.partSize = function ()
     var block_size = array_shift(akeeba.Wizard.blockSizes);
     if (empty(akeeba.Wizard.blockSizes) || (block_size == null))
     {
-        akeeba.Wizard.setIcon('pertsize', 'error');
+        akeeba.Wizard.setIcon('splitsize', 'error');
 
         // Uh... I think you are running out of disk space, dude
         document.getElementById("backup-progress-pane").style.display = "none";
@@ -437,7 +437,7 @@ akeeba.Wizard.partSize = function ()
     document.getElementById("backup-substep").textContent =
         akeeba.System.Text._("COM_AKEEBA_CONFWIZ_UI_PARTSIZE").replace("%s", part_size.toFixed(3));
 
-    akeeba.Wizard.setIcon('pertsize', 'run');
+    akeeba.Wizard.setIcon('splitsize', 'run');
 
     akeeba.System.doAjax(
         {akact: "partsize", blocks: block_size},
@@ -445,7 +445,7 @@ akeeba.Wizard.partSize = function ()
         {
             if (msg?.status ?? false)
             {
-                akeeba.Wizard.setIcon('pertsize', 'done');
+                akeeba.Wizard.setIcon('splitsize', 'done');
 
                 akeeba.Wizard.done();
             }
@@ -502,24 +502,28 @@ akeeba.Wizard.autodetect = function (folder)
         document.getElementById("var[akeeba.platform.dbname]").value           = retData.database.name;
         document.getElementById("var[akeeba.platform.dbprefix]").value         = retData.database.prefix;
 
-        document.getElementById("pythiaExtradirs").innerHTML = retData.extradirs.join("<br/>");
+        var elPythiaExtradirs = document.getElementById("pythiaExtradirs");
+        elPythiaExtradirs.innerHTML = "";
+        retData.extradirs.forEach(function (dir, idx) {
+            if (idx > 0) {
+                elPythiaExtradirs.appendChild(document.createElement("br"));
+            }
+            elPythiaExtradirs.appendChild(document.createTextNode(dir));
+        });
 
-        var html = [];
-        var dbinfo;
-
-        for (var index = 0; index < retData.extradb.length; index++)
-        {
-            var db = retData.extradb[index];
-
-            dbinfo = "<strong>Host</strong>: " + db.host;
-            dbinfo += " <strong>Db</strong>: " + db.name;
-            dbinfo += " <strong>User</strong>: " + db.username;
-            dbinfo += " <strong>Prefix</strong>: " + db.prefix;
-
-            html.push(dbinfo);
-        }
-
-        document.getElementById("pythiaExtradb").innerHTML = html.join("<br/>");
+        var elPythiaExtradb = document.getElementById("pythiaExtradb");
+        elPythiaExtradb.innerHTML = "";
+        retData.extradb.forEach(function (db, idx) {
+            if (idx > 0) {
+                elPythiaExtradb.appendChild(document.createElement("br"));
+            }
+            [["Host", db.host], ["Db", db.name], ["User", db.username], ["Prefix", db.prefix]].forEach(function (pair) {
+                var strong = document.createElement("strong");
+                strong.textContent = pair[0] + ": ";
+                elPythiaExtradb.appendChild(strong);
+                elPythiaExtradb.appendChild(document.createTextNode(pair[1] + " "));
+            });
+        });
 
         akeeba.System.triggerEvent(document.querySelector("select[id*=\"akeeba.platform.dbdriver\"]"), "change");
     });

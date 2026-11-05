@@ -214,7 +214,7 @@ akeeba.Regexfsfilters.addRow = function (def, append_to_here)
                 var type_translation_key = "COM_AKEEBA_FILEFILTERS_TYPE_" + String(def.type).toUpperCase().substr(5);
 
                 trow.querySelector("td.ak-type span").textContent = akeeba.System.Text._(type_translation_key);
-                trow.querySelector("td.ak-item tt").textContent   = escapeHTML(def.item);
+                trow.querySelector("td.ak-item tt").textContent   = def.item;
                 akeeba.System.triggerEvent(tdFirst.querySelector("span.cancel"), "click");
 
                 if (haveToDelete)
@@ -228,7 +228,7 @@ akeeba.Regexfsfilters.addRow = function (def, append_to_here)
                 {
                     akeeba.Regexfsfilters.addNewRow(append_to_here);
                 }
-            }, false);
+            }, false, true);
         });
         tdFirst.appendChild(elSave);
 

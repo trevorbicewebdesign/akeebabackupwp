@@ -28,6 +28,7 @@ class GoogledriveEngine extends AbstractProvider
 			'access_type'   => 'offline',
 			'prompt'        => 'consent',
 			'response_type' => 'code',
+			'state'         => $this->generateState(),
 		];
 
 		return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query($params);

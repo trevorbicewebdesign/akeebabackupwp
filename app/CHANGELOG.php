@@ -1,4 +1,191 @@
 <?php die();?>
+Akeeba Solo 9.3.0
+================================================================================
+! Restoration: archive entries with dot paths in their name could escape the extraction target root
++ Added support for seven additional Amazon S3 regions
++ Import Archives from S3 now works with S3-compatible storage, using the profile's custom endpoint
+- Removed "Upload to Microsoft OneDrive (LEGACY)" and "Upload to Microsoft OneDrive (App-Specific Folder)"
+- Removed the obsolete Akeeba Backup JSON API v1 endpoint and its "APIv1 removed" answer
+~ Control Panel now warns when the OpenSSL extension is missing, since settings then store as plaintext
+~ Restoration: removed SFTP and "use FTP for all files" write modes; only Direct and Hybrid remain
+~ Restoration: the resume allow-list is now derived from the extraction engine's own class hierarchy
+~ PostgreSQL backup: only pass --no-policies to pg_dump 18+, older versions reject it
+~ PostgreSQL backup: Exempt CREATE UNIQUE INDEX from the IF NOT EXISTS rewrite too
+~ PostgreSQL backup: Quote jsonb values as text, not as hex-encoded BYTEA
+~ PostgreSQL backup: Rewrite CREATE VIEW to OR REPLACE, not unsupported IF NOT EXISTS
+~ Packages no longer ship third-party development and test files
+~ Packages no longer ship the developer-only Errortest controller
+~ Core packages no longer ship the Pro-only Crons (WP-Cron scheduling) files
+~ Packages no longer ship the application's composer.json and composer.lock
+~ Packages no longer ship a stale plain-text Kickstart copy, the old stats collector and CSS source maps
+~ PHP 8.4 and 8.5 are now officially supported
+~ Schedule: warns that a weak Secret Key makes the front-end and JSON API fail, and strikes out the URLs and commands
+~ Core packages no longer ship leftover files of the Pro-only Site Transfer Wizard
+# [HIGH] JSON API startBackup: overrides parameter could rewrite arbitrary engine configuration
+# [HIGH] Backup engine: finalization queue could be made to instantiate an arbitrary class
+# [HIGH] Backup engine: Amazon S3 custom endpoint scheme sanitisation had a typo'd check
+# [HIGH] Restoration: ZIP archives written with "fast" compression (7-Zip, WinZip) reported as corrupt
+# [HIGH] Restoration: "delete site files before extracting" fatally errored before deleting anything
+# [HIGH] Restoration: "delete site files before extracting" also failed under restore.php
+# [HIGH] Restoration: Hybrid write mode corrupted its snapshot, breaking multi-step extractions
+# [HIGH] Restoration: removed the dead Mcrypt AES adapter; JPS decryption now fails cleanly without OpenSSL
+# [HIGH] Restoration: a database hostname containing an underscore had its port number appended twice
+# [HIGH] Backup page return URL could run script or redirect off-site via control characters or "///" URLs
+# [HIGH] YubiKey two-factor authentication accepted a one-time password from any YubiKey
+# [HIGH] OAuth2 Authenticate button (Box, Dropbox, Google Drive, OneDrive) failed with an invalid security token error
+# [HIGH] Failed upload checks (check-failed-upload, altcheck-failed-upload, uploadcheck) crashed instead of e-mailing
+# [HIGH] Upgrade step could reset encrypted backup profiles to defaults when settings encryption was just enabled
+# [HIGH] PHP 7.4: Configuration page failed with "Call to undefined function str_contains()"
+# [HIGH] Core: a failed backup left the Backup page blank instead of showing the error and the log link
+# [HIGH] Front-end backup CRON jobs failed with a 403 when the Secret Key contained & # + or %
+# [HIGH] WP-CLI: "backup upload" always failed with a PHP error instead of re-uploading the backup
+# [HIGH] WP-CLI: "backup fetch" failed for backups of any backup profile other than the default one
+# [HIGH] WP-CLI: "filter include-database" could not be given a host and stored the user name under the wrong key
+# [HIGH] Site Transfer Wizard skipped every other part of a multi-part backup, so Kickstart could not extract it
+# [HIGH] Solo: page loads at the same time could overwrite config.php with a stub, losing the database settings
+# [MEDIUM] ALICE diagnostics rendered attacker-controlled log content as raw, unescaped HTML
+# [MEDIUM] OAuth2 linking (Box, Dropbox, Google Drive, OneDrive) lacked anti-CSRF state protection
+# [MEDIUM] Backup engine did not strip control characters from logged messages
+# [MEDIUM] Backup engine logged the raw PushBullet API key when a notification failed
+# [MEDIUM] FTP download-to-browser no longer exposes the FTP username and password in a redirect
+# [MEDIUM] Restoration: the serialised extraction state was unserialized without a class allow-list
+# [MEDIUM] Cancelling an edit form could redirect to an external site given in the return URL
+# [MEDIUM] Saving System Configuration or changing backup profiles could redirect to an external site
+# [MEDIUM] Updates were checked over plain HTTP and packages were accepted from any server the update info named
+# [MEDIUM] Folder browser and S3 Import reflected the folder parameter unescaped into the page
+# [MEDIUM] Manage Backups: deleting the files of a single backup also deleted its backup record
+# [MEDIUM] Site Transfer Wizard could not upload multipart backups: part files were named site./01 instead of site.j01
+# [MEDIUM] Two-factor authentication setup QR code no longer displayed; drawing it sent the secret key to Google
+# [MEDIUM] Restoration: "display_errors" warning appeared even when the host had display_errors turned off
+# [MEDIUM] A backup that died in its first step stayed "pending" forever instead of being marked failed
+# [MEDIUM] Configuration: the Test connection button of the DirectSFTP over cURL archiver did nothing
+# [MEDIUM] FTP connection tests and site transfer failed with an HTTP 500 error when PHP's FTP extension is missing
+# [MEDIUM] Manage Backups: toolbar View / Edit comment and Download used the record opened last, not the ticked one
+# [MEDIUM] Importing a profile stored its secrets (S3 keys, passwords) unencrypted despite settings encryption
+# [MEDIUM] Multiple Databases: the editor did not show the stored port, so saving an edit blanked or replaced it
+# [MEDIUM] Configuration: script error with OneDrive as the upload engine, and when the Google Drive list arrived late
+# [MEDIUM] Core: the Configuration page raised a JavaScript error, so the Configuration Wizard prompt never appeared
+# [MEDIUM] Schedule: the JSON API commands showed "&" in the Secret Key as "&amp;", so the copied command failed
+# [MEDIUM] Database Table Exclusion failed with an HTTP 500 error on PHP 8 when the profile has no database
+# [MEDIUM] RegEx exclusion filters lost the <...> of lookbehinds and named groups when saved, matching the wrong items
+# [MEDIUM] Off-site Directories: exclusion filters stopped applying once the path was made portable
+# [MEDIUM] Import Archives from S3: keys which Amazon rejects ended in an application error instead of a message
+# [MEDIUM] altcheck-failed.php and altcheck-failed-upload.php exited with 0 when the check failed, hiding it from cron
+# [MEDIUM] backup.php and altbackup.php took profile 0, a negative ID or text for profile 1 instead of refusing it
+# [MEDIUM] WP-CLI: "option set" stored "yes" as 0 for on/off options and accepted values outside an option's choices
+# [MEDIUM] WP-CLI: "profile import" stored S3 keys and passwords unencrypted despite settings encryption
+# [MEDIUM] WP-CLI: profile 0 or a negative ID was taken for profile 1; "option set" even changed that profile
+# [MEDIUM] Site Transfer Wizard: the "Over HTTP / HTTPS" archive transfer mode failed with "No data specified"
+# [MEDIUM] Site Transfer Wizard: an address whose domain does not resolve showed nothing instead of the warning
+# [MEDIUM] System Configuration: the Database tab changed nothing; it now saves settings that connect and refuses others
+# [MEDIUM] System Configuration: the Database tab saved a database without Solo's tables silently; now it warns
+# [MEDIUM] CLI backups given a non-existent profile ID were recorded against it; they now use the default profile
+# [MEDIUM] System Configuration: the Update tab had a duplicate HTML ID and a tuning option repeated its label
+# [MEDIUM] Backup: an error starting the backup was retried, then shown as a misleading "restart your backup" error
+# [LOW] PHP notices could appear during backups, database filtering, missing-record actions and FTP transfers
+# [LOW] Invalid configuration files loaded silently; grid actions and failed DB connections raised warnings
+# [LOW] Exporting a missing backup profile returned HTTP 500 instead of a JSON 404 response
+# [LOW] Log view could switch the active profile before its own access check ran
+# [LOW] Control Panel's latest-backup popup did not escape the backup description
+# [LOW] Backup view's comment textarea did not escape the reflected comment
+# [LOW] Remote backup files whose storage engine name used upper case letters were not recognised as remote
+# [LOW] Several JS error messages used innerHTML instead of textContent, risking markup injection
+# [LOW] OAuth2 callback/helper/refresh URLs in System Configuration were not HTML-escaped
+# [LOW] Root-containment checks treated sibling folders sharing a name prefix as inside the root
+# [LOW] Two exception-chain walkers could loop or recurse forever on a wrapped exception
+# [LOW] Log viewer did not escape the timestamp field, only the message field
+# [LOW] OAuth2 refresh saved the new refresh token under a misspelled key, discarding it
+# [LOW] OAuth2 errors showed the error_uri value instead of the actual error description
+# [LOW] Site Transfer's backup-selection ordering was passed as a raw SQL string, silently ignored
+# [LOW] Backup engine's untagged log file lacked a real safety guard against direct access
+# [LOW] Backup engine did not sanitise backup warnings before queuing them
+# [LOW] Backup engine's memory file safety guard did not actually prevent direct access
+# [LOW] Backup engine's SQLite driver ignored the LIKE-wildcard escaping flag
+# [LOW] Backup engine's statistics UPDATE did not restrict columns, unlike its INSERT
+# [LOW] Backup engine did not quote identifiers when renaming SQLite tables or reading schema
+# [LOW] Backup engine contained dead code that could misdirect proxy credentials
+# [LOW] Backup engine's settings key file lookup depended on the current working directory
+# [LOW] Restoration: PHP 8.1 deprecation notice extracting a JPS archive containing a symbolic link
+# [LOW] Restoration: JPS decryption never trimmed padding from a decrypted block (already trimmed by callers)
+# [LOW] Restoration: PHP 8.5 deprecation notices when a JPS archive password is under 16 characters
+# [LOW] Restoration: PHP 8.1 deprecation notice extracting into an existing folder with no target configured
+# [LOW] Restoration: PHP 8.1 deprecation notices from the file zapper and restoration finalisation
+# [LOW] Restoration: PHP 8.1 deprecation notices, PHP 9 fatal error, for UNIX socket/named pipe DB hostnames
+# [LOW] Deleting an obsolete backup log file variant emitted a harmless PHP "file not found" warning
+# [LOW] In debug mode, the Setup wizard's steps could be triggered cross-site after installation
+# [LOW] Users with only the Backup privilege got an error when opening Manage Backups from the Control Panel
+# [LOW] Setup wizard reflected database and error parameters unescaped into the page
+# [LOW] Manage Backups comment editor and popovers could render backup comments as HTML
+# [LOW] Manage Backups download notice did not escape the archive name
+# [LOW] Some admin pages and error pages printed configuration values and error messages unescaped
+# [LOW] Two-factor authentication codes were compared loosely
+# [LOW] Folder-inside-site checks gave wrong answers on Windows when path separators were mixed
+# [LOW] Backup archive downloads did not tell browsers and proxies not to store them
+# [LOW] Site Transfer Wizard always uploaded Kickstart as kickstart.php instead of a random filename
+# [LOW] Manage Backups read its list offset (limitstart) unfiltered because of a mismatched state key
+# [LOW] Failed backup notifications were not sent to administrators when no email address was configured
+# [LOW] S3 Import did not list .jps (encrypted) backup archives
+# [LOW] Deleting remotely stored backup files in several steps stopped after the first step (missing anti-CSRF token)
+# [LOW] Usage statistics reported standalone Akeeba Solo sites as Akeeba Backup for WordPress
+# [LOW] Two-factor authentication secrets were generated with a predictable random number generator
+# [LOW] Backup profiles could be read cross-site through a JSONP callback parameter
+# [LOW] A request with a crafted Host header could load a leftover developer overrides file
+# [LOW] On IIS, protective web.config files did not block direct access to PHP and other files
+# [LOW] Login page could be pre-filled with credentials passed in the URL or by HTTP Basic authentication
+# [LOW] Session cookie was sent without the HttpOnly, Secure and SameSite flags
+# [LOW] Standalone pages could be framed by other sites and lacked nosniff and referrer-policy headers
+# [LOW] Manage Backups: pagination footer always said "Page 1" and the first-page link needed two clicks
+# [LOW] Configuration check warning q204 (disabled PHP functions) never appeared
+# [LOW] Control Panel: latest backup showed a dash as origin for JSON API and WP-Cron backups
+# [LOW] Configuration: Apply left the profile unnamed when the One-click icon changed and the name box was empty
+# [LOW] Site Transfer Wizard raised a JavaScript error when there was no backup to transfer
+# [LOW] Configuration Wizard: the last step (splitting the archive) never showed as completed
+# [LOW] Multiple Databases: saving the empty "add" row stored an empty database definition
+# [LOW] Files and Directories Exclusion: changing the root listed twice and raised an error in tabular view
+# [LOW] Exclusion tabular views: a filter the server refused stayed listed as if it had been saved
+# [LOW] RegEx Database Tables Exclusion: changing the database in the root selector did not reload the list
+# [LOW] RegEx Exclusion pages showed HTML entities in the label of a just-saved expression, until reloaded
+# [LOW] RegEx Exclusion pages treated a save the server refused as saved, and a refused rename deleted the original
+# [LOW] Configuration: the "configuration saved" message never appeared after Apply or Save
+# [LOW] Configuration: choosing "Custom" for a number option saved the previously chosen preset instead
+# [LOW] Schedule: the Check tabs printed a stray "; ?>" after the note about substituting the PHP path
+# [LOW] Schedule: a very long Secret Key made the page scroll sideways
+# [LOW] Configuration: the OpenStack Swift upload engine description showed a raw language key
+# [LOW] Database Table Exclusion opened on an additional database instead of the site's main database
+# [LOW] Import Archives: a single-part archive was recorded as multipart, unlike a backup taken by the product
+# [LOW] Fetching a remote backup back to the server left a stray .tmp file in the output directory
+# [LOW] Import Archives from S3 did not pre-fill the keys from the profile's Amazon S3 settings
+# [LOW] Updated view templates could keep running stale code on servers with OPcache timestamp checks disabled
+# [LOW] Alternate CLI scripts named the wrong script or product in their banner and configuration errors
+# [LOW] altbackup.php: --no-verify was inverted; the TLS certificate is now verified unless --no-verify is given
+# [LOW] WP-CLI: backup info, modify, delete, upload and fetch crashed or claimed success on a missing backup record
+# [LOW] WP-CLI: "option set" stored text as 0 for number options; "option get" printed nothing or crashed on a bad key
+# [LOW] WP-CLI: "profile create" said "Copy successful" instead of saying that it created a profile
+# [LOW] WP-CLI: "sysconfig set" accepted any text for numbers, ports, on/off switches and drop-down options
+# [LOW] WP-CLI: the "filter" help told to name an off-site directory root by its UUID, which the commands refuse
+# [LOW] WP-CLI: "backup upload" without remote storage claimed success and marked the backup as uploaded
+# [LOW] View Log raised a PHP 8.1+ deprecation notice until a log file was selected
+# [LOW] Exclusion pages raised PHP warnings when changing the database or resetting file filters (PHP 8.1+)
+# [LOW] Schedule: loading the page rewrote the application configuration file eight times instead of twice
+# [LOW] WP-CLI: "backup fetch" of a backup recorded with no remote storage reported a confusing file error
+# [LOW] Site Transfer Wizard: manual method showed blank names for the parts of a multi-part archive
+# [LOW] Site Transfer Wizard: the passive mode workaround switch showed the passive mode setting after a reload
+# [LOW] Site Transfer Wizard: PHP 8.1+ deprecation notice when the new site's address has no path
+# [LOW] Site Transfer Wizard error messages showed raw HTML tags such as <code> and <em>
+# [LOW] Backing up another site (root override) told the restoration script the wrong site root
+# [LOW] Backups recorded the application's own host name, not the Site URL option, in the restoration data
+# [LOW] Setup wizard: the Database step raised PHP warnings about undefined SSL settings on its first visit
+# [LOW] System Configuration saved every request variable, cookies included, into the configuration
+# [LOW] Upgrade removes the session and login cookies which older System Configuration saves stored in the configuration
+# [LOW] Upgrade removes the unused database keys, one with the password, which the Database tab left in config.php
+# [LOW] ALICE never warned that an additional database is the site's own database, as it read the wrong settings
+# [LOW] Solo: an empty or damaged config.php showed any visitor its path and a stack trace, with HTTP 200
+# [LOW] Application errors returned HTTP 200 and showed exception details to any visitor outside debug mode
+# [LOW] CLI scripts printed a stack trace when config.php was empty or damaged; they now say so and stop
+# [LOW] OAuth2 helper and page template files could be requested directly, revealing the server path in PHP errors
+# [LOW] Site Transfer Wizard: a thrown upload error was sent under the wrong key and displayed only by luck
+# [LOW] Restoration: tables with a backtick in their name were not dropped, so restoring over them failed
+
 Akeeba Solo 9.2.0
 ================================================================================
 + wp akeeba profile import: select profile with --profile; overwrite it with --force

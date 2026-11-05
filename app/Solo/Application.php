@@ -8,7 +8,6 @@
 namespace Solo;
 
 use Akeeba\Engine\Platform;
-use Awf\Application\TransparentAuthentication;
 use Awf\Uri\Uri;
 use Awf\User\ManagerInterface as UserManagerInterface;
 use Solo\Application\UserAuthenticationGoogle;
@@ -26,6 +25,12 @@ class Application extends \Awf\Application\Application
 
 	public function initialise()
 	{
+		// Send the security headers. This comes first so that it applies to every response, including errors.
+		$this->sendSecurityHeaders();
+
+		// Apply the session cookie parameters. This MUST run before anything can start the session.
+		$this->applySessionCookieParams();
+
 		// Load the language files
 		$this->loadLanguages();
 
@@ -94,27 +99,102 @@ class Application extends \Awf\Application\Application
 	}
 
 	/**
+	 * Sends the anti-framing, anti-MIME-sniffing and referrer policy security headers.
+	 *
+	 * Sent from the application, not just .htaccess, because not every host runs Apache.
+	 *
+	 * @return  void
+	 */
+	public function sendSecurityHeaders()
+	{
+		if (headers_sent())
+		{
+			return;
+		}
+
+		// WPINC is how the WordPress plugin sets the 'insideCMS' flag; reading the flag would start the session.
+		foreach (self::getSecurityHeaders(defined('WPINC')) as $name => $value)
+		{
+			header($name . ': ' . $value);
+		}
+	}
+
+	/**
+	 * Returns the security headers to send with every response.
+	 *
+	 * Inside WordPress (where the host application manages its own headers and Solo is not even the entry point) it
+	 * returns nothing.
+	 *
+	 * 'same-origin' for the Referrer-Policy is safe: Solo never relies on a Referer sent to another host (the OAuth2
+	 * helper flows carry their state in the URL), and no Solo feature checks the incoming Referer.
+	 *
+	 * @param   bool  $insideCMS  Are we running inside a CMS (WordPress)?
+	 *
+	 * @return  array  Header name => header value
+	 */
+	public static function getSecurityHeaders(bool $insideCMS): array
+	{
+		if ($insideCMS)
+		{
+			return [];
+		}
+
+		return [
+			'X-Frame-Options'         => 'SAMEORIGIN',
+			'Content-Security-Policy' => "frame-ancestors 'self'",
+			'X-Content-Type-Options'  => 'nosniff',
+			'Referrer-Policy'         => 'same-origin',
+		];
+	}
+
+	/**
+	 * Applies the session cookie parameters (lifetime, path, domain, Secure, HttpOnly, SameSite).
+	 *
+	 * This MUST be called before the session is started. Once a session is active, session_set_cookie_params()
+	 * silently fails, which used to leave the HttpOnly and Secure flags up to php.ini and SameSite unset.
+	 *
+	 * @return  void
+	 */
+	public function applySessionCookieParams()
+	{
+		$uri = new Uri(Uri::base(false, $this->container));
+
+		$this->container->session->setCookieParams(self::getSessionCookieParams($uri));
+	}
+
+	/**
+	 * Computes the session cookie parameters.
+	 *
+	 * The cookie is a browser-session, host-only cookie: no lifetime (the session timeout is enforced on the server by
+	 * applySessionTimeout()) and no Domain attribute, which would also send it to every subdomain. This is how the
+	 * cookie has always behaved in practice, because these parameters used to be applied too late to take effect.
+	 *
+	 * @param   Uri  $uri  The application's base URL; sets the cookie path and the Secure flag.
+	 *
+	 * @return  array
+	 */
+	public static function getSessionCookieParams(Uri $uri): array
+	{
+		return [
+			'lifetime' => 0,
+			'path'     => $uri->getPath(),
+			'domain'   => '',
+			'secure'   => $uri->isSSL(),
+			'httponly' => true,
+			'samesite' => 'Lax',
+		];
+	}
+
+	/**
 	 * Apply the session timeout setting.
+	 *
+	 * The session cookie parameters are applied earlier, by applySessionCookieParams(): by the time this runs the
+	 * session is already active and session_set_cookie_params() would silently do nothing.
 	 */
 	public function applySessionTimeout()
 	{
 		// Get the session timeout
 		$sessionTimeout = (int) $this->container->appConfig->get('session_timeout', 1440);
-
-		// Get the base URL and set the cookie path
-		$uri = new Uri(Uri::base(false, $this->container), $this);
-
-		// Force the cookie timeout to coincide with the session timeout
-		if ($sessionTimeout > 0)
-		{
-			$this->container->session->setCookieParams([
-				'lifetime' => $sessionTimeout * 60,
-				'path'     => $uri->getPath(),
-				'domain'   => $uri->getHost(),
-				'secure'   => $uri->getScheme() == 'https',
-				'httponly' => true,
-			]);
-		}
 
 		// Calculate a hash for the current user agent and IP address
 		$ip         = \Awf\Utils\Ip::getUserIP();
@@ -444,17 +524,6 @@ class Application extends \Awf\Application\Application
 				'ftpbrowser', 'sftpbrowser',
 			], true) && !$manager->getUser()->getId())
 		{
-			// Try to perform transparent authentication
-			$transparentAuth = new TransparentAuthentication($this->container);
-			$credentials     = $transparentAuth->getTransparentAuthenticationCredentials();
-
-			if (!is_null($credentials))
-			{
-				$this->container->segment->setFlash('auth_username', $credentials['username']);
-				$this->container->segment->setFlash('auth_password', $credentials['password']);
-				$this->container->segment->setFlash('auto_login', 1);
-			}
-
 			$return_url = $this->container->segment->getFlash('return_url');
 
 			if (empty($return_url))

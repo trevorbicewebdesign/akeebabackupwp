@@ -22,7 +22,7 @@ if (typeof akeeba.Regexdbfilters == "undefined")
  */
 akeeba.Regexdbfilters.activeRootChanged = function ()
 {
-    var activeRootEl = document.getElementById("active-root");
+    var activeRootEl = document.getElementById("active_root");
     akeeba.Regexdbfilters.load(
         activeRootEl.options[activeRootEl.selectedIndex].value
     );
@@ -198,7 +198,7 @@ akeeba.Regexdbfilters.addRow = function (def, append_to_here)
                 var type_translation_key                          = "COM_AKEEBA_DBFILTER_TYPE_" +
                     String(def.type).toUpperCase();
                 trow.querySelector("td.ak-type span").textContent = akeeba.System.Text._(type_translation_key);
-                trow.querySelector("td.ak-item tt").textContent   = escapeHTML(def.item);
+                trow.querySelector("td.ak-item tt").textContent   = def.item;
                 akeeba.System.triggerEvent(firstTD.querySelector("span.cancel"), "click");
 
                 if (haveToDelete)
@@ -212,7 +212,7 @@ akeeba.Regexdbfilters.addRow = function (def, append_to_here)
                 {
                     akeeba.Regexdbfilters.addNewRow(append_to_here);
                 }
-            }, false);
+            }, false, true);
         });
 
         var elCancel = document.createElement("span");

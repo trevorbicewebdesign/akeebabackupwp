@@ -53,7 +53,7 @@ $router = $this->getContainer()->router;
 
                 <div class="akeeba-hidden-fields-container">
                     <input type="hidden" name="token" value="@token()"/>
-                    <input type="hidden" name="folderraw" id="folderraw" value="<?php echo $this->folder_raw ?>"/>
+                    <input type="hidden" name="folderraw" id="folderraw" value="{{{ $this->folder_raw }}}"/>
                 </div>
             </form>
         </div>

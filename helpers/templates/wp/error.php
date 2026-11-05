@@ -10,6 +10,11 @@ if (!isset($exc))
 	die();
 }
 
+// Exception details can contain attacker-influenced text (e.g. request values in a message or a trace)
+$escapeError = static function ($value): string {
+	return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+};
+
 if (defined('WPINC'))
 {
 	$network = is_multisite() ? 'network/' : '';
@@ -60,7 +65,7 @@ if (!headers_sent())
 	<div class="akeeba-panel--danger">
 		<header class="akeeba-block-header">
 			<h2>
-				<span class="akeeba-label--grey"><?php echo $exc->getCode() ?></span> <?php echo $appError ?>
+				<span class="akeeba-label--grey"><?php echo $escapeError($exc->getCode()) ?></span> <?php echo $appError ?>
 			</h2>
 		</header>
 
@@ -70,16 +75,16 @@ if (!headers_sent())
 				Please submit the following error message and trace in its entirety when requesting support
 			</p>
 			<h4 class="text-info" id="error-message-text">
-				<?= get_class($exc) ?> <?php echo $exc->getCode() . ' :: ' . $exc->getMessage(); ?>
+				<?= $escapeError(get_class($exc)) ?> <?php echo $escapeError($exc->getCode()) . ' :: ' . $escapeError($exc->getMessage()); ?>
 				in
-				<?php echo $exc->getFile() ?>
+				<?php echo $escapeError($exc->getFile()) ?>
 				<span class="label label-info">L <?php echo $exc->getLine(); ?></span>
 			</h4>
 			<p>Debug backtrace</p>
-			<pre class="bg-info"><?php echo $exc->getTraceAsString(); ?></pre>
+			<pre class="bg-info"><?php echo $escapeError($exc->getTraceAsString()); ?></pre>
 		<?php else: ?>
 			<p id="error-message-text">
-				<?= get_class($exc) ?>: <?php echo $exc->getMessage(); ?>
+				<?= $escapeError(get_class($exc)) ?>: <?php echo $escapeError($exc->getMessage()); ?>
 			</p>
 		<?php endif; ?>
 		<?php if (defined('WPINC')): ?>

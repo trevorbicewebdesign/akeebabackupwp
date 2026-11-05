@@ -91,32 +91,6 @@ call_user_func(
 	}
 );
 
-// Local Debugging — includes overrides.php
-call_user_func(function () {
-	$overridesFile = __DIR__ . '/../overrides.php';
-
-	if (!@file_exists($overridesFile) || !@is_file($overridesFile) || !@is_readable($overridesFile))
-	{
-		return;
-	}
-
-	// On the web, we check for a local test site
-	if (array_key_exists('REQUEST_METHOD', $_SERVER))
-	{
-		if (strpos($_SERVER['HTTP_HOST'] ?? '', '.local.web') === false)
-		{
-			return;
-		}
-	}
-	// On CLI, we check for the AKEEBA_LOCAL_DEBUG environment variable
-	elseif (!($_SERVER['AKEEBA_LOCAL_DEBUG'] ?? false))
-	{
-		return;
-	}
-
-	include $overridesFile;
-});
-
 // Load the platform constants (defines.php)
 if (!defined('APATH_BASE'))
 {

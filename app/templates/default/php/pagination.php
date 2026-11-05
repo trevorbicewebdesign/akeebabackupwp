@@ -5,6 +5,8 @@
  * @license   GNU General Public License version 3, or later
  */
 
+defined('_AKEEBA') or die();
+
 use Awf\Pagination\Pagination;
 use Awf\Pagination\PaginationObject;
 use Awf\Text\Text;

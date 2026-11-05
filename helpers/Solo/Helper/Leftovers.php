@@ -60,8 +60,7 @@ class Leftovers
 			$ext = $file->getExtension();
 
 			$isArchive     = in_array($ext, ['zip', 'jpa', 'jps']);
-			$isArchivePart = (str_starts_with($ext, 'z') || str_starts_with($ext, 'p'))
-			                 && preg_match('/[pz][\d]]{2,}/', $ext);
+			$isArchivePart = self::isArchivePartExtension($ext);
 			$isKickstart   = $file->getBasename() === 'kickstart.php'
 			                 || ($ext === 'php' && str_contains($file->getBasename(), 'kickstart'));
 
@@ -72,6 +71,19 @@ class Leftovers
 		}
 
 		return $files;
+	}
+
+	/**
+	 * Is this file extension that of a multipart archive part (e.g. z01, j01, p001)?
+	 *
+	 * @param   string  $ext  The bare file extension, without the dot.
+	 *
+	 * @return  bool
+	 * @since   9.3.0
+	 */
+	public static function isArchivePartExtension(string $ext): bool
+	{
+		return preg_match('/^[jpz]\d{2,}$/', $ext) === 1;
 	}
 
 	/**

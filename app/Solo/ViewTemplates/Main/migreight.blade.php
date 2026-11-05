@@ -27,7 +27,7 @@ defined('_AKEEBA') or die();
     </div>
 
     <p>
-        <a href="@route('index.php?view=migreight&task=start')"
+        <a href="@route('index.php?view=migreight&task=start&' . $this->container->session->getCsrfToken()->getValue() . '=1')"
            class="akeeba-btn--primary--big">
             <span class="akion-information-circled" aria-hidden="true"></span>
             @lang('COM_AKEEBA_MIGREIGHT_NEEDED_DETAILS')

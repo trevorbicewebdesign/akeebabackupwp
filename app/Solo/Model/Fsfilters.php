@@ -210,6 +210,8 @@ class Fsfilters extends Model
 			}
 		});
 
+		$child = (string) $child;
+
 		if ((stristr($child, '/..') !== false) || (stristr($child, '\..') !== false))
 		{
 			throw new \InvalidArgumentException("Unacceptable child folder");

@@ -5,6 +5,8 @@
  * @license   GNU General Public License version 3, or later
  */
 
+defined('WPINC') or die;
+
 use Awf\Document\Document;
 use Awf\Text\Text;
 use Awf\Uri\Uri;

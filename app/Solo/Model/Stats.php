@@ -17,6 +17,21 @@ use Solo\Helper\HashHelper;
 class Stats extends Model
 {
     /**
+     * Returns the usage statistics software type: Akeeba Backup for WordPress inside WordPress, Akeeba Solo otherwise.
+     *
+     * This is the Core type; the collector switches it to the Pro type depending on the Pro flag we give it.
+     *
+     * @return  int
+     * @since   9.3.0
+     */
+    public function getSoftwareType(): int
+    {
+        return $this->container->segment->get('insideCMS', false)
+            ? SoftwareType::AB_WP_CORE
+            : SoftwareType::SOLO_CORE;
+    }
+
+    /**
      * Send site information to the remove collection service
      *
      * @param  bool  $useIframe  Should I use an IFRAME?
@@ -70,7 +85,7 @@ class Stats extends Model
 	    try
 	    {
 		    (new StatsCollector(
-			    SoftwareType::AB_WP_CORE,
+			    $this->getSoftwareType(),
 			    AKEEBABACKUP_VERSION,
 			    defined('AKEEBABACKUP_PRO') ? AKEEBABACKUP_PRO : false
 		    ))->conditionalSendStatistics();

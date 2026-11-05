@@ -57,10 +57,12 @@ akeeba.Dbfilters.load = function (data)
  * Toggles a database filter
  * @param data
  * @param caller
+ * @param callback
+ * @param success_only Only call the callback if the server reported success. Default: false
  */
-akeeba.Dbfilters.toggle = function (data, caller, callback)
+akeeba.Dbfilters.toggle = function (data, caller, callback, success_only)
 {
-	akeeba.Fsfilters.toggle(data, caller, callback);
+	akeeba.Fsfilters.toggle(data, caller, callback, true, success_only);
 };
 
 /**
@@ -374,7 +376,8 @@ akeeba.Dbfilters.addRow = function (def, append_to_here)
 
 					that.parentNode.removeChild(that);
 					def.node = new_value;
-				}
+				},
+				true
 			);
 		});
 

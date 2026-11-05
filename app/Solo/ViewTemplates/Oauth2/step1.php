@@ -5,6 +5,8 @@
  * @license   GNU General Public License version 3, or later
  */
 
+defined('_AKEEBA') or die();
+
 /**
  * @var \Solo\View\Oauth2\Raw $this
  */

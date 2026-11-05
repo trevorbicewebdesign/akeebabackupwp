@@ -5,4 +5,6 @@
  * @license   GNU General Public License version 3, or later
  */
 
+defined('WPINC') or die;
+
 require_once APATH_BASE . '/templates/default/php/menu.php';

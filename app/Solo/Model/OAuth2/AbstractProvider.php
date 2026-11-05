@@ -54,6 +54,15 @@ abstract class AbstractProvider implements ProviderInterface, ContainerAwareInte
 	{
 		$this->checkConfiguration();
 
+		if (!$this->validateState($input))
+		{
+			throw new OAuth2Exception(
+				'invalid_state',
+				'This authorisation request could not be verified and may have expired or already been used. '
+				. 'Please restart the authorisation process from the configuration page.'
+			);
+		}
+
 		$code = $input->getRaw('code');
 
 		if (!$code)
@@ -116,25 +125,9 @@ HTML
 		}
 
 		// Do we have an error reported by the remote endpoint?
-		if (isset($result['error']))
-		{
-			$error            = $result['error'];
-			$errorUri         = $result['error_uri'] ?? null;
-			$errorDescription = $result['error_uri'] ?? null;
+		$this->throwIfErrorResponse($result);
 
-			if ($errorUri)
-			{
-				throw new OAuth2UriException($errorUri);
-			}
-
-			throw new OAuth2Exception($error, $errorDescription);
-		}
-
-		$ret                 = new TokenResponse();
-		$ret['accessToken']  = $result['access_token'] ?? '';
-		$ret['refreshToken'] = $result['refresh_token'] ?? '';
-
-		return $ret;
+		return $this->buildTokenResponse($result);
 	}
 
 	public final function handleRefresh(Input $input): TokenResponse
@@ -203,11 +196,54 @@ HTML
 			);
 		}
 
+		return $this->buildTokenResponse($result);
+	}
+
+	/**
+	 * Builds a TokenResponse out of a decoded token endpoint response.
+	 *
+	 * Shared by handleResponse() and handleRefresh() so the access/refresh token keys can only be spelled
+	 * correctly once.
+	 *
+	 * @param   array  $result  The decoded JSON response from the token endpoint.
+	 *
+	 * @return  TokenResponse
+	 */
+	protected function buildTokenResponse(array $result): TokenResponse
+	{
 		$ret                 = new TokenResponse();
 		$ret['accessToken']  = $result['access_token'] ?? '';
-		$ret['refreshToekn'] = $result['refresh_token'] ?? '';
+		$ret['refreshToken'] = $result['refresh_token'] ?? '';
 
 		return $ret;
+	}
+
+	/**
+	 * Throws when the decoded token endpoint response reports an OAuth2 error.
+	 *
+	 * @param   array  $result  The decoded JSON response from the token endpoint.
+	 *
+	 * @return  void
+	 * @throws  OAuth2UriException  When the remote endpoint reported an `error_uri`.
+	 * @throws  OAuth2Exception     When the remote endpoint reported an `error` without an `error_uri`.
+	 */
+	protected function throwIfErrorResponse(array $result): void
+	{
+		if (!isset($result['error']))
+		{
+			return;
+		}
+
+		$error            = $result['error'];
+		$errorUri         = $result['error_uri'] ?? null;
+		$errorDescription = $result['error_description'] ?? null;
+
+		if ($errorUri)
+		{
+			throw new OAuth2UriException($errorUri);
+		}
+
+		throw new OAuth2Exception($error, $errorDescription);
 	}
 
 	protected function getResponseCustomFields(Input $input): array
@@ -279,6 +315,53 @@ HTML
 		$secret  = $cParams->get($engine . '_client_secret', null);
 
 		return [$id, $secret];
+	}
+
+	/**
+	 * Generates a fresh, single-use anti-CSRF state value for this engine and stores it in the session so it can
+	 * be validated when the provider redirects back to step2. Call this from getAuthenticationUrl() and include
+	 * the return value as the `state` parameter of the authorisation URL.
+	 *
+	 * @return  string
+	 */
+	protected final function generateState(): string
+	{
+		$state = bin2hex(random_bytes(32));
+
+		$this->getContainer()->segment->set($this->getStateSessionKey(), $state);
+
+		return $state;
+	}
+
+	/**
+	 * Validates the `state` parameter returned by the storage provider against the value stashed by
+	 * generateState(), removing it from the session either way so it can never be reused (single-use, whether
+	 * validation succeeds or fails).
+	 *
+	 * @param   Input  $input  The request input of the step2 callback
+	 *
+	 * @return  bool
+	 */
+	protected final function validateState(Input $input): bool
+	{
+		$key      = $this->getStateSessionKey();
+		$expected = $this->getContainer()->segment->get($key);
+
+		$this->getContainer()->segment->remove($key);
+
+		$state = $input->getRaw('state');
+
+		if (!is_string($expected) || $expected === '' || !is_string($state) || $state === '')
+		{
+			return false;
+		}
+
+		return hash_equals($expected, $state);
+	}
+
+	private function getStateSessionKey(): string
+	{
+		return 'oauth2.state.' . $this->getEngineName();
 	}
 
 	protected final function getUri(string $task = 'step1')

@@ -34,7 +34,7 @@ akeeba.Update.downloadErrorCallback = function (msg)
     elPBInfo.style.display = "none";
     elPBFill.className     = "akeeba-progress-fill--failure";
 
-    document.getElementById("downloadErrorText").innerHTML = msg;
+    document.getElementById("downloadErrorText").textContent = msg;
     document.getElementById("downloadError").style.display = "block";
 };
 
@@ -46,7 +46,7 @@ akeeba.Update.extractErrorCallback = function (msg)
     elPBInfo.style.display = "none";
     elPBFill.className     = "akeeba-progress-fill--failure";
 
-    document.getElementById("extractErrorText").innerHTML = msg;
+    document.getElementById("extractErrorText").textContent = msg;
     document.getElementById("extractError").style.display = "block";
 };
 

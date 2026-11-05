@@ -99,7 +99,7 @@ $formstyle 	  = $this->hasErrors ? 'style="display: none"' : '';
 			<label for="comment">
 				@lang('COM_AKEEBA_BACKUP_LABEL_COMMENT')
 			</label>
-            <textarea name="comment" id="comment" rows="5" cols="73" autocomplete="off">{{ $this->comment }}</textarea>
+            <textarea name="comment" id="comment" rows="5" cols="73" autocomplete="off">{{{ $this->comment }}}</textarea>
             <span class="akeeba-help-text">@lang('COM_AKEEBA_BACKUP_LABEL_COMMENT_HELP')</span>
 		</div>
 		<div class="akeeba-form-group--pull-right">
@@ -206,12 +206,12 @@ $formstyle 	  = $this->hasErrors ? 'style="display: none"' : '';
 					@lang('COM_AKEEBA_LOG')
 				</a>
             @elseif(!empty($this->returnURL) && !empty($this->returnForm))
-                <form id="returnForm" action="<?php echo html_entity_decode($this->returnURL)?>" method="post">
+                <form id="returnForm" action="{{{ $this->returnURL }}}" method="post">
                     <?php
                     $fields = json_decode(base64_decode($this->returnForm));
-					foreach ($fields as $field_id => $field_value)
+					foreach ((is_object($fields) || is_array($fields)) ? $fields : [] as $field_id => $field_value)
 					{
-                        echo '<input type="hidden" name="'.$field_id.'" id="'.$field_id.'" value="'.$field_value.'" />';
+                        echo '<input type="hidden" name="' . $this->escape($field_id) . '" id="' . $this->escape($field_id) . '" value="' . $this->escape(is_scalar($field_value) ? $field_value : '') . '" />';
                     }
                     ?>
                 </form>

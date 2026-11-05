@@ -40,6 +40,17 @@ abstract class SecretWord
 			return;
 		}
 
+		/**
+		 * Never save a configuration which has no database settings. Such a configuration is what a request gets when it
+		 * reads config.php while another request is writing it (an empty or half-written file loads as an empty
+		 * configuration); saving it would replace the real config.php with a stub and the site would lose its database
+		 * credentials and every other setting. ABWP keeps its configuration in the WordPress database instead.
+		 */
+		if (!defined('WPINC') && empty($params->get('dbname', '')))
+		{
+			return;
+		}
+
 		// Get the raw version of frontend_secret_word and check if it has a valid encryption signature
 		$raw             = $params->get('options.' . $settingsKey, '');
 		$signature       = substr($raw, 0, 12);
@@ -54,6 +65,13 @@ abstract class SecretWord
 		// The setting was NOT encrypted. I need to encrypt it.
 		$secureSettings = Factory::getSecureSettings();
 		$encrypted      = $secureSettings->encryptSettings($raw);
+
+		// Without an encryption key file (yet) the Engine hands back the raw value. Nothing changed, so do not save: this
+		// code runs on every request and would rewrite config.php each time.
+		if ($encrypted === $raw)
+		{
+			return;
+		}
 
 		// Finally, I need to save it back to the database
 		$params->set('options.' . $settingsKey, $encrypted);

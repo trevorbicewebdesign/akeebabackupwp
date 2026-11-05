@@ -7,6 +7,8 @@
 
 /** @var \Solo\View\Migreight\Html $this */
 
+defined('_AKEEBA') || die();
+
 ?>
 
 @if (empty($this->affectedProfiles) && empty($this->migratedFolders))
@@ -53,7 +55,7 @@
         @endif
 
         <p style="margin-top: 2em">
-            <a href="@route('index.php?view=migreight&task=start')"
+            <a href="@route('index.php?view=migreight&task=start&' . $this->container->session->getCsrfToken()->getValue() . '=1')"
                class="akeeba-btn--primary--big">
                 <span class="akion-play" aria-hidden="true"></span>
                 @lang('COM_AKEEBA_MIGREIGHT_NEEDED_START')

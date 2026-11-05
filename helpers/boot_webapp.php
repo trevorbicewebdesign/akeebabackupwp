@@ -73,9 +73,9 @@ catch (Throwable $exc)
 	{
 		echo "<h1>Application Error</h1>\n";
 		echo "<p>Please submit the following error message and trace in its entirety when requesting support</p>\n";
-		echo "<div class=\"alert alert-danger\">" . get_class($exc) . ' &mdash; ' . $exc->getMessage() . "</div>\n";
+		echo "<div class=\"alert alert-danger\">" . htmlspecialchars(get_class($exc), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ' &mdash; ' . htmlspecialchars($exc->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</div>\n";
 		echo "<pre class=\"well\">\n";
-		echo $exc->getTraceAsString();
+		echo htmlspecialchars($exc->getTraceAsString(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 		echo "</pre>\n";
 
 		return;

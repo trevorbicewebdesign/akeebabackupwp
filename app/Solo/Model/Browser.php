@@ -10,6 +10,7 @@ namespace Solo\Model;
 use Akeeba\Engine\Factory;
 use Akeeba\Engine\Platform;
 use Awf\Mvc\Model;
+use Solo\Helper\PathContainment;
 
 class Browser extends Model
 {
@@ -61,7 +62,7 @@ class Browser extends Model
 		}
 
 		// Check if it's a subdirectory of the site's root
-		$isInRoot = (strpos($folder, $siteRoot) === 0);
+		$isInRoot = PathContainment::isUnderRoot($folder, $siteRoot);
 
 		// Check open_basedir restrictions
 		$isOpenbasedirRestricted = Factory::getConfigurationChecks()->checkOpenBasedirs($folder);

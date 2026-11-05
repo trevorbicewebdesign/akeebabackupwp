@@ -94,6 +94,10 @@ class UserAuthenticationGoogle extends UserAuthenticationOtep
 		// Create a new TOTP class with Google Authenticator compatible settings
 		$totp = new Totp(30, 6, 10);
 
+		// Compare strictly: loose comparison treats numeric strings as numbers ("0123456" == "123456")
+		$isString = is_string($otp);
+		$otp      = $isString ? trim($otp) : $otp;
+
 		// Get the key if none is defined
 		if (empty($key))
 		{
@@ -103,7 +107,7 @@ class UserAuthenticationGoogle extends UserAuthenticationOtep
 		// Check the code
 		$code = $totp->getCode($key);
 
-		$check = $code == $otp;
+		$check = $isString && hash_equals((string) $code, $otp);
 
 		/*
 		 * If the check fails, test the previous 30 second slot. This allow the
@@ -114,7 +118,7 @@ class UserAuthenticationGoogle extends UserAuthenticationOtep
 		{
 			$time = time() - 30;
 			$code = $totp->getCode($key, $time);
-			$check = $code == $otp;
+			$check = $isString && hash_equals((string) $code, $otp);
 		}
 
 		/*
@@ -125,7 +129,7 @@ class UserAuthenticationGoogle extends UserAuthenticationOtep
 		{
 			$time = time() + 30;
 			$code = $totp->getCode($key, $time);
-			$check = $code == $otp;
+			$check = $isString && hash_equals((string) $code, $otp);
 		}
 
 		return $check;

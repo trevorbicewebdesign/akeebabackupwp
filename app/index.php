@@ -19,6 +19,9 @@ defined('AKEEBASOLO') || define('AKEEBASOLO', 1);
  */
 require __DIR__ . '/include.php';
 
+// Assigned inside the try block below; the catch block must be able to tell it does not exist yet
+$application = null;
+
 try
 {
 	// Load the application configuration
@@ -26,7 +29,41 @@ try
 
 	if (is_file($configPath))
 	{
-		$akeebaSoloContainer->appConfig->loadConfiguration();
+		try
+		{
+			$akeebaSoloContainer->appConfig->loadConfiguration();
+		}
+		catch (Throwable $configException)
+		{
+			/**
+			 * The configuration file exists but is empty or damaged. Everyone, not only the administrator, gets to see this
+			 * page, so it names neither the location of the file nor the exception and its trace (the generic error page below
+			 * would). In debug mode we fall through to the generic page, which has all the details.
+			 */
+			if (!headers_sent())
+			{
+				http_response_code(500);
+			}
+
+			if (defined('AKEEBADEBUG'))
+			{
+				throw $configException;
+			}
+
+			if (!headers_sent())
+			{
+				header('Content-Type: text/html; charset=utf-8');
+			}
+
+			echo "<h1>Akeeba Solo cannot start</h1>\n";
+			echo "<p>" . htmlspecialchars(
+					'Akeeba Solo cannot read its configuration file (config.php). It may be empty or damaged. '
+					. 'Restore it from a backup, or delete it to run the Setup wizard again.',
+					ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'
+				) . "</p>\n";
+
+			return;
+		}
 	}
 
 	// Prepare the user manager
@@ -52,6 +89,24 @@ try
 catch (Throwable $exc)
 {
 	$filename = null;
+	$debugEnabled = defined('AKEEBADEBUG') && AKEEBADEBUG;
+
+	@http_response_code(500);
+
+	if (!$debugEnabled)
+	{
+		echo <<< HTML
+<h1>Application error</h1>
+<hr/>
+<p class="small">
+	To receive support about this issue, please enable Debug in the application and try reproducing this error. It will
+	come back with a much more detailed message. That detailed message is what you need to submit when requesting
+	support.
+</p>
+HTML;
+
+		return;
+	}
 
 	if ($application instanceof Application)
 	{
@@ -64,9 +119,9 @@ catch (Throwable $exc)
 	{
 		echo "<h1>Application Error</h1>\n";
 		echo "<p>Please submit the following error message and trace in its entirety when requesting support</p>\n";
-		echo "<div class=\"alert alert-danger\">" . get_class($exc) . ' &mdash; ' . $exc->getMessage() . "</div>\n";
+		echo "<div class=\"alert alert-danger\">" . htmlspecialchars(get_class($exc), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . ' &mdash; ' . htmlspecialchars($exc->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</div>\n";
 		echo "<pre class=\"well\">\n";
-		echo $exc->getTraceAsString();
+		echo htmlspecialchars($exc->getTraceAsString(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 		echo "</pre>\n";
 
 		return;

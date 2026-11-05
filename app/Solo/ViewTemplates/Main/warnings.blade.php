@@ -148,6 +148,13 @@ $token    = $this->container->session->getCsrfToken()->getValue();
     </div>
 @endunless
 
+{{-- OpenSSL warning --}}
+@unless($this->checkOpenSsl)
+    <div class="akeeba-block--failure">
+		@lang('COM_AKEEBA_CPANEL_ERR_OPENSSL')
+    </div>
+@endunless
+
 {{-- Front-end backup secret word reminder. The whole block is a call to action which requires `configure`. --}}
 @if (!empty($this->frontEndSecretWordIssue) && $this->canAccess('main', 'resetSecretWord'))
     <div class="akeeba-block--warning">

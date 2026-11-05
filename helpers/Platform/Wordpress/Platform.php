@@ -156,13 +156,58 @@ class Wordpress extends Base implements ContainerAwareInterface
 				}
 			}
 
-			if (!in_array(substr($root, -1), ['/', '\\']))
+			/**
+			 * The site root must not end in a directory separator, just like Akeeba Solo's. ABSPATH always does. The
+			 * [SITEROOT] variable would then expand to a path the folder browser reports as a subdirectory of
+			 * [ROOTPARENT], so the "this is the site root" warning would never be shown.
+			 */
+			if ((strlen($root) > 1) && in_array(substr($root, -1), ['/', '\\']) && !preg_match('#^[a-z]:[/\\\\]$#i', $root))
 			{
-				$root .= DIRECTORY_SEPARATOR;
+				$root = substr($root, 0, -1);
 			}
 		}
 
 		return $root;
+	}
+
+	/**
+	 * Returns the data to add to (and override in) installation/extrainfo.json, beyond what the engine records itself.
+	 *
+	 * The engine records get_site_root() as the root of the backed up site. When the profile backs up another site
+	 * (root override) that is not the site's root, but the directory of this application. The restoration script reads it
+	 * to tell whether it restores to a different file system, so the overridden root is reported here instead.
+	 * get_site_root() itself must not change: [SITEROOT] is built from it.
+	 *
+	 * @return  array
+	 */
+	public function get_extra_info()
+	{
+		$config = Factory::getConfiguration();
+
+		if (!$config->get('akeeba.platform.override_root', 0))
+		{
+			return [];
+		}
+
+		$root = trim((string) $config->get('akeeba.platform.newroot', ''));
+
+		if ($root === '')
+		{
+			return [];
+		}
+
+		if (stristr($root, '['))
+		{
+			$root = Factory::getFilesystemTools()->translateStockDirs($root);
+		}
+
+		// Like get_site_root(), no trailing directory separator
+		if ((strlen($root) > 1) && in_array(substr($root, -1), ['/', '\\']) && !preg_match('#^[a-z]:[/\\\\]$#i', $root))
+		{
+			$root = substr($root, 0, -1);
+		}
+
+		return ['root' => $root];
 	}
 
 	/**
@@ -307,13 +352,23 @@ class Wordpress extends Base implements ContainerAwareInterface
 	 */
 	public function get_host()
 	{
+		// Reading the engine configuration may call get_host() again. The flag only guards against that recursion: it
+		// must be reset once the option has been read, or the option would be honoured on the first call only.
 		static $deadLockTest = false;
 
 		if (!$deadLockTest)
 		{
 			$deadLockTest = true;
-			$overrideURL = Factory::getConfiguration()->get('akeeba.platform.site_url', '');
-			$overrideURL = trim($overrideURL);
+
+			try
+			{
+				$overrideURL = Factory::getConfiguration()->get('akeeba.platform.site_url', '');
+				$overrideURL = trim($overrideURL);
+			}
+			finally
+			{
+				$deadLockTest = false;
+			}
 		}
 		else
 		{

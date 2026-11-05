@@ -61,6 +61,8 @@ trait AclChecks
 		],
 		'manage'         => [
 			'main'        => [],
+			// A request without a task (index.php?view=manage) arrives as 'default', not 'main'. Keep them in sync.
+			'default'     => [],
 			'cancel'      => ['backup'],
 			'deletefiles' => ['backup'],
 			'freeze'      => ['backup'],
@@ -79,6 +81,7 @@ trait AclChecks
 			'restore'     => ['configure'],
 			'*'           => ['download'],
 		],
+		'migreight'      => ['*' => ['configure']],
 		'multidb'        => ['*' => ['configure']],
 		'phpinfo'        => ['*' => ['configure', 'backup', 'download']],
 		'profiles'       => ['*' => ['configure']],
@@ -102,9 +105,9 @@ trait AclChecks
 	 *
 	 * These authenticate by their own means, per request, instead of relying on a session:
 	 *
-	 * - `api`, `check`, `uploadcheck`, `remote` and `json` are the front-end endpoints. They are authenticated by the
+	 * - `api`, `check`, `uploadcheck` and `remote` are the front-end endpoints. They are authenticated by the
 	 *   Secret Word, in their own controllers (see e.g. Solo\Controller\Api::verifyKey(),
-	 *   Solo\Controller\Check::checkPermissions()) or, for the legacy `json` view, inside Solo\Model\Json itself.
+	 *   Solo\Controller\Check::checkPermissions()).
 	 * - `oauth2` is the OAuth2 callback landing point, reached by the remote provider, not by the site's user.
 	 * - `login` and `setup` have to be reachable before there is a user to be logged in as. Setup guards itself: it
 	 *   refuses once assets/private/config.php exists, and refuses outright inside a CMS.
@@ -123,7 +126,7 @@ trait AclChecks
 	 * @var array
 	 */
 	protected $aclPublicViews = [
-		'api', 'check', 'uploadcheck', 'remote', 'oauth2', 'json',
+		'api', 'check', 'uploadcheck', 'remote', 'oauth2',
 		'login', 'setup',
 		'ftpbrowser', 'sftpbrowser',
 	];

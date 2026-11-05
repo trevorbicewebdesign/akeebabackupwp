@@ -79,6 +79,28 @@ akeeba.Tooltip.simpleTooltip = function(el)
 };
 
 /**
+ * Sets the contents of a tooltip element.
+ *
+ * The value is rendered as plain text unless the caller explicitly asks for HTML, which is only appropriate for
+ * trusted markup, e.g. translated strings, and never for backup comments or any other user-supplied data.
+ *
+ * @param   {HTMLElement}  el      The element to set the contents of
+ * @param   {string}       value   The text (or, if asHtml is true, the HTML) to display
+ * @param   {boolean}      asHtml  Should the value be rendered as HTML?
+ */
+akeeba.Tooltip.setContent = function (el, value, asHtml)
+{
+	if (asHtml)
+	{
+		el.innerHTML = value;
+
+		return;
+	}
+
+	el.textContent = value;
+};
+
+/**
  * Handles the mouseenter event for a target element (mousing over it will render the tooltip). Basically, shows the
  * tooltip.
  *
@@ -135,19 +157,22 @@ akeeba.Tooltip.onMouseEnter = function (e)
 	tooltipInner.className = 'akeeba-popover-inner';
 	tooltipWrapper.appendChild(tooltipInner);
 
+	// Only elements which explicitly opt in with data-content-html (i.e. trusted, translated markup) get HTML rendering
+	var asHtml = e.target.hasAttribute('data-content-html');
+
 	// If we have a tooltip title, render it
 	if (e.target.hasAttribute('data-original-title'))
 	{
 		var elTitle       = document.createElement('h3');
 		elTitle.className = 'akeeba-popover-title';
-		elTitle.innerHTML = e.target.getAttribute('data-original-title');
+		akeeba.Tooltip.setContent(elTitle, e.target.getAttribute('data-original-title'), asHtml);
 		tooltipInner.appendChild(elTitle);
 	}
 
 	// Render the tooltip content
 	var elContent       = document.createElement('div');
 	elContent.className = 'akeeba-popover-content';
-	elContent.innerHTML = e.target.getAttribute('data-content');
+	akeeba.Tooltip.setContent(elContent, e.target.getAttribute('data-content'), asHtml);
 	tooltipInner.appendChild(elContent);
 
 	// Append the tooltip to the HTML body

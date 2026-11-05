@@ -82,7 +82,7 @@ class Html extends View
 		Template::addJs('media://js/solo/log.min.js', $this->container->application);
 
 		$document = $this->container->application->getDocument();
-		$src      = $this->container->router->route('index.php?view=Log&task=iframe&format=raw&tag=' . urlencode($this->tag));
+		$src      = $this->container->router->route('index.php?view=Log&task=iframe&format=raw&tag=' . urlencode((string) $this->tag));
 
 		$document->addScriptOptions('akeeba.Log.iFrameSrc', $src);
 

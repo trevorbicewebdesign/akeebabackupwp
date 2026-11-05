@@ -58,8 +58,14 @@ akeeba.Fsfilters.load = function (data)
 
 /**
  * Toggles a filesystem filter
+ *
+ * @param   {object}    data             The request to send to the server
+ * @param   {Element}   caller           The element which triggered the request (shows the spinner)
+ * @param   {function}  callback         Called with (response, caller) when the request completes
+ * @param   {boolean}   use_inner_child  Is the spinner the first span inside the caller? Default: true
+ * @param   {boolean}   success_only     Only call the callback if the server reported success. Default: false
  */
-akeeba.Fsfilters.toggle = function (data, caller, callback, use_inner_child)
+akeeba.Fsfilters.toggle = function (data, caller, callback, use_inner_child, success_only)
 {
     if (use_inner_child == null)
     {
@@ -168,7 +174,7 @@ akeeba.Fsfilters.toggle = function (data, caller, callback, use_inner_child)
         }
         else
         {
-            if (!(callback == null))
+            if (!(callback == null) && !success_only)
             {
                 callback(response, caller);
             }
@@ -762,7 +768,9 @@ akeeba.Fsfilters.addRow = function (def, append_to_here)
 
                     that.parentNode.removeChild(that);
                     def.node = new_value;
-                }
+                },
+                true,
+                true
             );
         });
         elInput.focus();

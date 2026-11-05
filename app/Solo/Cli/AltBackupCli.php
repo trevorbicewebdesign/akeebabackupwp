@@ -30,15 +30,14 @@ class AltBackupCli extends AbstractCliApplication
 	{
 		// Has the user set the --no-verify option?
 		$noVerifyValue   = $this->getContainer()->input->get('no-verify', 999);
-		$this->verifySSL = $noVerifyValue != 999;
+		$this->verifySSL = $noVerifyValue == 999;
 
 		// Get the backup profile and description
-		$profile = $this->getContainer()->input->get('profile', 1, 'int');
+		$profile = $this->getContainer()->input->get('profile', null, 'int');
 
-		if ($profile <= 0)
-		{
-			$profile = 1;
-		}
+		// Profile IDs start at 1: 0, a negative number or text are not profiles
+		$profileMissing = !is_null($profile) && ($profile <= 0);
+		$profile        = is_null($profile) ? 1 : $profile;
 
 		$debugmessage = '';
 
@@ -61,7 +60,7 @@ class AltBackupCli extends AbstractCliApplication
 		$phpenvironment = PHP_SAPI;
 		$phpos          = PHP_OS;
 
-		$appName = defined('ABSPATH') ? 'Akeeba backup' : 'Akeeba Solo';
+		$appName = defined('ABSPATH') ? 'Akeeba Backup' : 'Akeeba Solo';
 
 		if ($this->getContainer()->input->get('quiet', -1, 'int') == -1)
 		{
@@ -140,6 +139,17 @@ ERROR:
 	visit {$appName}'s main page at least once before running this script.
 	When you do that, $appName will record the URL to itself and make it
 	available to this script.
+
+ENDTEXT;
+			$startup_check = false;
+		}
+
+		if ($profileMissing)
+		{
+			echo <<<ENDTEXT
+ERROR:
+	The backup profile #$profile does not exist. Please check the value of the
+	--profile option.
 
 ENDTEXT;
 			$startup_check = false;

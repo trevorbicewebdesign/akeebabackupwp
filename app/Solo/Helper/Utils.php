@@ -144,8 +144,10 @@ class Utils
 	 *
 	 * Further to that, we have to make a few security checks:
 	 * - The URL must be internal, i.e. starts with our site's base URL or index.php (this check is executed by Joomla)
-	 * - It must not contain single quotes, double quotes, lower than or greater than signs (could be used to execute
-	 *   arbitrary JavaScript).
+	 * - It must not contain whitespace, control characters, backslashes, single quotes, double quotes, lower than or
+	 *   greater than signs (could be used to execute arbitrary JavaScript or confuse the browser's URL parser).
+	 * - It must not be scheme-relative (starts with //), it must be parseable, and if it has a scheme it must be http or
+	 *   https with a non-empty host.
 	 *
 	 * If any of these violations is detected we return an empty string.
 	 *
@@ -214,6 +216,43 @@ class Utils
 			}
 		}
 
+		/**
+		 * Structural checks on the final URL, i.e. after the optional base64 decoding.
+		 *
+		 * Browsers silently drop leading C0 control characters and treat backslashes as slashes when they
+		 * parse a URL, whereas Uri::isInternal() sees neither. That makes "\x01javascript:alert(1)",
+		 * "///evil.tld" and "/\evil.tld" look like harmless relative URLs to PHP while the browser runs
+		 * script or leaves the site. Therefore no whitespace, control character or backslash is allowed
+		 * anywhere, and a scheme-relative URL is never acceptable.
+		 *
+		 * These checks must run before Uri::isInternal(), which emits a warning on URLs which parse_url()
+		 * cannot handle.
+		 */
+		if (preg_match('/[\x00-\x20\x7F\\\\]/', $returnUrl) || strpos($returnUrl, '//') === 0)
+		{
+			return '';
+		}
+
+		$parts = parse_url($returnUrl);
+
+		if ($parts === false)
+		{
+			return '';
+		}
+
+		if (isset($parts['scheme']))
+		{
+			// Only absolute http(s) URLs with a real host can be internal. No javascript:, data:, http:///host.
+			if (!in_array(strtolower($parts['scheme']), ['http', 'https'], true) || empty($parts['host']))
+			{
+				return '';
+			}
+		}
+		elseif (isset($parts['host']))
+		{
+			return '';
+		}
+
 		// Check if it's an internal URL
 		if (!Uri::isInternal($returnUrl))
 		{
@@ -231,6 +270,96 @@ class Utils
 		}
 
 		return $returnUrl;
+	}
+
+	/**
+	 * Sanitise a raw `returnurl` request value destined for AWF's DataController tasks.
+	 *
+	 * AWF's DataController reads the input with getBase64('returnurl'), base64-decodes it and redirects to the
+	 * result without any validation. We cannot change that code, so DataControllerDefault feeds it a value we
+	 * have already validated: either an empty string, which makes AWF fall back to its routed default URL, or the
+	 * base64 encoding of a URL which safeDecodeReturnUrl() approved, which AWF decodes back to that exact URL.
+	 *
+	 * @param   mixed  $raw  The raw (unfiltered) value of the `returnurl` input
+	 *
+	 * @return  string  The base64 encoded safe URL, or an empty string if the URL must not be used
+	 */
+	public static function sanitiseEncodedReturnUrl($raw): string
+	{
+		$safeUrl = self::safeDecodeReturnUrl($raw);
+
+		return $safeUrl === '' ? '' : base64_encode($safeUrl);
+	}
+
+	/**
+	 * Security gate for Backup::startBackup()'s `overrides` parameter: is this key allowed to be
+	 * written into the engine's configuration registry?
+	 *
+	 * A key is allowed only if BOTH of the following hold:
+	 * - it is in the `akeeba.` or `engine.` namespace; AND
+	 * - it is already known to the engine's configuration registry, i.e. the currently loaded profile
+	 *   already has a value under that exact path.
+	 *
+	 * Requiring "known" as well as the namespace prefix is what stops the override channel from
+	 * conjuring up a namespace or key that nothing else ever reads or writes, such as `volatile.*`,
+	 * which gates PHP object instantiation/injection via the engine's finalisation action queue.
+	 *
+	 * @param   \Akeeba\Engine\Configuration  $config  The configuration registry to query
+	 * @param   string                        $k       The override key to check, e.g. `akeeba.basic.output_directory`
+	 *
+	 * @return  bool
+	 */
+	public static function isAllowedOverrideKey($config, string $k): bool
+	{
+		if (strpos($k, 'akeeba.') !== 0 && strpos($k, 'engine.') !== 0)
+		{
+			return false;
+		}
+
+		return self::isKnownConfigurationParameter($config, $k);
+	}
+
+	/**
+	 * Is the given registry path already known to the engine's configuration registry?
+	 *
+	 * "Known" means the currently loaded profile already has a value under that exact path -- i.e. the
+	 * override can only change something the engine (or a prior, legitimate configuration save)
+	 * already put there, never conjure up a new namespace or key, such as `volatile.*`.
+	 *
+	 * @param   \Akeeba\Engine\Configuration  $config   The configuration registry to query
+	 * @param   string                        $regpath  The registry path to check
+	 *
+	 * @return  bool
+	 */
+	public static function isKnownConfigurationParameter($config, string $regpath): bool
+	{
+		static $sentinel;
+
+		$sentinel = $sentinel ?? new \stdClass();
+
+		return $config->get($regpath, $sentinel) !== $sentinel;
+	}
+
+	/**
+	 * Escapes the sprintf()/Text::sprintf() substitution parameters of a message built from
+	 * attacker-influenced data (e.g. file names, paths, or log lines lifted verbatim from an ALICE
+	 * diagnostics check) before they are interpolated into a string that will later be echoed as raw
+	 * HTML.
+	 *
+	 * Only the parameters are escaped, never the template string itself: several of the language
+	 * strings ALICE substitutes into contain intentional markup (e.g. <br/>, <strong>) which must
+	 * survive.
+	 *
+	 * @param   array  $params
+	 *
+	 * @return  string[]
+	 */
+	public static function escapeSprintfParams(array $params): array
+	{
+		return array_map(
+			static fn($param) => htmlspecialchars((string) $param, ENT_QUOTES, 'UTF-8'),
+			$params
+		);
 	}
 
 } 

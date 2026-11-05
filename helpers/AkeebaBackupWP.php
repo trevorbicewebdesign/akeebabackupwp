@@ -412,6 +412,8 @@ class AkeebaBackupWP
 	 */
 	public static function loadCommonCSS(): void
 	{
+		global $AKEEBABACKUPWP_REAL_REQUEST;
+
 		$ourPluginPage = self::$dirName . '/' . self::$fileName;
 		$requestPage   = $AKEEBABACKUPWP_REAL_REQUEST['page'] ?? null;
 
@@ -499,23 +501,28 @@ HTML;
 
 			update_option('akeebabackupwp_plugin_dir', self::$dirName);
 
-			// Copy the mu-plugins in the correct folder
-			$mu_folder = ABSPATH . 'wp-content/mu-plugins';
+			// Copy the mu-plugins in the correct folder. They are a Pro-only feature (backup on WordPress update).
+			$isPro = defined('AKEEBABACKUP_PRO') ? AKEEBABACKUP_PRO : 0;
 
-			if (defined('WPMU_PLUGIN_DIR') && WPMU_PLUGIN_DIR)
+			if ($isPro)
 			{
-				$mu_folder = WPMU_PLUGIN_DIR;
-			}
+				$mu_folder = ABSPATH . 'wp-content/mu-plugins';
 
-			if (!is_dir($mu_folder))
-			{
-				mkdir($mu_folder, 0755, true);
-			}
+				if (defined('WPMU_PLUGIN_DIR') && WPMU_PLUGIN_DIR)
+				{
+					$mu_folder = WPMU_PLUGIN_DIR;
+				}
 
-			@copy(
-				WP_PLUGIN_DIR . '/' . self::$dirName . '/helpers/assets/mu-plugins/akeeba-backup-coreupdate.php',
-				$mu_folder . '/akeeba-backup-coreupdate.php'
-			);
+				if (!is_dir($mu_folder))
+				{
+					mkdir($mu_folder, 0755, true);
+				}
+
+				@copy(
+					WP_PLUGIN_DIR . '/' . self::$dirName . '/helpers/assets/mu-plugins/akeeba-backup-coreupdate.php',
+					$mu_folder . '/akeeba-backup-coreupdate.php'
+				);
+			}
 		}
 
 		// Register the uninstallation hook
@@ -630,8 +637,14 @@ HTML;
 
 	public static function leftoversWarning(): void
 	{
-		// Only display the message to privileged users and only under wp-admin.
-		if (!is_admin() || !current_user_can('manage_options'))
+		/**
+		 * Only display the message to users who can use the plugin or manage the site (the latter is how a subsite
+		 * administrator on multisite qualifies), and only under wp-admin. Deleting the leftovers is further restricted to
+		 * users who can manage options, see Solo\Controller\Leftovers::remove().
+		 */
+		$canDelete = current_user_can('manage_options');
+
+		if (!is_admin() || !($canDelete || current_user_can('akeebabackup_access')))
 		{
 			return;
 		}
@@ -670,7 +683,6 @@ HTML;
 		$msgLine1       = $lang->text('COM_AKEEBA_LEFTOVERS_INFO');
 		$msgLine2       = $lang->text('COM_AKEEBA_LEFTOVERS_RECOMMEND_DELETE');
 		$msgSummaryHead = $lang->text('COM_AKEEBA_LEFTOVERS_DETECTED_FILES');
-		$msgButton      = $lang->text('COM_AKEEBA_LEFTOVERS_DELETE_FILES');
 		$fileList       = implode(
 			"\n",
 			array_map(
@@ -678,11 +690,23 @@ HTML;
 				$leftoverFiles
 			)
 		);
-		$uri            = new Awf\Uri\Uri(AKEEBABACKUPWP_URL);
-		$uri->setVar('view', 'leftovers');
-		$uri->setVar('task', 'remove');
-		$uri->setVar('token', $container->session->getCsrfToken()->getValue());
-		$url = esc_url((string) $uri);
+		$button         = '';
+
+		if ($canDelete)
+		{
+			$msgButton = $lang->text('COM_AKEEBA_LEFTOVERS_DELETE_FILES');
+			$uri       = new Awf\Uri\Uri(AKEEBABACKUPWP_URL);
+			$uri->setVar('view', 'leftovers');
+			$uri->setVar('task', 'remove');
+			$uri->setVar('token', $container->session->getCsrfToken()->getValue());
+			$url    = esc_url((string) $uri);
+			$button = <<< HTML
+	<p>
+		<a href="$url" class="button button-primary">$msgButton</a>
+	</p>
+
+HTML;
+		}
 
 		echo <<< HTML
 <div class="notice notice-error notice-alt is-dismissible">
@@ -693,10 +717,7 @@ HTML;
 		<summary>$msgSummaryHead</summary>
 		<ol>$fileList</ol>
 	</details>
-	<p>
-		<a href="$url" class="button button-primary">$msgButton</a>	
-	</p>
-</div>
+$button</div>
 HTML;
 
 
@@ -803,7 +824,9 @@ HTML;
 			@include_once dirname(self::$absoluteFileName) . '/app/version.php';
 		}
 
-		$handle = 'akcss' . HashHelper::md5($url);
+		// The handle ignores the query string: the same file is requested by loadCommonCSS() and, with a cache-busting
+		// query string, by the application's Dispatcher. WordPress ignores a second wp_enqueue_style() with a known handle.
+		$handle = 'akcss' . HashHelper::md5(explode('?', $url, 2)[0]);
 
 		wp_enqueue_style($handle, $url, [], self::getMediaVersion());
 	}
@@ -1245,6 +1268,16 @@ HTML;
 				'value'   => 'restorepoint',
 			],
 		];
+
+		if ($container->appConfig->get('options.backup_age_failed', 0) != 1)
+		{
+			$filters[] = [
+				'field'   => 'status',
+				'operand' => '=',
+				'value'   => 'complete',
+			];
+		}
+
 		$ordering = [
 			'by'    => 'backupstart',
 			'order' => 'DESC',

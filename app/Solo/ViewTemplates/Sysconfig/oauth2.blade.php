@@ -44,19 +44,19 @@ $uri    = new Uri(
         <strong>@lang('COM_AKEEBA_CONFIG_OAUTH2URLFIELD_CALLBACK_URL')</strong>:
         <br />
         <?php $uri->setVar('task', 'step2') ?>
-        <code><?= $uri->toString() ?></code>
+        <code><?= $this->escape($uri->toString()) ?></code>
     </p>
     <p>
         <strong>@lang('COM_AKEEBA_CONFIG_OAUTH2URLFIELD_HELPER_URL')</strong>:
         <br />
 	    <?php $uri->setVar('task', 'step1') ?>
-        <code><?= $uri->toString() ?></code>
+        <code><?= $this->escape($uri->toString()) ?></code>
     </p>
     <p>
         <strong>@lang('COM_AKEEBA_CONFIG_OAUTH2URLFIELD_REFRESH_URL')</strong>:
         <br />
 	    <?php $uri->setVar('task', 'refresh') ?>
-        <code><?= $uri->toString() ?></code>
+        <code><?= $this->escape($uri->toString()) ?></code>
     </p>
 </div>
 

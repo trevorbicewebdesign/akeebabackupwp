@@ -16,6 +16,7 @@ use Awf\Application\Application;
 use Awf\Mvc\Model;
 use Awf\Text\Text;
 use Exception;
+use Solo\Helper\Utils;
 
 class Backup extends Model
 {
@@ -146,6 +147,15 @@ class Backup extends Model
 
 			foreach ($overrides as $k => $v)
 			{
+				$k = (string) $k;
+
+				if (!Utils::isAllowedOverrideKey($config, $k))
+				{
+					Factory::getLog()->log(LogLevel::WARNING, sprintf('Ignoring disallowed configuration override key "%s".', $k));
+
+					continue;
+				}
+
 				$config->set($k, $v);
 			}
 

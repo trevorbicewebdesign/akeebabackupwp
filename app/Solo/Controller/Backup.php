@@ -42,7 +42,8 @@ class Backup extends ControllerDefault
 		// Apply the CSRF protection if we're switching profile or passing variables for POST redirection
 		if ($newProfile > 0 || $model->getState('returnform', ''))
 		{
-			$this->csrfProtection(true);
+			// Also accept the WordPress core update screen's nonce (backup before updating WordPress)
+			$this->csrfProtection('upgrade-core');
 			$this->applyProfile();
 		}
 
@@ -83,8 +84,8 @@ class Backup extends ControllerDefault
 	 */
 	public function ajax()
 	{
-		// CSRF prevention
-		$this->csrfProtection(true);
+		// CSRF prevention. Also accept the WordPress core update screen's nonce (backup before updating WordPress).
+		$this->csrfProtection('upgrade-core');
 
 		$model = $this->getModel();
 

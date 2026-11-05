@@ -173,7 +173,7 @@ class Html extends View
 		$filters  = $this->_getFilters();
 		$ordering = $this->_getOrdering();
 
-		$start = $model->getState('limitstart');
+		$start = (int) $model->getState('limitstart', 0);
 		$limit = $model->getState('limit', 10);
 		$total = (int) Platform::getInstance()->get_statistics_count($filters);
 
@@ -597,7 +597,7 @@ JS;
 
 		if (empty($originLanguageKey) || ($originDescription == $originLanguageKey))
 		{
-			$originDescription = '&ndash;';
+			$originDescription = "\u{2013}";
 			$originIcon        = 'akion-help';
 
 			return [$originDescription, $originIcon];

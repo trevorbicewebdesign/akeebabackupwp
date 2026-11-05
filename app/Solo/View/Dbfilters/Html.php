@@ -78,7 +78,9 @@ class Html extends View
 			}
 		}
 
-		$siteRoot          = $roots[0];
+		// Open on the site's database, not on whichever the engine lists first (additional databases come before it). A
+		// profile without a database has no roots at all; there is nothing to list, and nothing to connect to.
+		$siteRoot          = in_array('[SITEDB]', $roots) ? '[SITEDB]' : ($roots[0] ?? '');
 		$selectOptions     = [
 			'list.select' => $siteRoot,
 			'id'          => 'active_root',

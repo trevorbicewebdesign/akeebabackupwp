@@ -211,7 +211,7 @@ class Configuration extends Model
 		$params = $this->getState('params', []);
 
 		// Get a callback URI for OAuth 2
-		$params['callbackURI'] = $this->container->router->route('index.php?view=configuration&task=dpecustomapiraw&engine=' . $engine);
+		$params['callbackURI'] = $this->getOAuthCallbackUri((string) $engine);
 
 		// Get the Input object
 		$params['input'] = $this->input->getData();
@@ -225,6 +225,25 @@ class Configuration extends Model
 		}
 
 		$engineObject->oauthOpen($params);
+	}
+
+	/**
+	 * Returns the URL the OAuth helper redirects the browser back to after the user authorises the application.
+	 *
+	 * That URL runs the dpecustomapiraw task, which is CSRF-protected, hence it must carry the anti-CSRF token. The
+	 * engine appends "&method=oauthCallback" to it and the OAuth helper adds its own parameters (access token etc).
+	 *
+	 * @param   string  $engine  The post-processing engine
+	 *
+	 * @return  string
+	 * @since   9.3.0
+	 */
+	protected function getOAuthCallbackUri(string $engine): string
+	{
+		return $this->container->router->route(
+			'index.php?view=configuration&task=dpecustomapiraw&engine=' . $engine
+			. '&' . $this->container->session->getCsrfToken()->getValue() . '=1'
+		);
 	}
 
 	/**

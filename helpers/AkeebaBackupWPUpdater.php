@@ -277,8 +277,8 @@ abstract class AkeebaBackupWPUpdater
 		$minPhp             = $updateInfo['phpMin'] ?? '';
 		$releaseNotes       = $updateInfo['releaseNotes'] ?? sprintf(
 			"For downloads and release notes please visit the <a href='%s' target='_blank'>the download page of version %s</a> on the plugin's site.",
-			$updateInfo['infoUrl'],
-			$updateInfo['version']
+			esc_url($updateInfo['infoUrl']),
+			esc_html($updateInfo['version'])
 		);
 
 		/**
@@ -339,25 +339,8 @@ abstract class AkeebaBackupWPUpdater
 			return false;
 		}
 
-		// Ensure the download URL is one coming from our domain name.
-		$parsedUrl = wp_parse_url($package);
-
-		if (!$parsedUrl || !isset($parsedUrl['host']))
-		{
-			return false;
-		}
-
-		$isAllowedURL = in_array(
-			$parsedUrl['host'],
-			[
-				'akeeba.com',
-				'www.akeeba.com',
-				'cdn.akeeba.com',
-			]
-		);
-
-		// Process only our download links
-		if (!$isAllowedURL || !isset($parsedUrl['scheme']) || !in_array($parsedUrl['scheme'], ['http', 'https']))
+		// Process only our download links, i.e. HTTPS URLs on our own servers.
+		if (!self::isAllowedDownloadUrl($package))
 		{
 			return false;
 		}
@@ -551,6 +534,12 @@ HTML;
 				$isValid = is_array($item) && isset($item['version']) && isset($item['download']);
 
 				if (!$isValid)
+				{
+					return false;
+				}
+
+				// Only accept packages from Akeeba's own HTTPS servers
+				if (!self::isAllowedDownloadUrl($item['download'], true))
 				{
 					return false;
 				}
@@ -792,6 +781,28 @@ HTML;
 		{
 			define('AKEEBABACKUP_PRO', @is_file(__DIR__ . '/../app/Solo/Controller/Alice.php'));
 		}
+	}
+
+	/**
+	 * Is this a URL we can download an update package from?
+	 *
+	 * @param   mixed  $url                The download URL to check
+	 * @param   bool   $allowTestingHosts  Also accept the AKEEBABACKUP_UPDATE_BASEURL host used for testing updates
+	 *
+	 * @return  bool
+	 * @see     \Solo\Helper\UpdateSource::isAllowedDownloadUrl()
+	 */
+	private static function isAllowedDownloadUrl($url, bool $allowTestingHosts = false): bool
+	{
+		// This runs on any wp-admin page, where the application's autoloader may not be loaded yet.
+		if (!class_exists(\Solo\Helper\UpdateSource::class, false))
+		{
+			require_once __DIR__ . '/../app/Solo/Helper/UpdateSource.php';
+		}
+
+		return \Solo\Helper\UpdateSource::isAllowedDownloadUrl(
+			$url, $allowTestingHosts ? \Solo\Helper\UpdateSource::getTestingBaseUrl() : null
+		);
 	}
 
 	private static function getUpdateSourceURL(): string

@@ -13,7 +13,7 @@ $config = $this->getContainer()->appConfig;
 $inCMS  = $this->getContainer()->segment->get('insideCMS', false);
 
 ?>
-<div id="sysconfigUpdate" class="tab-pane">
+<div class="tab-pane">
     @if (defined('AKEEBABACKUP_PRO') && AKEEBABACKUP_PRO)
         <div class="akeeba-form-group">
             <label for="update_dlid">
@@ -21,7 +21,7 @@ $inCMS  = $this->getContainer()->segment->get('insideCMS', false);
             </label>
             <input type="text" name="options[update_dlid]" id="update_dlid"
                    placeholder="@lang('COM_AKEEBA_CONFIG_DOWNLOADID_LABEL')"
-                   value="<?php echo $config->get('options.update_dlid')?>">
+                   value="{{{ $config->get('options.update_dlid') }}}">
             <p class="akeeba-help-text">
                 @lang('COM_AKEEBA_CONFIG_DOWNLOADID_DESC')
             </p>
